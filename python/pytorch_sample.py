@@ -13,8 +13,23 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from typing import Tuple, List
-import numpy as np
+from typing import List  # Tuple は未使用のため削除
+
+# matplotlib は任意依存関係として扱う
+try:
+    import matplotlib.pyplot as plt  # グラフ表示用
+    MATPLOTLIB_AVAILABLE = True
+    # 日本語フォント設定: 使用可能なフォントを自動的に選択
+    from matplotlib import font_manager, rcParams
+    jp_fonts = ["IPAexGothic", "Noto Sans CJK JP", "Yu Gothic", "Meiryo"]
+    for font in jp_fonts:
+        if any(font in f.name for f in font_manager.fontManager.ttflist):
+            rcParams["font.family"] = font
+            break
+    rcParams["axes.unicode_minus"] = False  # マイナス記号を正しく表示
+except ImportError:
+    MATPLOTLIB_AVAILABLE = False
+    print("matplotlib がインストールされていないため、グラフを表示できません。'pip install matplotlib' でインストールしてください。")
 
 
 class TensorOperations:
@@ -233,7 +248,7 @@ class SimpleNeuralNetwork(nn.Module):
             device (torch.device): 計算デバイス
         """
         try:
-            print(f"\n=== ニューラルネットワーク訓練サンプル ===")
+            print("\n=== ニューラルネットワーク訓練サンプル ===")
             
             # サンプルデータの生成（回帰問題）
             torch.manual_seed(42)
@@ -252,7 +267,8 @@ class SimpleNeuralNetwork(nn.Module):
             optimizer = optim.Adam(self.parameters(), lr=0.01)
             
             # 訓練ループ
-            epochs = 100
+            epochs = 100  # 1分以内に完了するエポック数に設定
+            losses: List[float] = []
             for epoch in range(epochs):
                 # 順伝播
                 outputs = self.forward(X)
@@ -263,15 +279,41 @@ class SimpleNeuralNetwork(nn.Module):
                 loss.backward()
                 optimizer.step()
                 
-                # 進捗表示
-                if (epoch + 1) % 20 == 0:
-                    print(f"エポック [{epoch+1}/{epochs}], 損失: {loss.item():.6f}")
+                # ロスを記録
+                losses.append(loss.item())
+                
+                # 進捗表示（毎エポック）
+                progress = (epoch + 1) / epochs * 100
+                print(f"進捗: {progress:6.2f}% | エポック {epoch+1:3d}/{epochs} | 損失: {loss.item():.6f}")
             
             # 最終的な予測精度
             with torch.no_grad():
                 final_outputs = self.forward(X)
                 final_loss = criterion(final_outputs, y)
                 print(f"最終損失: {final_loss.item():.6f}")
+                
+                # === グラフ描画 ===
+                if MATPLOTLIB_AVAILABLE:
+                    plt.figure(figsize=(6, 4))
+                    # 実際値と予測値の散布図
+                    plt.scatter(
+                        y.cpu().numpy(),
+                        final_outputs.cpu().numpy(),
+                        alpha=0.6,
+                        label="予測値"
+                    )
+                    min_val = min(y.min().item(), final_outputs.min().item())
+                    max_val = max(y.max().item(), final_outputs.max().item())
+                    # 理想的なy=x線で性能を可視化
+                    plt.plot([min_val, max_val], [min_val, max_val], color="red", label="理想線 (y=x)")
+                    plt.xlabel("実際値")
+                    plt.ylabel("予測値")
+                    plt.title("実際値と予測値の比較")
+                    plt.legend()
+                    plt.tight_layout()
+                    plt.show()
+                else:
+                    print("matplotlib が利用できないため、グラフ描画をスキップします。")
                 
                 # いくつかの予測例を表示
                 print("\n予測例:")

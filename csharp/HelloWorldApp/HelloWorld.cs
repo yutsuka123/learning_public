@@ -20,17 +20,6 @@ namespace HelloWorldApp
     {
         /// <summary>
         /// 名前プロパティ（自動実装プロパティ）
-        /// - public: 外部からアクセス可能
-        /// - string型: 文字列を格納
-        /// - 自動実装プロパティ: コンパイラが自動的にバッキングフィールドを生成
-        /// - string.Emptyで初期化: nullを避けるためのベストプラクティス
-        /// 
-        /// 使用例：
-        /// // getter（値の取得）
-        /// string name = person.Name; 
-        /// 
-        /// // setter（値の設定）
-        /// person.Name = "山田太郎";
         /// </summary>
         public string Name { get; set; } = string.Empty;
 

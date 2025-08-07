@@ -315,14 +315,14 @@ public class HelloWorld {
             
             try {
                 // 無効な引数でPersonを作成
-                Person invalidPerson = new Person("", -5);
+                new Person("", -5);
             } catch (IllegalArgumentException e) {
                 System.out.println("期待通りのエラーをキャッチしました: " + e.getMessage());
             }
             
             try {
                 // 無効な学生IDでStudentを作成
-                Student invalidStudent = new Student("テスト", 20, "");
+                new Student("テスト", 20, "");
             } catch (IllegalArgumentException e) {
                 System.out.println("期待通りのエラーをキャッチしました: " + e.getMessage());
             }
