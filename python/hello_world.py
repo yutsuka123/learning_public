@@ -297,6 +297,13 @@ def main() -> None:
         except TypeError as e:
             print(f"期待通りのエラーをキャッチしました: {e}")
 
+        # === PyTorch サンプルの呼び出し ===
+        print("=== PyTorch サンプルの呼び出し ===")
+        import pytorch_sample  # 自作モジュール
+        pytorch_sample.main()
+
+        #
+
         print()
         print("プログラムが正常に終了しました。")
 

@@ -11,6 +11,7 @@
 #include <opencv2/opencv.hpp>
 #include <iostream>
 #include <string>
+#include "opencv_sample.hpp"
 
 /**
  * @brief OpenCVを使用した図形描画クラス
@@ -175,7 +176,7 @@ public:
  * @brief メイン関数
  * @return プログラムの終了ステータス
  */
-int main() {
+void runOpenCvSample() {
     try {
         std::cout << "=== OpenCV サンプルプログラム ===" << std::endl;
         std::cout << "OpenCV バージョン: " << CV_VERSION << std::endl;
@@ -223,8 +224,8 @@ int main() {
     catch (const std::exception& e) {
         std::cerr << "予期しないエラーが発生しました - メソッド: main"
                   << ", エラー: " << e.what() << std::endl;
-        return 1;
+        return;
     }
 
-    return 0;
+    
 }
