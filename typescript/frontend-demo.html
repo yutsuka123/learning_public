@@ -1,0 +1,265 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TypeScript フロントエンドアプリケーション デモ</title>
+    <meta name="description" content="プロフェッショナルなTypeScript開発の実践例 - フロントエンドアプリケーション">
+    <style>
+        /* 初期ローディング用のスタイル */
+        .loading-container {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .loading-spinner {
+            width: 50px;
+            height: 50px;
+            border: 4px solid rgba(255, 255, 255, 0.3);
+            border-top: 4px solid white;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 1rem;
+        }
+        
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        
+        .loading-text {
+            font-size: 1.2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .loading-subtitle {
+            font-size: 1rem;
+            opacity: 0.8;
+        }
+        
+        /* エラー表示用のスタイル */
+        .error-container {
+            max-width: 600px;
+            margin: 2rem auto;
+            padding: 2rem;
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            border-radius: 8px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        }
+        
+        .error-container h2 {
+            margin-top: 0;
+            color: #721c24;
+        }
+        
+        .error-container pre {
+            background: #ffffff;
+            padding: 1rem;
+            border-radius: 4px;
+            overflow-x: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
+    </style>
+</head>
+<body>
+    <!-- 初期ローディング画面 -->
+    <div id="loading" class="loading-container">
+        <div class="loading-spinner"></div>
+        <div class="loading-text">TypeScript アプリケーション読み込み中...</div>
+        <div class="loading-subtitle">プロフェッショナルな開発環境を準備しています</div>
+    </div>
+
+    <!-- メインコンテンツエリア（JavaScriptで動的に生成） -->
+    <div id="main-content" style="display: none;"></div>
+
+    <!-- エラー表示エリア -->
+    <div id="error-container" style="display: none;"></div>
+
+    <script type="module">
+        /**
+         * フロントエンドアプリケーションの初期化とエラーハンドリング
+         * 
+         * 🎯 目的:
+         * - TypeScriptモジュールの動的読み込み
+         * - エラーハンドリングとユーザーフィードバック
+         * - プログレッシブローディング
+         * 
+         * 💡 実装のポイント:
+         * - ES Modulesを使用したモジュール読み込み
+         * - 非同期処理の適切な管理
+         * - ユーザビリティを考慮したローディング表示
+         */
+        
+        // DOM要素の取得
+        const loadingElement = document.getElementById('loading');
+        const mainContentElement = document.getElementById('main-content');
+        const errorContainerElement = document.getElementById('error-container');
+
+        /**
+         * エラー表示関数
+         * @param {string} title - エラータイトル
+         * @param {string} message - エラーメッセージ
+         * @param {Error} [error] - エラーオブジェクト
+         */
+        function displayError(title, message, error = null) {
+            console.error(`${title}: ${message}`, error);
+            
+            const errorHtml = `
+                <div class="error-container">
+                    <h2>${title}</h2>
+                    <p>${message}</p>
+                    ${error ? `
+                        <details>
+                            <summary>詳細なエラー情報</summary>
+                            <pre>${error.stack || error.message || error}</pre>
+                        </details>
+                    ` : ''}
+                    <p>
+                        <strong>対処法:</strong><br>
+                        1. ブラウザのコンソールでエラー詳細を確認してください<br>
+                        2. TypeScriptファイルが正しくコンパイルされているか確認してください<br>
+                        3. すべてのモジュールファイルが存在するか確認してください
+                    </p>
+                </div>
+            `;
+            
+            errorContainerElement.innerHTML = errorHtml;
+            errorContainerElement.style.display = 'block';
+            loadingElement.style.display = 'none';
+        }
+
+        /**
+         * アプリケーションの初期化
+         */
+        async function initializeApplication() {
+            try {
+                console.log('=== TypeScript フロントエンドアプリケーション 開始 ===');
+                
+                // 基本型システム練習の実行
+                console.log('基本型システム練習を読み込み中...');
+                
+                // 基本練習モジュールのインポートと実行
+                // 注意: この部分は実際のファイル構成に合わせて調整が必要
+                try {
+                    // 基本型システム練習の実行
+                    await import('./01_basic_types_practice.js');
+                    console.log('✅ 基本型システム練習が完了しました');
+                } catch (importError) {
+                    console.warn('基本型システム練習の読み込みに失敗しましたが、フロントエンドアプリケーションを続行します:', importError.message);
+                }
+
+                // フロントエンドアプリケーションの初期化
+                console.log('フロントエンドアプリケーションを初期化中...');
+                
+                // アプリケーションコンテナの作成
+                const appContainer = document.createElement('div');
+                appContainer.id = 'app-container';
+                appContainer.className = 'typescript-frontend-app';
+                mainContentElement.appendChild(appContainer);
+
+                // フロントエンドアプリケーションの動的インポート
+                const { FrontendApp } = await import('./modules/FrontendApp.js');
+                
+                // アプリケーション設定
+                const appConfig = {
+                    containerSelector: '#app-container',
+                    apiEndpoint: '/api/users',
+                    enableDebugMode: true,
+                    animationDuration: 300
+                };
+
+                // アプリケーションの初期化
+                const app = new FrontendApp(appConfig);
+                await app.initialize();
+
+                // ローディング画面を非表示にし、メインコンテンツを表示
+                loadingElement.style.display = 'none';
+                mainContentElement.style.display = 'block';
+
+                console.log('✅ フロントエンドアプリケーションが正常に起動しました！');
+                console.log('📱 ユーザーインターフェースが利用可能です');
+
+                // デバッグ情報の出力
+                if (appConfig.enableDebugMode) {
+                    console.log('🔍 デバッグモードが有効です');
+                    console.log('アプリケーション状態:', app.getState());
+                    
+                    // グローバルスコープにアプリケーションを公開（デバッグ用）
+                    window.typescriptApp = app;
+                    console.log('💡 window.typescriptApp でアプリケーションにアクセスできます');
+                }
+
+            } catch (error) {
+                displayError(
+                    'アプリケーション初期化エラー',
+                    'TypeScriptアプリケーションの初期化中にエラーが発生しました。',
+                    error
+                );
+            }
+        }
+
+        /**
+         * ページ読み込み完了後の処理
+         */
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('DOM読み込み完了 - アプリケーション初期化を開始します');
+            initializeApplication();
+        });
+
+        /**
+         * 未処理のエラーをキャッチ
+         */
+        window.addEventListener('error', (event) => {
+            console.error('未処理のエラーが発生しました:', event.error);
+            displayError(
+                '予期しないエラー',
+                'アプリケーション実行中に予期しないエラーが発生しました。',
+                event.error
+            );
+        });
+
+        /**
+         * 未処理のPromise拒否をキャッチ
+         */
+        window.addEventListener('unhandledrejection', (event) => {
+            console.error('未処理のPromise拒否:', event.reason);
+            displayError(
+                'Promise拒否エラー',
+                '非同期処理中にエラーが発生しました。',
+                event.reason
+            );
+        });
+
+        // パフォーマンス測定（デバッグ用）
+        if (window.performance && window.performance.mark) {
+            window.performance.mark('typescript-app-start');
+            
+            window.addEventListener('load', () => {
+                window.performance.mark('typescript-app-loaded');
+                
+                try {
+                    window.performance.measure(
+                        'typescript-app-load-time',
+                        'typescript-app-start',
+                        'typescript-app-loaded'
+                    );
+                    
+                    const measure = window.performance.getEntriesByName('typescript-app-load-time')[0];
+                    console.log(`⚡ アプリケーション読み込み時間: ${Math.round(measure.duration)}ms`);
+                } catch (perfError) {
+                    console.log('パフォーマンス測定に失敗しました:', perfError);
+                }
+            });
+        }
+    </script>
+</body>
+</html>

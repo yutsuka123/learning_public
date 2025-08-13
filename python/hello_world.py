@@ -299,8 +299,16 @@ def main() -> None:
 
         # === PyTorch サンプルの呼び出し ===
         print("=== PyTorch サンプルの呼び出し ===")
-        import pytorch_sample  # 自作モジュール
-        pytorch_sample.main()
+        try:
+            import pytorch_sample  # 自作モジュール
+            pytorch_sample.main()
+        except ModuleNotFoundError as e:
+            if "torch" in str(e):
+                print(f"PyTorch がインストールされていないため、PyTorch サンプルをスキップします。詳細: {e}")
+            else:
+                print(f"PyTorch サンプルモジュールの読み込みに失敗したためスキップします。詳細: {e}")
+        except Exception as e:
+            print(f"PyTorch サンプル実行中に予期しないエラーが発生しました - 関数: main, エラー: {e}")
 
         #
 
