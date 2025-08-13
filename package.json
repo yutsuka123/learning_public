@@ -1,0 +1,81 @@
+{
+  "name": "learning_public",
+  "version": "1.0.0",
+  "description": "プロフェッショナルなTypeScript開発の学習プロジェクト - 基本型システムからフロントエンドアプリケーション開発まで",
+  "main": "typescript/01_basic_types_practice.js",
+  "homepage": "https://github.com/your-username/learning_public",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-username/learning_public.git"
+  },
+  "scripts": {
+    "start": "npm run ts:serve",
+    "build": "npm run ts:build-all",
+    "dev": "npm run ts:watch",
+    "clean": "npm run ts:clean",
+    "lint": "npx eslint typescript/**/*.ts",
+    "format": "npx prettier --write typescript/**/*.ts",
+    "test": "echo \"テスト機能は今後実装予定\" && exit 0",
+    
+    "ts:help": "echo \"🚀 TypeScript練習用コマンド一覧:\\n\\n📝 基本実行:\\n  npm run ts:run-basic    - 基本型システム練習を実行\\n  npm run ts:run-hello     - Hello Worldを実行\\n  npm run ts:serve         - ローカルサーバーでブラウザ版を起動\\n\\n🔧 開発用:\\n  npm run ts:build         - プロジェクト全体をビルド\\n  npm run ts:build-all     - 全てのTSファイルをコンパイル\\n  npm run ts:watch         - ファイル変更を監視してコンパイル\\n  npm run ts:clean         - 生成されたJSファイルを削除\\n\\n🌐 サーバー:\\n  npm run ts:serve         - ローカルサーバー起動 (http://localhost:3000)\\n  npm run ts:serve-dev     - 開発用サーバー起動\\n\\n📋 その他:\\n  npm run lint             - ESLintでコードチェック\\n  npm run format           - Prettierでコード整形\\n  npm run ts:info          - 環境情報表示\"",
+    
+    "ts:run-basic": "cd typescript && npx tsc 01_basic_types_practice.ts && node 01_basic_types_practice.js",
+    "ts:run-hello": "cd typescript && npx tsc hello_world.ts && node hello_world.js",
+    
+    "ts:build": "cd typescript && npx tsc --build",
+    "ts:build-all": "cd typescript && npx tsc --build && echo \"✅ コンパイル完了\"",
+    "ts:build-prod": "cd typescript && npx tsc --build --force && echo \"✅ 本番用ビルド完了\"",
+    
+    "ts:watch": "cd typescript && npx tsc --watch",
+    "ts:clean": "cd typescript && rm -f *.js && rm -f modules/*.js && echo \"🧹 クリーンアップ完了\"",
+    
+    "ts:serve": "cd typescript && echo \"🌐 ローカルサーバー起動中...\" && echo \"📱 ブラウザで http://localhost:3000/frontend-demo.html を開いてください\" && npx http-server . -p 3000 -c-1",
+    "ts:serve-dev": "cd typescript && echo \"🔧 開発用サーバー起動中...\" && npx http-server . -p 3001 -c-1",
+    
+    "ts:info": "echo \"📊 環境情報:\" && echo \"Node.js: $(node --version)\" && echo \"npm: $(npm --version)\" && echo \"TypeScript: $(npx tsc --version)\" && echo \"プロジェクト: $(pwd)\"",
+    
+    "setup": "echo \"🛠️  初期セットアップ開始...\" && npm install && cd typescript && npx tsc --build && echo \"✅ セットアップ完了！ 'npm run ts:help' でコマンド一覧を確認してください\"",
+    
+    "demo": "npm run ts:build-all && npm run ts:serve"
+  },
+  "keywords": [
+    "typescript",
+    "javascript",
+    "frontend",
+    "learning",
+    "education",
+    "dom-manipulation",
+    "form-validation",
+    "ui-components",
+    "web-development",
+    "es2020",
+    "modules",
+    "type-safety"
+  ],
+  "author": {
+    "name": "TypeScript Learning Project",
+    "email": "learning@example.com"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  },
+  "browserslist": [
+    "last 2 Chrome versions",
+    "last 2 Firefox versions",
+    "last 2 Safari versions",
+    "last 2 Edge versions"
+  ],
+  "devDependencies": {
+    "@types/node": "^24.2.1",
+    "@typescript-eslint/eslint-plugin": "^8.39.0",
+    "@typescript-eslint/parser": "^8.39.0",
+    "eslint": "^9.33.0",
+    "prettier": "^3.6.2",
+    "typescript": "^5.9.2"
+  },
+  "dependencies": {
+    "http-server": "^14.1.1"
+  }
+}

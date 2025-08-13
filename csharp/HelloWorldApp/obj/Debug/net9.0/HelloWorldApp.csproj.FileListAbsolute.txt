@@ -1,0 +1,15 @@
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\bin\Debug\net9.0\HelloWorldApp.exe
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\bin\Debug\net9.0\HelloWorldApp.deps.json
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\bin\Debug\net9.0\HelloWorldApp.runtimeconfig.json
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\bin\Debug\net9.0\HelloWorldApp.dll
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\bin\Debug\net9.0\HelloWorldApp.pdb
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.GeneratedMSBuildEditorConfig.editorconfig
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.AssemblyInfoInputs.cache
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.AssemblyInfo.cs
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.csproj.CoreCompileInputs.cache
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.sourcelink.json
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.dll
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\refint\HelloWorldApp.dll
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.pdb
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\HelloWorldApp.genruntimeconfig.cache
+C:\mydata\project\myproject\learning_public\csharp\HelloWorldApp\obj\Debug\net9.0\ref\HelloWorldApp.dll
