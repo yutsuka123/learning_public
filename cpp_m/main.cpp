@@ -4,6 +4,9 @@
  * @details
  * - 本ファイルは「このフォルダの使い方」を案内し、コンパイル時の標準バージョン情報を表示します。
  * - `cpp_m/` 配下の各 `.cpp` は **単体コンパイル前提**（基本的に各ファイルに `main()` が存在）です。
+ * - C言語経験者向け補足:
+ *   - `namespace { ... }` は「このファイル内だけで使う」意図（Cの `static` 関数/変数のイメージ）です。
+ *   - `std::string` は「所有する文字列」です（Cの `char*` と違い、寿命管理をオブジェクトが行います）。
  *
  * @note [厳守] フォルダ追加/構成変更時は `ソース概要.md` と `.cursorrules` と `cpp_m/README.md` を更新すること。理由: 入口が分からなくなるのを防ぐため。
  * @note [推奨] まず `cpp11.cpp` から順に進める。理由: 機能が段階的に増えるため。
@@ -64,6 +67,9 @@ std::string toCppStandardLabel(const long long value) {
 /**
  * @brief コンパイラが報告する「現在のC++標準値」を取得します。
  * @details MSVC では `_MSVC_LANG` がより信頼できる場合があるため、両方を扱います。
+ * @note C言語経験者向け補足:
+ * - MSVC は歴史的事情で `__cplusplus` が古い値になりやすく、`/Zc:__cplusplus` で改善します。
+ * - 学習では「実際にどの標準でビルドできているか」を表示で確認するのが重要です。
  * @return long long 標準値
  */
 long long getReportedCppValue() {
@@ -122,6 +128,7 @@ int main(const int argc, char** argv) {
 
     std::cout << "次にやること:\n";
     std::cout << "- `cpp_m/README.md` を読む\n";
+    std::cout << "- `cpp_m/書き方比較集.md` で、業界/優先事項別の書き方の違いを眺める\n";
     std::cout << "- `cpp_m/INSTALL.md` の手順で `cpp11.cpp` を単体ビルドして実行する\n";
     std::cout << "\n";
     std::cout << "[重要] 各 `.cpp` は単体でコンパイルしてください（複数同時にビルドすると main() が衝突します）。\n";

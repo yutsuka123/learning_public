@@ -21,25 +21,29 @@
 cd c:\mydata\project\myproject\learning_public\cpp_m
 
 # C++11
-cl /std:c++14 /EHsc /W4 /nologo .\cpp11.cpp
+cl /std:c++14 /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\cpp11.cpp
 
 # C++14
-cl /std:c++14 /EHsc /W4 /nologo .\cpp14.cpp
+cl /std:c++14 /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\cpp14.cpp
 
 # C++17
-cl /std:c++17 /EHsc /W4 /nologo .\cpp17.cpp
+cl /std:c++17 /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\cpp17.cpp
 
 # C++20
-cl /std:c++20 /EHsc /W4 /nologo .\cpp20.cpp
+cl /std:c++20 /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\cpp20.cpp
 
 # C++23 (Visual Studio により /std:c++latest の場合あり)
-cl /std:c++latest /EHsc /W4 /nologo .\cpp23.cpp
+cl /std:c++latest /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\cpp23.cpp
 
 # modern (最新の総合)
-cl /std:c++latest /EHsc /W4 /nologo .\modern.cpp
+cl /std:c++latest /EHsc /W4 /nologo /utf-8 /Zc:__cplusplus .\modern.cpp
 ```
 
 [注意] MSVC は `__cplusplus` が古い値になることがあります（`/Zc:__cplusplus` に依存）。各サンプルは `__cplusplus` と `_MSVC_LANG` の両方を表示します。
+
+[注意] 日本語コメントを含むため、MSVC では `/utf-8` を付けることを推奨します。理由: 既定コードページ(例: 932)による警告(C4819)や文字化けを避けるため。
+
+[推奨] 実行時にコンソール出力が文字化けする場合は、UTF-8 対応のターミナル（Windows Terminal 等）を使うか、必要に応じて `chcp 65001` を試してください。
 
 ## clang++ / g++ でのビルド例
 ```powershell

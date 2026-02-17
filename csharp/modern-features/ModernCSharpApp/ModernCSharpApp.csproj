@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    [重要] ModernCSharpApp
+    - 目的: モダンC#（主に C# 9〜最新）機能と、ラムダ式（キャプチャ差による挙動差）を学ぶ。
+    - 方針: 可読性重視、詳細な日本語コメント、結果（expected）を出力で確認できるようにする。
+    - 制限: 追加のNuGet依存は入れない（標準ライブラリのみ）= 初学者が環境で迷わないため。
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+</Project>
+

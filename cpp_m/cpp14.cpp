@@ -4,6 +4,9 @@
  * @details
  * - 目的: C++14 の代表的な改善点を「C++11 と比較しながら」確認する。
  * - 主な題材: ジェネリックラムダ / `std::make_unique` / 返り値型推論 / 桁区切り（digit separators）
+ * - C言語経験者向け補足:
+ *   - C++11 でも `unique_ptr` は使えますが、**C++14 から `std::make_unique`** が入り、生成が安全・簡単になりました。
+ *   - 「new を直接書く」よりも「make_* で生成する」方が、例外が絡む場面で安全になりやすいです。
  *
  * @note [厳守] C++14 以上でコンパイルすること（例: clang++ -std=c++14 / g++ -std=c++14）。理由: 学習対象機能が有効になるため。
  */
@@ -90,6 +93,7 @@ void demonstrateMakeUnique() {
 
   // [重要] C++11 では make_unique が無いので new を書きがちだった。
   // C++14 では make_unique により安全な生成が簡単になる。
+  // - C言語経験者向け: 「生成と所有」を一行で書けるので、free忘れ・早期returnでの解放漏れを減らしやすい。
   const auto messagePtr = std::make_unique<std::string>("Hello from make_unique");
   std::cout << "*messagePtr=" << *messagePtr << "\n";
 }
@@ -101,6 +105,8 @@ void demonstrateMakeUnique() {
 void demonstrateGenericLambda() {
   printTitle("generic lambda (auto parameters)");
 
+  // ジェネリックラムダ: 引数型に auto を書ける（C++14）。
+  // - C言語経験者向け: マクロで型を誤魔化すのではなく、型安全なテンプレートとして扱えるイメージ。
   const auto toString = [](const auto& value) -> std::string {
     std::ostringstream oss;
     oss << value;
@@ -110,6 +116,37 @@ void demonstrateGenericLambda() {
   std::cout << "toString(123)=" << toString(123) << "\n";
   std::cout << "toString(3.14)=" << toString(3.14) << "\n";
   std::cout << "toString(\"abc\")=" << toString(std::string("abc")) << "\n";
+}
+
+/**
+ * @brief C++14 のラムダ拡張（初期化キャプチャ/ムーブキャプチャ）を確認します。
+ * @details
+ * - C++11 までは `[x]` / `[&x]` のような基本キャプチャが中心。
+ * - C++14 からは **初期化キャプチャ**により、キャプチャ時に「別名」や「計算結果」を持てます。
+ * - さらに `std::move` と組み合わせると **ムーブキャプチャ**が可能で、所有権（unique_ptr等）をラムダへ移せます。
+ *
+ * 結果の違い（イメージ）:
+ * - 初期化キャプチャ: 外側変数が変わっても、キャプチャした値（別名）は変わらない
+ * - ムーブキャプチャ: 外側のunique_ptrは空になり、ラムダ側が所有する（= 解放責任が移る）
+ * @return void
+ */
+void demonstrateLambdaInitAndMoveCapture() {
+  printTitle("lambda init-capture / move-capture (C++14)");
+
+  // (1) 初期化キャプチャ: computed という名前で「計算結果」を保持する
+  int base = 7;
+  const auto getComputed = [computed = base * 10]() { return computed; };
+  base = 999;
+  // expected: computed は 70 のまま（baseの変更は影響しない）
+  std::cout << "getComputed()=" << getComputed() << " (expected: 70)\n";
+
+  // (2) ムーブキャプチャ: unique_ptr の所有権をラムダへ移す
+  auto ptr = std::make_unique<std::string>("owned by lambda");
+  const auto useMoved = [moved = std::move(ptr)]() -> std::string {
+    return moved ? *moved : "(null)";
+  };
+  std::cout << "after move: ptr is " << (ptr ? "not null" : "null") << " (expected: null)\n";
+  std::cout << "useMoved()=" << useMoved() << " (expected: owned by lambda)\n";
 }
 
 /**
@@ -155,9 +192,37 @@ void runCpp14Samples() {
 
   demonstrateMakeUnique();
   demonstrateGenericLambda();
+  demonstrateLambdaInitAndMoveCapture();
   demonstrateReturnTypeDeduction();
   demonstrateDigitSeparators();
 }
+
+#if 0
+// ---------------------------------------------------------------------------
+// [悪い例/良い例] よくある間違いの対比（ビルドが通らない例は #if 0 に閉じ込める）
+// ---------------------------------------------------------------------------
+//
+// (A) C++14 機能を C++11 でビルドしてしまう
+// [悪い例] C++11 でコンパイルすると `std::make_unique` が無い（多くの環境でコンパイルエラー）
+// auto p = std::make_unique<std::string>("x");  // <- C++14 以降
+//
+// [良い例] `cpp14.cpp` は C++14 でビルドする（`INSTALL.md` の /std:c++14）
+//
+// (B) ジェネリックラムダを C++11 で使う
+// [悪い例] 引数に auto を書けるのは C++14 から（C++11 だとコンパイルエラー）
+// auto f = [](const auto& x) { return x; };
+//
+// [良い例] C++11 ではテンプレート関数にする（C++14 ならジェネリックラムダでOK）
+// template <typename T>
+// T f(const T& x) { return x; }
+//
+// (C) 「短く書く（コード量優先）」のやり過ぎ
+// [悪い例] 何をしているかが伝わらず、保守が辛くなる
+// auto v = []{ return std::vector<int>{1,2,3}; }();  // 短いが意図が薄い
+//
+// [良い例] 名前を付けて意図を残す（メンテ優先）
+// const auto numbers = makeNumbers();
+#endif
 
 }  // namespace
 

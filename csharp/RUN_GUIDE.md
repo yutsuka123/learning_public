@@ -1,4 +1,4 @@
-﻿# C#コード実行ガイド
+# C#コード実行ガイド
 
 ## 📋 概要
 このガイドでは、プロジェクト内のC#コード（HelloWorld.cs）を実行するための手順を説明します。
@@ -139,3 +139,15 @@ dotnet --list-sdks
 - [ ] 年齢の増加処理が正常に実行される
 
 **✅ すべての項目が確認できたら、C#コードの実行成功です！**
+
+---
+
+## 🆕 追加サンプル（modern-features）
+
+[重要] `csharp/modern-features/ModernCSharpApp/` は、プロジェクトとして同梱しているため、そのまま実行できます。
+
+```powershell
+cd csharp\modern-features\ModernCSharpApp
+dotnet run
+```
+

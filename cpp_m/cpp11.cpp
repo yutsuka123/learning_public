@@ -4,6 +4,11 @@
  * @details
  * - 目的: C++11 の代表的な言語機能を「小さく・確実に」確認する。
  * - 主な題材: `auto` / 範囲for / `nullptr` / `enum class` / `unique_ptr` / ラムダ / move
+ * - C言語経験者向け補足（初心者がつまずきやすい差分）:
+ *   - `std::vector<int>` は「可変長配列」。Cの `int*` + `malloc/free` + 要素数管理 をまとめて安全にしたもの。
+ *   - `std::string` は「所有する文字列」。Cの `char*` と違い、寿命とサイズをオブジェクトが管理する。
+ *   - `unique_ptr` は「所有権が1つのスマートポインタ」。Cの `malloc/free` の **free忘れ/二重free** を減らす。
+ *   - `nullptr` は「ヌルポインタ専用の値」。Cの `NULL` や `0` より安全（オーバーロードで曖昧になりにくい）。
  *
  * @note [厳守] C++11 以上でコンパイルすること（例: clang++ -std=c++11 / g++ -std=c++11）。理由: 学習対象機能が有効になるため。
  * @note [推奨] 例外発生時の出力を読み、どの関数で失敗したかを追う。理由: 実務でのデバッグに直結するため。
@@ -116,6 +121,9 @@ std::string toString(const colorKind kind) {
 void demonstrateUniquePtrAndMove() {
   printTitle("unique_ptr / move");
 
+  // C言語で書くとこういう意図:
+  // - mallocで確保して、最後にfreeする責任がある
+  // C++では `unique_ptr` によって「最後に自動で解放される」ようにできる（RAII）。
   std::unique_ptr<std::string> messagePtr(new std::string("Hello from unique_ptr"));
   std::cout << "messagePtr points to: " << *messagePtr << "\n";
 
@@ -142,6 +150,7 @@ void demonstrateAutoAndRangeFor() {
   const std::vector<int> numbers{1, 2, 3, 4, 5};
 
   // [重要] auto は「型推論」だが、読みやすさを損なう場合は明示型を優先する。
+  // - C言語経験者向け: `auto` はCの「記憶域クラス指定子」とは別物（C++のautoは型推論）。
   auto sum = 0;
   for (const auto value : numbers) {  // 範囲for
     sum += value;
@@ -164,15 +173,38 @@ void demonstrateNullptr() {
 
 /**
  * @brief ラムダ式の例（キャプチャ、引数、戻り値）。
+ * @details
+ * - ここではC++11で扱える「基本のキャプチャ（値/参照）」の違いを、出力で確認します。
+ * - より多いパターン（初期化キャプチャ/ムーブキャプチャ/this/*this など）は `modern.cpp` を参照。
+ *
+ * 結果の違い（イメージ）:
+ * - 値キャプチャ: ラムダ作成時点の値をコピーするので、後から変数を変えても結果は変わらない
+ * - 参照キャプチャ: 変数への参照を持つので、後から変数を変えると結果も変わる
  * @return void
  */
 void demonstrateLambda() {
   printTitle("lambda");
 
-  const int baseValue = 10;
-  const auto addBase = [baseValue](const int x) -> int { return baseValue + x; };
+  // ラムダは「関数（コールバック）を、その場で作れる」仕組み。
+  // C言語の関数ポインタよりも「外側の変数をキャプチャ」できる点が強力。
+  int baseValue = 10;
 
-  std::cout << "addBase(5)=" << addBase(5) << "\n";
+  // 値キャプチャ（[baseValue]）: 作成時点の baseValue=10 をコピーして保持
+  const auto addByValue = [baseValue](const int x) -> int { return baseValue + x; };
+
+  // 参照キャプチャ（[&baseValue]）: baseValue への参照を保持（後で baseValue を変えると結果も変わる）
+  const auto addByRef = [&baseValue](const int x) -> int { return baseValue + x; };
+
+  // 作成直後はどちらも同じ結果
+  std::cout << "baseValue=" << baseValue << "\n";
+  std::cout << "addByValue(5)=" << addByValue(5) << " (expected: 15)\n";
+  std::cout << "addByRef(5)=" << addByRef(5) << "   (expected: 15)\n";
+
+  // baseValue を変更すると、参照キャプチャだけ結果が変わる
+  baseValue = 100;
+  std::cout << "baseValue(after change)=" << baseValue << "\n";
+  std::cout << "addByValue(5)=" << addByValue(5) << " (expected: 15)\n";
+  std::cout << "addByRef(5)=" << addByRef(5) << "   (expected: 105)\n";
 }
 
 /**
@@ -196,6 +228,42 @@ void runCpp11Samples() {
   const colorKind favorite = colorKind::green;
   std::cout << "favorite=" << toString(favorite) << "\n";
 }
+
+#if 0
+// ---------------------------------------------------------------------------
+// [悪い例/良い例] よくある間違いの対比（ビルドが通らない例は #if 0 に閉じ込める）
+// ---------------------------------------------------------------------------
+//
+// (A) unique_ptr の「コピー」: ビルドが通らない例
+// [悪い例] unique_ptr はコピーできない（所有権が一意）
+// std::unique_ptr<std::string> a(new std::string("x"));
+// std::unique_ptr<std::string> b = a;  // <- コンパイルエラー（コピー不可）
+//
+// [良い例] 所有権を移す（move）
+// std::unique_ptr<std::string> a(new std::string("x"));
+// std::unique_ptr<std::string> b = std::move(a);
+//
+// (B) auto の使い過ぎ: ビルドは通るが読みづらい例
+// [悪い例] 型が見えず、何のコンテナか追いにくい
+// auto values = std::vector<std::pair<int, std::string>>{{1, "a"}, {2, "b"}};
+//
+// [良い例] 学習段階では明示型 + 名前で意図を出す
+// const std::vector<std::pair<int, std::string>> idToName{{1, "a"}, {2, "b"}};
+//
+// (C) 業界/優先事項で変わる書き方の例（概念の紹介）
+//
+// --- メンテ優先（業務/Web系など） ---
+// - 失敗を明示（例外 or optional）
+// - ログを丁寧に、戻り値や型で意図が分かるように
+//
+// --- コード量優先（競プロ/短命ツールなど） ---
+// - auto/ラムダ/アルゴリズムで短縮
+// - ただし「短い=読みやすい」とは限らない（短縮しすぎに注意）
+//
+// --- 速度優先（ゲーム/低遅延など） ---
+// - 事前確保、アロケーション削減、I/Oの最適化
+// - 必要な箇所だけ計測して寄せる（根拠のない最適化は逆効果になりやすい）
+#endif
 
 }  // namespace
 
