@@ -4,6 +4,10 @@
  * @details
  * - 目的: C++17 の代表的機能を、実務でよく出る形（分岐・パース・戻り値）で確認する。
  * - 主な題材: 構造化束縛 / `if constexpr` / `std::optional` / `std::string_view`
+ * - C言語経験者向け補足:
+ *   - `std::optional<T>` は「値がある/ない」を型で表現します。Cでありがちな「-1 を失敗」等のセンチネルより安全。
+ *   - `std::string_view` は「文字列を所有しない参照」です。Cの `const char*` に近いですが、
+ *     **長さ情報を持つ**一方で、元の文字列の寿命が切れると危険（ぶら下がり）です。
  *
  * @note [厳守] C++17 以上でコンパイルすること（例: clang++ -std=c++17 / g++ -std=c++17）。
  */
@@ -81,6 +85,20 @@ void printTitle(const std::string& title) {
 
 /**
  * @brief 文字列を int に変換します（失敗時は std::nullopt）。
+ * @details
+ * 入力と結果の例:
+ * - "123" -> 123（成功: optionalに値あり）
+ * - "007" -> 7（成功: 先頭ゼロは許容）
+ * - "45x" -> 失敗（optionalが空: std::nullopt）
+ *
+ * 処理手順:
+ * - `std::stoi` は `std::string` を要求するため、`string_view` を一度 `string` にコピーする
+ * - `std::stoi` で数値化し、`parsedLength` が文字列全体と一致するか確認
+ *   - 例: "45x" は parsedLength=2, size=3 になり、途中に非数値があると判断して失敗扱い
+ * - 例外が出た場合も失敗扱い（nullopt）
+ *
+ * C言語経験者向け:
+ * - `strtol(text, &endptr, 10)` の endptr を見るのと同じ発想です。
  * @param text std::string_view 変換対象
  * @return std::optional<int> 成功時は値、失敗時は空
  */
@@ -98,8 +116,29 @@ std::optional<int> parseInt(const std::string_view text) {
   }
 }
 
+#if 0
+// ---------------------------------------------------------------------------
+// [業界別の好み] 例外 vs 戻り値（組み込み等で「例外禁止」の場合）
+// ---------------------------------------------------------------------------
+//
+// [メンテ優先] optional で「失敗しうる」を型で表す（このファイルの parseInt）
+//
+// [組み込み/速度優先の一部] 例外禁止: 戻り値でエラーを返す例
+// enum class errorCode { ok, invalidArgument };
+// struct parseResult { errorCode code; int value; };
+// parseResult parseIntNoException(std::string_view text);
+#endif
+
 /**
  * @brief `if constexpr` の例（型に応じた分岐をコンパイル時に行う）。
+ * @details
+ * - `if constexpr` は「型によって不要な分岐」をコンパイル時に消せます。
+ * - そのため、テンプレートでありがちな「使わない分岐が原因でコンパイルエラー」になりにくくします。
+ *
+ * 出力例（このファイルの demonstrateIfConstexpr より）:
+ * - int    -> "integral"
+ * - double -> "floating"
+ * - string -> "other"
  * @tparam T 任意型
  * @param value T 値
  * @return std::string カテゴリ文字列
@@ -118,6 +157,15 @@ std::string getTypeCategory(const T& value) {
 
 /**
  * @brief 構造化束縛（structured bindings）の例。
+ * @details
+ * - `std::pair` や `std::tuple` の要素を、分解して個別の変数として受け取れます。
+ *
+ * 重要ポイント:
+ * - `const auto [id, name] = user;` は **コピー**します（idとnameは独立した値になる）
+ * - 「参照で受けたい」場合は `const auto& [id, name] = user;` のように書きます（ただし user の寿命が必要）
+ *
+ * 出力例:
+ * - user={42,"alice"} の場合、"id=42 name=alice"
  * @return void
  */
 void demonstrateStructuredBindings() {
@@ -130,6 +178,17 @@ void demonstrateStructuredBindings() {
 
 /**
  * @brief `std::optional` と `std::string_view` の組み合わせ例。
+ * @details
+ * - `parseInt` は optional を返すので、呼び出し側は「成功/失敗」を必ず分岐で扱えます。
+ *
+ * 重要ポイント:
+ * - `valueOpt.has_value()` で「値があるか」を判定する
+ * - 値があるときだけ `*valueOpt` で取り出す（空のoptionalを `*` すると未定義動作）
+ *
+ * 出力例:
+ * - "123" -> value=123
+ * - "45x" -> parse failed
+ * - "007" -> value=7
  * @return void
  */
 void demonstrateOptionalAndStringView() {
@@ -148,6 +207,9 @@ void demonstrateOptionalAndStringView() {
 
 /**
  * @brief `if constexpr` を実感するための出力例。
+ * @details
+ * - `getTypeCategory` はテンプレートなので、渡した型ごとにコンパイル時に分岐が確定します。
+ * - 初学者向けに「型が違うと結果が変わる」ことを、出力で確認します。
  * @return void
  */
 void demonstrateIfConstexpr() {
@@ -159,6 +221,11 @@ void demonstrateIfConstexpr() {
 
 /**
  * @brief C++17 サンプル全体の実行。
+ * @details
+ * 実行順:
+ * - (1) 構造化束縛（分解代入）
+ * - (2) if constexpr（型で分岐）
+ * - (3) optional/string_view（失敗を型で表す）
  * @return void
  */
 void runCpp17Samples() {
@@ -173,6 +240,37 @@ void runCpp17Samples() {
   demonstrateIfConstexpr();
   demonstrateOptionalAndStringView();
 }
+
+#if 0
+// ---------------------------------------------------------------------------
+// [悪い例/良い例] よくある間違いの対比（ビルドが通らない例は #if 0 に閉じ込める）
+// ---------------------------------------------------------------------------
+//
+// (A) C++17 機能を C++14 でビルドしてしまう
+// [悪い例] 構造化束縛は C++17 から。C++14 でコンパイルするとエラーになる。
+// std::pair<int, std::string> user{1, "bob"};
+// auto [id, name] = user;  // <- C++17
+//
+// [良い例] `cpp17.cpp` は C++17 でビルドする（`INSTALL.md` の /std:c++17）
+//
+// (B) string_view の寿命（dangling）: ビルドは通るが危険
+// [悪い例] ローカル変数の文字列を指す string_view を返す（返った時点でぶら下がり参照）
+// std::string_view badGetView() {
+//   std::string local = "abc";
+//   return std::string_view(local);  // <- local は関数終了で破棄される
+// }
+//
+// [良い例] 返すなら std::string（所有）にする、または呼び出し側で寿命が保証された文字列を参照する
+// std::string goodGetOwned() {
+//   return "abc";
+// }
+//
+// (C) コード量優先の例（短いが注意）
+// [短い例] optional の扱いを1行に詰めると読みづらくなることがある
+// auto v = parseInt(input).value_or(0);  // 失敗を0扱いにしてしまい、入力ミスを見逃しやすい
+//
+// [メンテ優先] 失敗時はログ・メッセージで原因を残す（このファイルの demonstrateOptionalAndStringView）
+#endif
 
 }  // namespace
 
