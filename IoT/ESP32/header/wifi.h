@@ -11,24 +11,10 @@
 
 class wifiTask {
  public:
-  /**
-   * @brief タスクを生成する。
-   * @return 生成成功時true。
-   */
   bool startTask();
 
  private:
-  /**
-   * @brief タスクエントリ関数。
-   * @param taskParameter thisポインタ。
-   * @return なし。
-   */
   static void taskEntry(void* taskParameter);
-
-  /**
-   * @brief Wi-Fi初期化と接続処理の実行本体。
-   * @return なし。
-   */
   void runLoop();
 
   static constexpr uint32_t taskStackSize = 4096;
