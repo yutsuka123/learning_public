@@ -1,0 +1,25 @@
+; [重要] ESP32-S3向けPlatformIO設定ひな形
+; 理由: ビルド再現性を維持し、依存差異を排除するため
+; [禁止] このファイルに認証実値を直接記載しないこと
+
+[platformio]
+default_envs = esp32s3_dev
+
+[env:esp32s3_dev]
+platform = espressif32@6.9.0
+board = esp32-s3-devkitc-1
+framework = espidf
+monitor_speed = 115200
+
+; [厳守] 依存ライブラリはバージョン固定
+lib_deps =
+  knolleary/PubSubClient@2.8
+  bblanchon/ArduinoJson@7.0.4
+
+build_flags =
+  -D APP_TARGET_ESP32S3=1
+  -D MQTT_TOPIC_PREFIX=\"iot\"
+  -D MQTT_TLS_REQUIRED=1
+  -D MQTT_AUTH_REQUIRED=1
+
+; [推奨] 環境ごとの差異は追加envで吸収する
