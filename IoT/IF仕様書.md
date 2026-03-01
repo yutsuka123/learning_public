@@ -6,12 +6,9 @@
 ## 1. MQTT IF（Localブローカ: mosquitto想定 / TLS必須）
 
 ### 1.1 トピック命名規則
-- [推奨] `device/{publicId}/{category}/{name}` を採用する。
-- 例:
-  - `device/a1b2c3d4/status/boot`
-  - `device/a1b2c3d4/wifi/update`
-  - `device/a1b2c3d4/wifi/confirm`
-  - `device/a1b2c3d4/status/wifiState`
+詳細は `MQTTコマンド仕様書.md` を参照のこと。
+- [推奨] `cmd/esp32lab/{deviceId}/{commandName}` 等を採用する。
+- 定義: `shared/include/common.h` 参照。
 
 ### 1.2 セキュリティ必須条件
 - [厳守] MQTTはTLS（通常 `8883`）で接続する。

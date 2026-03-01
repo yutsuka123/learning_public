@@ -32,6 +32,53 @@ enum class transportChannelType : uint8_t {
 };
 
 /**
+ * @brief MQTT関連定義
+ */
+namespace mqtt {
+    /** @brief トピックプレフィックス: コマンド (Cloud -> Device) */
+    constexpr const char* kTopicPrefixCmd = "cmd/esp32lab/";
+    /** @brief トピックプレフィックス: レスポンス (Device -> Cloud) */
+    constexpr const char* kTopicPrefixRes = "res/esp32lab/";
+    /** @brief トピックプレフィックス: 通知 (Mutual) */
+    constexpr const char* kTopicPrefixNotice = "notice/esp32lab/";
+
+    /** @brief コマンド名: 設定 */
+    constexpr const char* kCmdSet = "set";
+    /** @brief コマンド名: 取得 */
+    constexpr const char* kCmdGet = "get";
+    /** @brief コマンド名: 実行 */
+    constexpr const char* kCmdCall = "call";
+    /** @brief コマンド名: 状態通知 */
+    constexpr const char* kCmdStatus = "status";
+    /** @brief コマンド名: ネットワーク設定 */
+    constexpr const char* kCmdNetwork = "network";
+
+    /** @brief JSONフィールドキー定義 */
+    namespace jsonKey {
+        constexpr const char* kVersion = "v";
+        constexpr const char* kDeviceId = "deviceId";
+        constexpr const char* kMacAddr = "macAddr";
+        constexpr const char* kId = "id";
+        constexpr const char* kTimestamp = "ts";
+        constexpr const char* kOperation = "op";
+        constexpr const char* kArgs = "args";
+        constexpr const char* kResult = "result";
+        constexpr const char* kDetail = "detail";
+        
+        // Network Config Keys
+        constexpr const char* kWifiSsid = "wifiSSID";
+        constexpr const char* kWifiPass = "wifiPass";
+        constexpr const char* kMqttUrl = "mqttUrl";
+        constexpr const char* kMqttUser = "mqttUser";
+        constexpr const char* kMqttPass = "mqttPass";
+        constexpr const char* kMqttTls = "mqttTls";
+        constexpr const char* kMqttPort = "mqttPort";
+        constexpr const char* kApply = "apply";
+        constexpr const char* kReboot = "reboot";
+    }
+}
+
+/**
  * @brief 共通コマンド識別子。
  * @details 値はログ・監査で扱いやすいよう文字列と1対1で管理する。
  */
@@ -39,6 +86,8 @@ enum class commandType : uint16_t {
   kUnknown = 0,
   kDeviceBootNotify = 1001,
   kLedSet = 1002,
+  kNetworkSet = 1003,
+  kNetworkSet = 1003,
   kWifiConfigUpdate = 1101,
   kWifiConfigConfirm = 1102,
   kOtaPrepare = 1201,
@@ -68,6 +117,8 @@ inline const char* toCommandName(commandType command) {
       return "deviceBootNotify";
     case commandType::kLedSet:
       return "ledSet";
+    case commandType::kNetworkSet:
+      return "network";
     case commandType::kWifiConfigUpdate:
       return "wifiConfigUpdate";
     case commandType::kWifiConfigConfirm:
@@ -103,6 +154,21 @@ inline const char* toDeviceRuntimeStateName(deviceRuntimeStateType state) {
     default:
       return "unknown";
   }
+}
+
+/**
+ * @brief AP設定関連定義
+ */
+namespace apConfig {
+    /** @brief メンテナンスモードAP名プレフィックス (AP-esp32lab-<MAC>) */
+    constexpr const char* kMaintApPrefix = "AP-esp32lab-";
+    /** @brief メンテナンスモードAPパスワード */
+    constexpr const char* kMaintApPass = "pass-esp32";
+    
+    /** @brief 設定用外部AP名 */
+    constexpr const char* kSettingApName = "AP-esp32lab-setting";
+    /** @brief 設定用外部APパスワード */
+    constexpr const char* kSettingApPass = "pass-esp32";
 }
 
 }  // namespace iotCommon
