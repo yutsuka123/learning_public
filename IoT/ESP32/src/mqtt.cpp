@@ -1,6 +1,10 @@
 /**
  * @file mqtt.cpp
- * @brief MQTT機能のタスクひな形実装。
+ * @brief MQTT機能のタスク実装。
+ * @details
+ * - [重要] mainTaskから受け取った設定でブローカー接続し、online状態をpublishする。
+ * - [厳守] MQTT接続前にブローカー到達確認（TCPプローブ）を実施する。
+ * - [制限] TLS(mqttTls=true)は現時点で未実装。
  */
 
 #include "mqtt.h"
@@ -12,25 +16,36 @@
 
 #include "common.h"
 #include "interTaskMessage.h"
+#include "led.h"
 #include "log.h"
 
 namespace {
+/** @brief mqttTask用スタック領域。PSRAM優先で確保し、失敗時は内部RAMへフォールバックする。 */
 StackType_t* mqttTaskStackBuffer = nullptr;
+/** @brief mqttTask用の静的タスク制御ブロック。 */
 StaticTask_t mqttTaskControlBlock;
+/** @brief MQTT通信用の下位TCPクライアント。 */
 WiFiClient mqttNetworkClient;
+/** @brief PubSubClient本体。mqttNetworkClientを介して通信する。 */
 PubSubClient mqttClient(mqttNetworkClient);
 
+/** @brief MQTT接続先ホスト名/IP文字列バッファ。 */
 char mqttHost[64] = {0};
+/** @brief MQTT接続ユーザー名バッファ。 */
 char mqttUser[64] = {0};
+/** @brief MQTT接続パスワードバッファ。 */
 char mqttPass[64] = {0};
+/** @brief MQTT接続先ポート番号。 */
 int32_t mqttPort = 1883;
+/** @brief TLS利用フラグ（未実装）。 */
 bool mqttTls = false;
+/** @brief MQTT初期化が成功済みかどうか。 */
 bool isMqttInitialized = false;
 
 /**
- * @brief MQTTブローカーへICMP ping確認する。
+ * @brief MQTTブローカーへの到達確認を実施する。
  * @param brokerHost ブローカーのホスト名またはIP。
- * @return ping応答ありでtrue、失敗時false。
+ * @return 到達確認成功でtrue、失敗時false。
  */
 bool pingBrokerHost(const char* brokerHost) {
   if (brokerHost == nullptr || strlen(brokerHost) == 0) {
@@ -63,6 +78,7 @@ bool pingBrokerHost(const char* brokerHost) {
 
 /**
  * @brief MQTT接続情報を内部バッファへ保存する。
+ * @param receivedMessage mainTaskから受信したMQTT初期化要求メッセージ。
  */
 void storeMqttConfig(const appTaskMessage& receivedMessage) {
   strncpy(mqttHost, receivedMessage.text, sizeof(mqttHost) - 1);
@@ -81,7 +97,7 @@ void storeMqttConfig(const appTaskMessage& receivedMessage) {
  */
 bool connectToMqttBroker() {
   constexpr int32_t maxRetryCount = 10;
-  constexpr int32_t retryDelayMs = 500;
+  constexpr int32_t retryDelayMs = 200;
 
   if (strlen(mqttHost) == 0) {
     appLogError("connectToMqttBroker failed. host is empty.");
@@ -97,12 +113,16 @@ bool connectToMqttBroker() {
   }
   if (WiFi.status() != WL_CONNECTED) {
     appLogError("connectToMqttBroker failed. wifi is not connected. wifiStatus=%d", static_cast<int>(WiFi.status()));
+    ledController::indicateErrorPattern();
     return false;
   }
 
+  ledController::indicateMqttConnecting();
+  ledController::indicateCommunicationActivity();
   bool pingResult = pingBrokerHost(mqttHost);
   if (!pingResult) {
     appLogError("connectToMqttBroker failed. ping to brokerHost=%s did not succeed.", mqttHost);
+    ledController::indicateErrorPattern();
     return false;
   }
 
@@ -116,6 +136,8 @@ bool connectToMqttBroker() {
              clientId.c_str());
 
   for (int32_t retryIndex = 0; retryIndex < maxRetryCount; ++retryIndex) {
+    ledController::indicateMqttConnecting();
+    ledController::indicateCommunicationActivity();
     bool connectResult = false;
     if (strlen(mqttUser) > 0 || strlen(mqttPass) > 0) {
       connectResult = mqttClient.connect(clientId.c_str(), mqttUser, mqttPass);
@@ -124,6 +146,7 @@ bool connectToMqttBroker() {
     }
 
     if (connectResult) {
+      ledController::indicateMqttConnected();
       appLogInfo("connectToMqttBroker success. state=%d", mqttClient.state());
       return true;
     }
@@ -133,6 +156,7 @@ bool connectToMqttBroker() {
   }
 
   appLogError("connectToMqttBroker failed. state=%d", mqttClient.state());
+  ledController::indicateErrorPattern();
   return false;
 }
 
@@ -150,6 +174,7 @@ bool publishOnlineStatus() {
   snprintf(topicBuffer, sizeof(topicBuffer), "%s%s", iotCommon::mqtt::kTopicPrefixNotice, "status");
   const char* payload = "{\"status\":\"online\"}";
   bool publishResult = mqttClient.publish(topicBuffer, payload, true);
+  ledController::indicateCommunicationActivity();
   if (!publishResult) {
     appLogError("publishOnlineStatus failed. topic=%s", topicBuffer);
     return false;
@@ -161,6 +186,10 @@ bool publishOnlineStatus() {
 }
 }
 
+/**
+ * @brief MQTTタスクを生成し、受信用キューを登録する。
+ * @return 生成成功時true、失敗時false。
+ */
 bool mqttTask::startTask() {
   interTaskMessageService& messageService = getInterTaskMessageService();
   messageService.registerTaskQueue(appTaskId::kMqtt, 8);
@@ -196,11 +225,22 @@ bool mqttTask::startTask() {
   return true;
 }
 
+/**
+ * @brief FreeRTOSタスクエントリ。
+ * @param taskParameter thisポインタ。
+ */
 void mqttTask::taskEntry(void* taskParameter) {
   mqttTask* self = static_cast<mqttTask*>(taskParameter);
   self->runLoop();
 }
 
+/**
+ * @brief MQTTタスクの常駐ループ。
+ * @details
+ * - 起動要求受信時: startup ackを返信。
+ * - MQTT初期化要求受信時: 接続結果を返信。
+ * - online publish要求受信時: publish結果を返信。
+ */
 void mqttTask::runLoop() {
   interTaskMessageService& messageService = getInterTaskMessageService();
   appLogInfo("mqttTask loop started. (skeleton)");

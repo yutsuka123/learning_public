@@ -12,8 +12,11 @@
 
 namespace {
 
+/** @brief 管理対象タスクスロット数。appTaskIdの最大値+1で管理する。@type uint8_t */
 constexpr uint8_t taskSlotCount = 11;
+/** @brief タスクIDを添字として保持するQueueテーブル。 */
 QueueHandle_t taskQueueTable[taskSlotCount] = {nullptr};
+/** @brief サービス初期化済みフラグ。 */
 bool isInitialized = false;
 
 /**
@@ -45,6 +48,12 @@ bool interTaskMessageService::initialize() {
   return true;
 }
 
+/**
+ * @brief 指定タスクIDへ受信Queueを登録する。
+ * @param taskId 登録対象タスクID。
+ * @param queueLength Queue長。
+ * @return 成功時true、失敗時false。
+ */
 bool interTaskMessageService::registerTaskQueue(appTaskId taskId, UBaseType_t queueLength) {
   if (!isInitialized) {
     appLogError("interTaskMessageService::registerTaskQueue failed. service not initialized.");
@@ -79,6 +88,12 @@ bool interTaskMessageService::registerTaskQueue(appTaskId taskId, UBaseType_t qu
   return true;
 }
 
+/**
+ * @brief 宛先タスクQueueへメッセージを送信する。
+ * @param message 送信メッセージ。
+ * @param timeoutTicks 送信待機Tick。
+ * @return 成功時true、失敗時false。
+ */
 bool interTaskMessageService::sendMessage(const appTaskMessage& message, TickType_t timeoutTicks) {
   if (!isInitialized) {
     appLogError("interTaskMessageService::sendMessage failed. service not initialized.");
@@ -107,6 +122,13 @@ bool interTaskMessageService::sendMessage(const appTaskMessage& message, TickTyp
   return true;
 }
 
+/**
+ * @brief 指定タスクQueueからメッセージを受信する。
+ * @param taskId 受信対象タスクID。
+ * @param messageOut 受信メッセージ出力先。
+ * @param timeoutTicks 受信待機Tick。
+ * @return 受信成功時true、失敗/タイムアウト時false。
+ */
 bool interTaskMessageService::receiveMessage(appTaskId taskId, appTaskMessage* messageOut, TickType_t timeoutTicks) {
   if (!isInitialized) {
     appLogError("interTaskMessageService::receiveMessage failed. service not initialized.");
@@ -131,6 +153,10 @@ bool interTaskMessageService::receiveMessage(appTaskId taskId, appTaskMessage* m
   return (receiveResult == pdPASS);
 }
 
+/**
+ * @brief プロセス内共通メッセージサービスを返す。
+ * @return interTaskMessageServiceのシングルトン参照。
+ */
 interTaskMessageService& getInterTaskMessageService() {
   static interTaskMessageService messageService;
   return messageService;

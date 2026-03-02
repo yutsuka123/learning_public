@@ -1,6 +1,10 @@
 /**
  * @file wifi.cpp
- * @brief Wi-Fi機能のタスクひな形実装。
+ * @brief Wi-Fi機能のタスク実装。
+ * @details
+ * - [重要] mainTaskから受信した資格情報でSTA接続を行い、結果をメッセージで返信する。
+ * - [厳守] 接続再試行時はWi-Fi状態を明示的にリセットしてから再接続する。
+ * - [制限] APモードや静的IP設定は未対応。
  */
 
 #include "../header/wifi.h"
@@ -10,10 +14,13 @@
 #include <WiFi.h>
 
 #include "interTaskMessage.h"
+#include "led.h"
 #include "log.h"
 
 namespace {
+/** @brief wifiTask用スタック領域。PSRAM優先で確保し、失敗時は内部RAMへフォールバックする。 */
 StackType_t* wifiTaskStackBuffer = nullptr;
+/** @brief wifiTask用の静的タスク制御ブロック。 */
 StaticTask_t wifiTaskControlBlock;
 
 /**
@@ -87,9 +94,11 @@ bool connectToWifiRouter(const char* wifiSsid, const char* wifiPass) {
 
     wl_status_t previousStatus = WL_IDLE_STATUS;
     for (int32_t pollIndex = 0; pollIndex < pollCountPerAttempt; ++pollIndex) {
+      ledController::indicateWifiConnecting();
       wl_status_t currentStatus = WiFi.status();
       finalStatus = currentStatus;
       if (currentStatus == WL_CONNECTED) {
+        ledController::indicateWifiConnected();
         appLogInfo("connectToWifiRouter success. attempt=%ld ip=%s rssi=%d",
                    static_cast<long>(displayAttempt),
                    WiFi.localIP().toString().c_str(),
@@ -134,10 +143,15 @@ bool connectToWifiRouter(const char* wifiSsid, const char* wifiPass) {
   appLogError("connectToWifiRouter failed after retries. finalStatus=%d statusText=%s",
               static_cast<int>(finalStatus),
               wifiStatusToText(finalStatus));
+  ledController::indicateErrorPattern();
   return false;
 }
 }
 
+/**
+ * @brief Wi-Fiタスクを生成し、受信用キューを登録する。
+ * @return 生成成功時true、失敗時false。
+ */
 bool wifiTask::startTask() {
   interTaskMessageService& messageService = getInterTaskMessageService();
   messageService.registerTaskQueue(appTaskId::kWifi, 8);
@@ -173,11 +187,21 @@ bool wifiTask::startTask() {
   return true;
 }
 
+/**
+ * @brief FreeRTOSタスクエントリ。
+ * @param taskParameter thisポインタ。
+ */
 void wifiTask::taskEntry(void* taskParameter) {
   wifiTask* self = static_cast<wifiTask*>(taskParameter);
   self->runLoop();
 }
 
+/**
+ * @brief Wi-Fiタスクの常駐ループ。
+ * @details
+ * - 起動要求受信時: startup ackを返信。
+ * - Wi-Fi初期化要求受信時: 接続実行後、成功/失敗をmainTaskへ返信。
+ */
 void wifiTask::runLoop() {
   interTaskMessageService& messageService = getInterTaskMessageService();
   appLogInfo("wifiTask loop started. (skeleton)");
