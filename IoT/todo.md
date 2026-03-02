@@ -21,6 +21,9 @@
 - [ ] サーバ側で `K_device = HMAC-SHA256(K_master_user, base_mac)` 導出処理を実装する。
 - [ ] `public_id` 生成処理（base_mac直接公開禁止）をESP/サーバ双方で統一する。
 - [ ] MQTTトピックを `device/<public_id>/wifi/update` / `confirm` へ統一する。
+- [ ] 機密設定（Wi-Fi/MQTT認証情報）の保存先を `sensitiveData.json` から NVS へ移行する（平文ファイル運用を廃止）。
+- [ ] MQTT接続設定を最終運用値へ移行する（TLS有効 + 8883 + ID/Password必須 + allow_anonymous無効）。
+- [ ] ブローカ運用ネットワークを IoT専用LAN（Private）へ分離し、FirewallのRemoteAddressをサブネット限定する。
 - [ ] AP復旧モード（WPA2/固有パスワード/Web UI）を実装する。
 - [ ] Wi-Fi誤設定試験（自動ロールバック）を試験仕様書へ追加する。
 - [ ] K_master_user保管手順（Git非保存、秘密管理機構利用）を運用文書へ追加する。
@@ -42,3 +45,4 @@
 - 2026-02-24: Wi-Fi設定更新設計（AES-GCM、K_master_user導出、public_id、ロールバック/AP復旧）タスクを追加。
 - 2026-02-24: 鍵管理/初期セットアップ（K_master_user、ペアリング、バックアップ、サポート方針）タスクを追加。
 - 2026-02-24: 鍵管理初期セットアップ実装たたき台の実行タスクを追加。
+- 2026-03-02: MQTT接続検証結果に基づき、NVS移行・TLS最終化・Privateネットワーク分離タスクを追加。

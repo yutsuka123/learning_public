@@ -8,7 +8,7 @@
  * - [将来対応] 暗号化保存やNVS移行は別タスクで対応する。
  */
 
-#include "sensitiveData.h"
+#include "sensitiveDataService.h"
 
 #include <FS.h>
 #include <LittleFS.h>

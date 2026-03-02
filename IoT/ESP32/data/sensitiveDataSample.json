@@ -1,0 +1,18 @@
+{
+  "_importantNotice": {
+    "canonicalFile": "sensitiveData.json",
+    "gitPolicy": "[厳守] sensitiveData.json は正ファイルのため Git 管理禁止",
+    "reason": "実運用のSSID/パスワード/MQTT接続情報など機密情報が含まれるため"
+  },
+  "wifi": {
+    "wifiSSID": "DUMMY_WIFI_SSID",
+    "wifiPass": "DUMMY_WIFI_PASSWORD"
+  },
+  "mqtt": {
+    "mqttUrl": "127.0.0.1",
+    "mqttUser": "DUMMY_USER",
+    "mqttPass": "DUMMY_PASSWORD",
+    "mqttPort": 8883,
+    "mqttTls": false
+  }
+}

@@ -25,7 +25,12 @@ bool httpTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (httpTaskStackBuffer == nullptr) {
-    appLogError("httpTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("httpTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    httpTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (httpTaskStackBuffer == nullptr) {
+    appLogError("httpTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 

@@ -21,13 +21,14 @@
 #include "mqtt.h"
 #include "ota.h"
 #include "sensitiveData.h"
+#include "sensitiveDataService.h"
 #include "tcpip.h"
 #include "../header/wifi.h"
 
 namespace {
 
 constexpr uint32_t serialBaudRate = 115200;
-constexpr uint32_t mainTaskStackSize = 4096;
+constexpr uint32_t mainTaskStackSize = 8192;
 constexpr UBaseType_t mainTaskPriority = 1;
 constexpr uint32_t mainTaskIntervalMs = 1000;
 
@@ -103,6 +104,13 @@ bool waitForExpectedMessage(appTaskId expectedSourceTaskId,
                static_cast<int>(currentMessage.sourceTaskId),
                static_cast<int>(currentMessage.messageType),
                currentMessage.text);
+
+    if (currentMessage.sourceTaskId == expectedSourceTaskId && currentMessage.messageType == appMessageType::kTaskError) {
+      appLogError("waitForExpectedMessage task error. source=%d detail=%s",
+                  static_cast<int>(currentMessage.sourceTaskId),
+                  currentMessage.text);
+      return false;
+    }
 
     if (currentMessage.sourceTaskId == expectedSourceTaskId && currentMessage.messageType == expectedMessageType) {
       *receivedMessageOut = currentMessage;
@@ -244,6 +252,18 @@ void mainTaskEntry(void* taskParameter) {
     mqttTls = false;
   }
 
+#if defined(SENSITIVE_DATA_USE_HEADER_VALUES) && (SENSITIVE_DATA_USE_HEADER_VALUES == 1)
+  // [重要] 開発初期はヘッダー機密値を優先して即時反映する。
+  wifiSsid = SENSITIVE_WIFI_SSID;
+  wifiPass = SENSITIVE_WIFI_PASS;
+  mqttUrl = SENSITIVE_MQTT_URL;
+  mqttUser = SENSITIVE_MQTT_USER;
+  mqttPass = SENSITIVE_MQTT_PASS;
+  mqttPort = static_cast<int32_t>(SENSITIVE_MQTT_PORT);
+  mqttTls = (SENSITIVE_MQTT_TLS != 0);
+  appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden.");
+#endif
+
   appLogInfo("mainTaskEntry: wifi loaded. ssid=%s, pass=%s",
              wifiSsid.c_str(),
              maskSecretForLog(wifiPass).c_str());
@@ -284,7 +304,7 @@ void mainTaskEntry(void* taskParameter) {
   // [重要] wifiTaskからの初期化完了メッセージを待つ。
   appTaskMessage wifiInitResponseMessage{};
   bool wifiInitWaitResult = waitForExpectedMessage(
-      appTaskId::kWifi, appMessageType::kWifiInitDone, 20000, &wifiInitResponseMessage);
+      appTaskId::kWifi, appMessageType::kWifiInitDone, 35000, &wifiInitResponseMessage);
   if (!wifiInitWaitResult) {
     appLogFatal("mainTaskEntry failed. waitForExpectedMessage(kWifiInitDone) timeout.");
     vTaskDelete(nullptr);
@@ -352,6 +372,13 @@ void setup() {
   Serial.begin(serialBaudRate);
   delay(200);
   initializeLogLevel();
+
+  bool isPsramFound = psramFound();
+  appLogInfo("setup: psramFound=%d totalPsram=%u freePsram=%u freeHeap=%u",
+             static_cast<int>(isPsramFound),
+             static_cast<unsigned>(ESP.getPsramSize()),
+             static_cast<unsigned>(ESP.getFreePsram()),
+             static_cast<unsigned>(ESP.getFreeHeap()));
 
   certificationModule.initialize();
   filesystemModule.initialize();

@@ -7,13 +7,158 @@
 
 #include <esp_heap_caps.h>
 #include <string.h>
+#include <WiFi.h>
+#include <PubSubClient.h>
 
+#include "common.h"
 #include "interTaskMessage.h"
 #include "log.h"
 
 namespace {
 StackType_t* mqttTaskStackBuffer = nullptr;
 StaticTask_t mqttTaskControlBlock;
+WiFiClient mqttNetworkClient;
+PubSubClient mqttClient(mqttNetworkClient);
+
+char mqttHost[64] = {0};
+char mqttUser[64] = {0};
+char mqttPass[64] = {0};
+int32_t mqttPort = 1883;
+bool mqttTls = false;
+bool isMqttInitialized = false;
+
+/**
+ * @brief MQTTブローカーへICMP ping確認する。
+ * @param brokerHost ブローカーのホスト名またはIP。
+ * @return ping応答ありでtrue、失敗時false。
+ */
+bool pingBrokerHost(const char* brokerHost) {
+  if (brokerHost == nullptr || strlen(brokerHost) == 0) {
+    appLogError("pingBrokerHost failed. brokerHost is null or empty.");
+    return false;
+  }
+
+  IPAddress brokerIpAddress;
+  bool resolveResult = WiFi.hostByName(brokerHost, brokerIpAddress);
+  if (!resolveResult) {
+    appLogError("pingBrokerHost failed. hostByName failed. brokerHost=%s", brokerHost);
+    return false;
+  }
+  appLogInfo("pingBrokerHost start. brokerHost=%s resolvedIp=%s",
+             brokerHost,
+             brokerIpAddress.toString().c_str());
+
+  // [重要] Arduino-ESP32 2.0.17ではICMP APIの利用が難しいため、TCP到達確認をping代替とする。
+  WiFiClient probeClient;
+  bool probeResult = probeClient.connect(brokerHost, static_cast<uint16_t>(mqttPort));
+  if (!probeResult) {
+    appLogError("pingBrokerHost failed (tcp-probe). brokerHost=%s brokerPort=%ld", brokerHost, static_cast<long>(mqttPort));
+    return false;
+  }
+
+  appLogInfo("pingBrokerHost success (tcp-probe). brokerHost=%s brokerPort=%ld", brokerHost, static_cast<long>(mqttPort));
+  probeClient.stop();
+  return true;
+}
+
+/**
+ * @brief MQTT接続情報を内部バッファへ保存する。
+ */
+void storeMqttConfig(const appTaskMessage& receivedMessage) {
+  strncpy(mqttHost, receivedMessage.text, sizeof(mqttHost) - 1);
+  mqttHost[sizeof(mqttHost) - 1] = '\0';
+  strncpy(mqttUser, receivedMessage.text2, sizeof(mqttUser) - 1);
+  mqttUser[sizeof(mqttUser) - 1] = '\0';
+  strncpy(mqttPass, receivedMessage.text3, sizeof(mqttPass) - 1);
+  mqttPass[sizeof(mqttPass) - 1] = '\0';
+  mqttPort = receivedMessage.intValue;
+  mqttTls = receivedMessage.boolValue;
+}
+
+/**
+ * @brief MQTTブローカーへ接続する。
+ * @return 接続成功時true、失敗時false。
+ */
+bool connectToMqttBroker() {
+  constexpr int32_t maxRetryCount = 10;
+  constexpr int32_t retryDelayMs = 500;
+
+  if (strlen(mqttHost) == 0) {
+    appLogError("connectToMqttBroker failed. host is empty.");
+    return false;
+  }
+  if (mqttPort <= 0 || mqttPort > 65535) {
+    appLogError("connectToMqttBroker failed. invalid port=%ld", static_cast<long>(mqttPort));
+    return false;
+  }
+  if (mqttTls) {
+    appLogError("connectToMqttBroker failed. mqttTls=true is not implemented yet.");
+    return false;
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    appLogError("connectToMqttBroker failed. wifi is not connected. wifiStatus=%d", static_cast<int>(WiFi.status()));
+    return false;
+  }
+
+  bool pingResult = pingBrokerHost(mqttHost);
+  if (!pingResult) {
+    appLogError("connectToMqttBroker failed. ping to brokerHost=%s did not succeed.", mqttHost);
+    return false;
+  }
+
+  mqttClient.setServer(mqttHost, static_cast<uint16_t>(mqttPort));
+  String clientId = "esp32lab-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  appLogInfo("connectToMqttBroker start. host=%s port=%ld user=%s pass=%s clientId=%s",
+             mqttHost,
+             static_cast<long>(mqttPort),
+             (strlen(mqttUser) > 0 ? mqttUser : "(empty)"),
+             (strlen(mqttPass) > 0 ? "******" : "(empty)"),
+             clientId.c_str());
+
+  for (int32_t retryIndex = 0; retryIndex < maxRetryCount; ++retryIndex) {
+    bool connectResult = false;
+    if (strlen(mqttUser) > 0 || strlen(mqttPass) > 0) {
+      connectResult = mqttClient.connect(clientId.c_str(), mqttUser, mqttPass);
+    } else {
+      connectResult = mqttClient.connect(clientId.c_str());
+    }
+
+    if (connectResult) {
+      appLogInfo("connectToMqttBroker success. state=%d", mqttClient.state());
+      return true;
+    }
+
+    appLogWarn("connectToMqttBroker retry. retry=%ld state=%d", static_cast<long>(retryIndex + 1), mqttClient.state());
+    vTaskDelay(pdMS_TO_TICKS(retryDelayMs));
+  }
+
+  appLogError("connectToMqttBroker failed. state=%d", mqttClient.state());
+  return false;
+}
+
+/**
+ * @brief MQTTへonlineステータスを初回publishする。
+ * @return publish成功時true、失敗時false。
+ */
+bool publishOnlineStatus() {
+  if (!mqttClient.connected()) {
+    appLogError("publishOnlineStatus failed. mqtt is not connected.");
+    return false;
+  }
+
+  char topicBuffer[96];
+  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s", iotCommon::mqtt::kTopicPrefixNotice, "status");
+  const char* payload = "{\"status\":\"online\"}";
+  bool publishResult = mqttClient.publish(topicBuffer, payload, true);
+  if (!publishResult) {
+    appLogError("publishOnlineStatus failed. topic=%s", topicBuffer);
+    return false;
+  }
+
+  mqttClient.loop();
+  appLogInfo("publishOnlineStatus success. topic=%s payload=%s", topicBuffer, payload);
+  return true;
+}
 }
 
 bool mqttTask::startTask() {
@@ -25,7 +170,12 @@ bool mqttTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (mqttTaskStackBuffer == nullptr) {
-    appLogError("mqttTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("mqttTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    mqttTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (mqttTaskStackBuffer == nullptr) {
+    appLogError("mqttTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 
@@ -75,37 +225,44 @@ void mqttTask::runLoop() {
                  static_cast<long>(receivedMessage.intValue),
                  static_cast<int>(receivedMessage.boolValue));
 
-      // TODO: ここで receivedMessage の接続情報を使ってMQTT初期化処理を実装する。
+      storeMqttConfig(receivedMessage);
+      bool initResult = connectToMqttBroker();
+      isMqttInitialized = initResult;
+
       appTaskMessage doneMessage{};
       doneMessage.sourceTaskId = appTaskId::kMqtt;
       doneMessage.destinationTaskId = appTaskId::kMain;
-      doneMessage.messageType = appMessageType::kMqttInitDone;
-      doneMessage.intValue = 1;
-      strncpy(doneMessage.text, "mqtt init done", sizeof(doneMessage.text) - 1);
+      doneMessage.messageType = initResult ? appMessageType::kMqttInitDone : appMessageType::kTaskError;
+      doneMessage.intValue = initResult ? 1 : 0;
+      strncpy(doneMessage.text, initResult ? "mqtt init done" : "mqtt init failed", sizeof(doneMessage.text) - 1);
       doneMessage.text[sizeof(doneMessage.text) - 1] = '\0';
       bool sendResult = messageService.sendMessage(doneMessage, pdMS_TO_TICKS(200));
       if (!sendResult) {
-        appLogError("mqttTask: failed to send kMqttInitDone.");
+        appLogError("mqttTask: failed to send mqtt init response.");
       } else {
-        appLogInfo("mqttTask: sent kMqttInitDone.");
+        appLogInfo("mqttTask: mqtt init response sent. type=%d detail=%s",
+                   static_cast<int>(doneMessage.messageType),
+                   doneMessage.text);
       }
     }
     if (receiveResult && receivedMessage.messageType == appMessageType::kMqttPublishOnlineRequest) {
       appLogInfo("mqttTask: publish online request received. message=%s", receivedMessage.text);
 
-      // TODO: ここでstatus/onlineをMQTT Brokerへpublishする実処理を実装する。
+      bool publishResult = isMqttInitialized && publishOnlineStatus();
       appTaskMessage doneMessage{};
       doneMessage.sourceTaskId = appTaskId::kMqtt;
       doneMessage.destinationTaskId = appTaskId::kMain;
-      doneMessage.messageType = appMessageType::kMqttPublishOnlineDone;
-      doneMessage.intValue = 1;
-      strncpy(doneMessage.text, "mqtt online publish done", sizeof(doneMessage.text) - 1);
+      doneMessage.messageType = publishResult ? appMessageType::kMqttPublishOnlineDone : appMessageType::kTaskError;
+      doneMessage.intValue = publishResult ? 1 : 0;
+      strncpy(doneMessage.text, publishResult ? "mqtt online publish done" : "mqtt online publish failed", sizeof(doneMessage.text) - 1);
       doneMessage.text[sizeof(doneMessage.text) - 1] = '\0';
       bool sendResult = messageService.sendMessage(doneMessage, pdMS_TO_TICKS(200));
       if (!sendResult) {
-        appLogError("mqttTask: failed to send kMqttPublishOnlineDone.");
+        appLogError("mqttTask: failed to send mqtt publish response.");
       } else {
-        appLogInfo("mqttTask: sent kMqttPublishOnlineDone.");
+        appLogInfo("mqttTask: mqtt publish response sent. type=%d detail=%s",
+                   static_cast<int>(doneMessage.messageType),
+                   doneMessage.text);
       }
     }
 

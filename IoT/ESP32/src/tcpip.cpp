@@ -25,7 +25,12 @@ bool tcpipTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (tcpipTaskStackBuffer == nullptr) {
-    appLogError("tcpipTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("tcpipTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    tcpipTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (tcpipTaskStackBuffer == nullptr) {
+    appLogError("tcpipTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 
