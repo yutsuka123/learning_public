@@ -55,26 +55,108 @@ namespace mqtt {
 
     /** @brief JSONフィールドキー定義 */
     namespace jsonKey {
-        constexpr const char* kVersion = "v";
-        constexpr const char* kDeviceId = "deviceId";
-        constexpr const char* kMacAddr = "macAddr";
-        constexpr const char* kId = "id";
-        constexpr const char* kTimestamp = "ts";
-        constexpr const char* kOperation = "op";
-        constexpr const char* kArgs = "args";
-        constexpr const char* kResult = "result";
-        constexpr const char* kDetail = "detail";
-        
-        // Network Config Keys
-        constexpr const char* kWifiSsid = "wifiSSID";
-        constexpr const char* kWifiPass = "wifiPass";
-        constexpr const char* kMqttUrl = "mqttUrl";
-        constexpr const char* kMqttUser = "mqttUser";
-        constexpr const char* kMqttPass = "mqttPass";
-        constexpr const char* kMqttTls = "mqttTls";
-        constexpr const char* kMqttPort = "mqttPort";
-        constexpr const char* kApply = "apply";
-        constexpr const char* kReboot = "reboot";
+        /** @brief [推奨] すべてのコマンドで共通利用するエンベロープキー。 */
+        namespace common {
+            constexpr const char* kVersion = "v";
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kMacAddr = "macAddr";
+            constexpr const char* kId = "id";
+            constexpr const char* kTimestamp = "ts";
+            constexpr const char* kOperation = "op";
+            constexpr const char* kArgs = "args";
+            constexpr const char* kResult = "result";
+            constexpr const char* kDetail = "detail";
+        }
+
+        /** @brief [推奨] networkコマンド専用キー。 */
+        namespace network {
+            constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kWifiSsid = "wifiSSID";
+            constexpr const char* kWifiPass = "wifiPass";
+            constexpr const char* kMqttUrl = "mqttUrl";
+            constexpr const char* kMqttUser = "mqttUser";
+            constexpr const char* kMqttPass = "mqttPass";
+            constexpr const char* kMqttTls = "mqttTls";
+            constexpr const char* kMqttPort = "mqttPort";
+            constexpr const char* kApply = "apply";
+            constexpr const char* kReboot = "reboot";
+        }
+
+        /** @brief setコマンド専用キー。 */
+        namespace set {
+            constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kMacAddr = "macAddr";
+            constexpr const char* kId = "id";
+            constexpr const char* kTimestamp = "ts";
+            constexpr const char* kCommand = "set";
+            constexpr const char* kSub = "sub";
+            constexpr const char* kArgs = "args";
+            constexpr const char* kDetail = "detail";
+        }
+        /** @brief getコマンド専用キー。 */
+        namespace get {
+            constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kMacAddr = "macAddr";
+            constexpr const char* kId = "id";
+            constexpr const char* kTimestamp = "ts";
+            constexpr const char* kCommand = "get";
+            constexpr const char* kSub = "sub";
+            constexpr const char* kArgs = "args";
+            constexpr const char* kDetail = "detail";
+        }
+        /** @brief callコマンド専用キー。 */
+        namespace call {
+            constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kMacAddr = "macAddr";
+            constexpr const char* kId = "id";
+            constexpr const char* kTimestamp = "ts";
+            constexpr const char* kCommand = "call";
+            constexpr const char* kSub = "sub";
+            constexpr const char* kArgs = "args";
+            constexpr const char* kDetail = "detail";
+        }
+        /** @brief statusコマンド専用キー。 */
+        namespace status {
+            constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kMacAddr = "macAddr";
+            constexpr const char* kId = "id";
+            constexpr const char* kTimestamp = "ts";
+            constexpr const char* kCommand = "status";
+            constexpr const char* kSub = "sub";
+            constexpr const char* kOnline = "offline";
+            constexpr const char* kStartUpTime = "startUpTime";
+            constexpr const char* kDeviceTime = "deviceTime";
+            constexpr const char* kFirmwareVersion = "firmwareVersion";
+            constexpr const char* kWifiSignalLevel = "-50";
+            constexpr const char* kArgs = "args";
+            constexpr const char* kDetail = "detail";
+        }
+        /**
+         * @brief [旧仕様] 既存参照互換のためのエイリアス。
+         * @details 移行中は残す。新規実装では common / network を直接参照すること。
+         */
+        constexpr const char* kVersion = common::kVersion;
+        constexpr const char* kDeviceId = common::kDeviceId;
+        constexpr const char* kMacAddr = common::kMacAddr;
+        constexpr const char* kId = common::kId;
+        constexpr const char* kTimestamp = common::kTimestamp;
+        constexpr const char* kOperation = common::kOperation;
+        constexpr const char* kArgs = common::kArgs;
+        constexpr const char* kResult = common::kResult;
+        constexpr const char* kDetail = common::kDetail;
+        constexpr const char* kWifiSsid = network::kWifiSsid;
+        constexpr const char* kWifiPass = network::kWifiPass;
+        constexpr const char* kMqttUrl = network::kMqttUrl;
+        constexpr const char* kMqttUser = network::kMqttUser;
+        constexpr const char* kMqttPass = network::kMqttPass;
+        constexpr const char* kMqttTls = network::kMqttTls;
+        constexpr const char* kMqttPort = network::kMqttPort;
+        constexpr const char* kApply = network::kApply;
+        constexpr const char* kReboot = network::kReboot;
     }
 }
 
@@ -86,7 +168,6 @@ enum class commandType : uint16_t {
   kUnknown = 0,
   kDeviceBootNotify = 1001,
   kLedSet = 1002,
-  kNetworkSet = 1003,
   kNetworkSet = 1003,
   kWifiConfigUpdate = 1101,
   kWifiConfigConfirm = 1102,

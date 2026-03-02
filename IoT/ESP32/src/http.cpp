@@ -5,13 +5,41 @@
 
 #include "http.h"
 
+#include <esp_heap_caps.h>
+#include <string.h>
+
+#include "interTaskMessage.h"
 #include "log.h"
 
+namespace {
+StackType_t* httpTaskStackBuffer = nullptr;
+StaticTask_t httpTaskControlBlock;
+}
+
 bool httpTask::startTask() {
-  BaseType_t createTaskResult = xTaskCreatePinnedToCore(
-      taskEntry, "httpTask", taskStackSize, this, taskPriority, nullptr, tskNO_AFFINITY);
-  if (createTaskResult != pdPASS) {
-    appLogError("httpTask creation failed.");
+  interTaskMessageService& messageService = getInterTaskMessageService();
+  messageService.registerTaskQueue(appTaskId::kHttp, 8);
+
+  if (httpTaskStackBuffer == nullptr) {
+    httpTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  }
+  if (httpTaskStackBuffer == nullptr) {
+    appLogError("httpTask creation failed. heap_caps_malloc stack failed.");
+    return false;
+  }
+
+  TaskHandle_t createdTaskHandle = xTaskCreateStaticPinnedToCore(
+      taskEntry,
+      "httpTask",
+      taskStackSize,
+      this,
+      taskPriority,
+      httpTaskStackBuffer,
+      &httpTaskControlBlock,
+      tskNO_AFFINITY);
+  if (createdTaskHandle == nullptr) {
+    appLogError("httpTask creation failed. xTaskCreateStaticPinnedToCore returned null.");
     return false;
   }
   appLogInfo("httpTask created.");
@@ -24,8 +52,22 @@ void httpTask::taskEntry(void* taskParameter) {
 }
 
 void httpTask::runLoop() {
+  interTaskMessageService& messageService = getInterTaskMessageService();
   appLogInfo("httpTask loop started. (skeleton)");
   for (;;) {
+    appTaskMessage receivedMessage{};
+    bool receiveResult = messageService.receiveMessage(appTaskId::kHttp, &receivedMessage, pdMS_TO_TICKS(50));
+    if (receiveResult && receivedMessage.messageType == appMessageType::kStartupRequest) {
+      appTaskMessage responseMessage{};
+      responseMessage.sourceTaskId = appTaskId::kHttp;
+      responseMessage.destinationTaskId = appTaskId::kMain;
+      responseMessage.messageType = appMessageType::kStartupAck;
+      responseMessage.intValue = 1;
+      strncpy(responseMessage.text, "httpTask startup ack", sizeof(responseMessage.text) - 1);
+      responseMessage.text[sizeof(responseMessage.text) - 1] = '\0';
+      messageService.sendMessage(responseMessage, pdMS_TO_TICKS(100));
+    }
+
     // TODO: HTTP/HTTPSクライアント・サーバ処理を実装する。
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
