@@ -25,7 +25,12 @@ bool inputTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (inputTaskStackBuffer == nullptr) {
-    appLogError("inputTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("inputTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    inputTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (inputTaskStackBuffer == nullptr) {
+    appLogError("inputTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 

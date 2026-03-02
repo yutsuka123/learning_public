@@ -25,7 +25,12 @@ bool ledTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (ledTaskStackBuffer == nullptr) {
-    appLogError("ledTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("ledTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    ledTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (ledTaskStackBuffer == nullptr) {
+    appLogError("ledTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 

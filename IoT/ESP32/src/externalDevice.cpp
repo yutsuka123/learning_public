@@ -25,7 +25,12 @@ bool externalDeviceTask::startTask() {
         heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
   }
   if (externalDeviceTaskStackBuffer == nullptr) {
-    appLogError("externalDeviceTask creation failed. heap_caps_malloc stack failed.");
+    appLogWarn("externalDeviceTask: PSRAM stack allocation failed. fallback to internal RAM.");
+    externalDeviceTaskStackBuffer = static_cast<StackType_t*>(
+        heap_caps_malloc(taskStackSize * sizeof(StackType_t), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  }
+  if (externalDeviceTaskStackBuffer == nullptr) {
+    appLogError("externalDeviceTask creation failed. heap_caps_malloc stack failed. caps=SPIRAM|INTERNAL");
     return false;
   }
 
