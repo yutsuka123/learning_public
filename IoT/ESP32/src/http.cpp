@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "interTaskMessage.h"
+#include "led.h"
 #include "log.h"
 
 namespace {
@@ -71,6 +72,10 @@ void httpTask::runLoop() {
       strncpy(responseMessage.text, "httpTask startup ack", sizeof(responseMessage.text) - 1);
       responseMessage.text[sizeof(responseMessage.text) - 1] = '\0';
       messageService.sendMessage(responseMessage, pdMS_TO_TICKS(100));
+    }
+    if (receiveResult && receivedMessage.messageType != appMessageType::kStartupRequest) {
+      // [将来対応] HTTP通信の実処理に入るタイミングで通信アクティビティ表示を行う。
+      ledController::indicateCommunicationActivity();
     }
 
     // TODO: HTTP/HTTPSクライアント・サーバ処理を実装する。

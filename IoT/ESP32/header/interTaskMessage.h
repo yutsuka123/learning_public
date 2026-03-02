@@ -51,15 +51,25 @@ enum class appMessageType : uint8_t {
  * @brief タスク間で送受信するメッセージ構造体。
  */
 struct appTaskMessage {
+  /** @brief 送信元タスクID。@type appTaskId */
   appTaskId sourceTaskId;
+  /** @brief 宛先タスクID。@type appTaskId */
   appTaskId destinationTaskId;
+  /** @brief メッセージ種別。@type appMessageType */
   appMessageType messageType;
+  /** @brief 汎用整数パラメータ1。@type int32_t */
   int32_t intValue;
+  /** @brief 汎用整数パラメータ2。@type int32_t */
   int32_t intValue2;
+  /** @brief 汎用真偽値パラメータ。@type bool */
   bool boolValue;
+  /** @brief 汎用テキストパラメータ1。@type char[48] */
   char text[48];
+  /** @brief 汎用テキストパラメータ2。@type char[64] */
   char text2[64];
+  /** @brief 汎用テキストパラメータ3。@type char[64] */
   char text3[64];
+  /** @brief 汎用テキストパラメータ4。@type char[64] */
   char text4[64];
 };
 
