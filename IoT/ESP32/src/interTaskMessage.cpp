@@ -13,7 +13,7 @@
 namespace {
 
 /** @brief 管理対象タスクスロット数。appTaskIdの最大値+1で管理する。@type uint8_t */
-constexpr uint8_t taskSlotCount = 11;
+constexpr uint8_t taskSlotCount = appDefine::kTaskSlotCount;
 /** @brief タスクIDを添字として保持するQueueテーブル。 */
 QueueHandle_t taskQueueTable[taskSlotCount] = {nullptr};
 /** @brief サービス初期化済みフラグ。 */

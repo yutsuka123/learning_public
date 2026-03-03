@@ -16,6 +16,7 @@
 
 #include "common.h"
 #include "interTaskMessage.h"
+#include "mqttMessages.h"
 #include "led.h"
 #include "log.h"
 
@@ -41,6 +42,68 @@ int32_t mqttPort = 1883;
 bool mqttTls = false;
 /** @brief MQTT初期化が成功済みかどうか。 */
 bool isMqttInitialized = false;
+/** @brief status online状態値。 */
+constexpr const char* statusValueOnline = "Online";
+
+/**
+ * @brief online通知トピックを生成する。
+ * @param topicTextOut 生成先（null不可）。
+ * @return 成功時true、失敗時false。
+ */
+bool createStatusTopic(String* topicTextOut) {
+  if (topicTextOut == nullptr) {
+    appLogError("createStatusTopic failed. topicTextOut is null.");
+    return false;
+  }
+
+  char topicBuffer[96];
+  int writtenLength = snprintf(topicBuffer,
+                               sizeof(topicBuffer),
+                               "%s%s",
+                               iotCommon::mqtt::kTopicPrefixNotice,
+                               iotCommon::mqtt::jsonKey::status::kCommand);
+  if (writtenLength <= 0 || writtenLength >= static_cast<int>(sizeof(topicBuffer))) {
+    appLogError("createStatusTopic failed. snprintf overflow. writtenLength=%ld",
+                static_cast<long>(writtenLength));
+    return false;
+  }
+  *topicTextOut = String(topicBuffer);
+  return true;
+}
+
+/**
+ * @brief サーバーから受信したMQTTペイロードを解析してログ出力する。
+ * @param topicName 受信トピック。
+ * @param payloadBuffer 受信ペイロード。
+ * @param payloadLength ペイロード長。
+ */
+void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int payloadLength) {
+  if (payloadBuffer == nullptr) {
+    appLogError("onMqttMessageReceived failed. payloadBuffer is null.");
+    return;
+  }
+  String payloadText;
+  payloadText.reserve(payloadLength + 1);
+  for (unsigned int index = 0; index < payloadLength; ++index) {
+    payloadText += static_cast<char>(payloadBuffer[index]);
+  }
+
+  mqtt::mqttIncomingMessage parsedMessage{};
+  bool parseResult = mqtt::parseMqttIncomingMessage(topicName, payloadText.c_str(), &parsedMessage);
+  if (!parseResult) {
+    appLogWarn("onMqttMessageReceived: parse failed. topic=%s payload=%s",
+               (topicName == nullptr ? "(null)" : topicName),
+               payloadText.c_str());
+    return;
+  }
+  appLogInfo("onMqttMessageReceived: parsed. type=%d command=%s sub=%s requestId=%s replyId=%s noticeId=%s",
+             static_cast<int>(parsedMessage.messageType),
+             parsedMessage.commandName.c_str(),
+             parsedMessage.subName.c_str(),
+             parsedMessage.requestId.c_str(),
+             parsedMessage.replyId.c_str(),
+             parsedMessage.noticeId.c_str());
+}
 
 /**
  * @brief MQTTブローカーへの到達確認を実施する。
@@ -127,7 +190,28 @@ bool connectToMqttBroker() {
   }
 
   mqttClient.setServer(mqttHost, static_cast<uint16_t>(mqttPort));
+  mqttClient.setCallback(onMqttMessageReceived);
+  bool bufferSizeResult = mqttClient.setBufferSize(1024);
+  if (!bufferSizeResult) {
+    appLogError("connectToMqttBroker failed. mqttClient.setBufferSize(1024) failed.");
+    return false;
+  }
   String clientId = "esp32lab-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  String willTopicText;
+  bool willTopicResult = createStatusTopic(&willTopicText);
+  if (!willTopicResult) {
+    appLogError("connectToMqttBroker failed. createStatusTopic for will failed.");
+    return false;
+  }
+  String willPayloadText;
+  bool willPayloadResult = mqtt::buildMqttStatusPayload("", statusValueOnline, &willPayloadText);
+  if (!willPayloadResult) {
+    appLogError("connectToMqttBroker failed. mqtt::buildMqttStatusPayload for will failed.");
+    return false;
+  }
+  appLogInfo("connectToMqttBroker: will payload prepared. topicLength=%ld payloadLength=%ld",
+             static_cast<long>(willTopicText.length()),
+             static_cast<long>(willPayloadText.length()));
   appLogInfo("connectToMqttBroker start. host=%s port=%ld user=%s pass=%s clientId=%s",
              mqttHost,
              static_cast<long>(mqttPort),
@@ -140,12 +224,28 @@ bool connectToMqttBroker() {
     ledController::indicateCommunicationActivity();
     bool connectResult = false;
     if (strlen(mqttUser) > 0 || strlen(mqttPass) > 0) {
-      connectResult = mqttClient.connect(clientId.c_str(), mqttUser, mqttPass);
+      connectResult = mqttClient.connect(clientId.c_str(),
+                                         mqttUser,
+                                         mqttPass,
+                                         willTopicText.c_str(),
+                                         1,
+                                         true,
+                                         willPayloadText.c_str());
     } else {
-      connectResult = mqttClient.connect(clientId.c_str());
+      connectResult = mqttClient.connect(clientId.c_str(),
+                                         nullptr,
+                                         nullptr,
+                                         willTopicText.c_str(),
+                                         1,
+                                         true,
+                                         willPayloadText.c_str());
     }
 
     if (connectResult) {
+      bool subscribeResult = mqttClient.subscribe("cmd/esp32lab/#", 1);
+      if (!subscribeResult) {
+        appLogWarn("connectToMqttBroker: subscribe failed. topic=cmd/esp32lab/#");
+      }
       ledController::indicateMqttConnected();
       appLogInfo("connectToMqttBroker success. state=%d", mqttClient.state());
       return true;
@@ -170,18 +270,22 @@ bool publishOnlineStatus() {
     return false;
   }
 
-  char topicBuffer[96];
-  snprintf(topicBuffer, sizeof(topicBuffer), "%s%s", iotCommon::mqtt::kTopicPrefixNotice, "status");
-  const char* payload = "{\"status\":\"online\"}";
-  bool publishResult = mqttClient.publish(topicBuffer, payload, true);
+  String topicText;
+  bool topicResult = createStatusTopic(&topicText);
+  if (!topicResult) {
+    appLogError("publishOnlineStatus failed. createStatusTopic failed.");
+    return false;
+  }
+
+  bool publishResult = mqtt::sendMqttStatus(&mqttClient, topicText.c_str(), "", statusValueOnline);
   ledController::indicateCommunicationActivity();
   if (!publishResult) {
-    appLogError("publishOnlineStatus failed. topic=%s", topicBuffer);
+    appLogError("publishOnlineStatus failed. topic=%s", topicText.c_str());
     return false;
   }
 
   mqttClient.loop();
-  appLogInfo("publishOnlineStatus success. topic=%s payload=%s", topicBuffer, payload);
+  appLogInfo("publishOnlineStatus success. topic=%s", topicText.c_str());
   return true;
 }
 }
