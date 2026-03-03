@@ -71,6 +71,11 @@ namespace mqtt {
         /** @brief [推奨] networkコマンド専用キー。 */
         namespace network {
             constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kRequestId = "requestId";
+            constexpr const char* kReplyId = "replyId";
+            constexpr const char* kNoticeId = "noticeId";
+            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
             constexpr const char* kWifiSsid = "wifiSSID";
             constexpr const char* kWifiPass = "wifiPass";
             constexpr const char* kMqttUrl = "mqttUrl";
@@ -85,7 +90,11 @@ namespace mqtt {
         /** @brief setコマンド専用キー。 */
         namespace set {
             constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kRequestId = "requestId";
+            constexpr const char* kReplyId = "replyId";
+            constexpr const char* kNoticeId = "noticeId";
             constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
             constexpr const char* kMacAddr = "macAddr";
             constexpr const char* kId = "id";
             constexpr const char* kTimestamp = "ts";
@@ -97,7 +106,11 @@ namespace mqtt {
         /** @brief getコマンド専用キー。 */
         namespace get {
             constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kRequestId = "requestId";
+            constexpr const char* kReplyId = "replyId";
+            constexpr const char* kNoticeId = "noticeId";
             constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
             constexpr const char* kMacAddr = "macAddr";
             constexpr const char* kId = "id";
             constexpr const char* kTimestamp = "ts";
@@ -109,7 +122,11 @@ namespace mqtt {
         /** @brief callコマンド専用キー。 */
         namespace call {
             constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kRequestId = "requestId";
+            constexpr const char* kReplyId = "replyId";
+            constexpr const char* kNoticeId = "noticeId";
             constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
             constexpr const char* kMacAddr = "macAddr";
             constexpr const char* kId = "id";
             constexpr const char* kTimestamp = "ts";
@@ -121,19 +138,23 @@ namespace mqtt {
         /** @brief statusコマンド専用キー。 */
         namespace status {
             constexpr const char* kVersion = "v"; // 共通キー
+            constexpr const char* kRequestId = "requestId";
+            constexpr const char* kReplyId = "replyId";
+            constexpr const char* kNoticeId = "noticeId";
             constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
             constexpr const char* kMacAddr = "macAddr";
             constexpr const char* kId = "id";
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "status";
             constexpr const char* kSub = "sub";
-            constexpr const char* kOnline = "offline";
+            constexpr const char* kOnlineState = "onlineState";
             constexpr const char* kStartUpTime = "startUpTime";
             constexpr const char* kDeviceTime = "deviceTime";
             constexpr const char* kFirmwareVersion = "firmwareVersion";
-            constexpr const char* kWifiSignalLevel = "-50";
-            constexpr const char* kArgs = "args";
-            constexpr const char* kDetail = "detail";
+            constexpr const char* kWifiSignalLevel = "wifiSignalLevel";
+            constexpr const char* kIpAddress = "ipAddress";
+            constexpr const char* kWifiSsid = "wifiSsid";
         }
         /**
          * @brief [旧仕様] 既存参照互換のためのエイリアス。

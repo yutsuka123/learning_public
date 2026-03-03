@@ -12,40 +12,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <stdint.h>
-
-/**
- * @brief タスク識別子。
- */
-enum class appTaskId : uint8_t {
-  kUnknown = 0,
-  kMain = 1,
-  kWifi = 2,
-  kMqtt = 3,
-  kHttp = 4,
-  kTcpip = 5,
-  kOta = 6,
-  kExternalDevice = 7,
-  kDisplay = 8,
-  kLed = 9,
-  kInput = 10,
-};
-
-/**
- * @brief メッセージ種別。
- */
-enum class appMessageType : uint8_t {
-  kUnknown = 0,
-  kStartupRequest = 1,
-  kStartupAck = 2,
-  kHeartbeat = 3,
-  kWifiInitRequest = 10,
-  kWifiInitDone = 11,
-  kMqttInitRequest = 20,
-  kMqttInitDone = 21,
-  kMqttPublishOnlineRequest = 22,
-  kMqttPublishOnlineDone = 23,
-  kTaskError = 255,
-};
+#include "define.h"
 
 /**
  * @brief タスク間で送受信するメッセージ構造体。

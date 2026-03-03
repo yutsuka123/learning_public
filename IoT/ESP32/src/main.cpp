@@ -8,7 +8,6 @@
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
-#include <string.h>
 
 #include "certification.h"
 #include "display.h"
@@ -25,6 +24,7 @@
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
 #include "tcpip.h"
+#include "util.h"
 #include "../header/wifi.h"
 
 namespace {
@@ -89,165 +89,6 @@ sensitiveDataService sensitiveDataModule;
 interTaskMessageService& messageService = getInterTaskMessageService();
 
 String maskSecretForLog(const String& rawValue);
-/**
- * @brief 指定タスクへ起動要求メッセージを送信する。
- * @param destinationTaskId 宛先タスクID。
- * @param destinationName ログ表示用の宛先名。
- * @return 送信成功時true、失敗時false。
- */
-bool sendStartupRequest(appTaskId destinationTaskId, const char* destinationName) {
-  appTaskMessage startupRequestMessage{};
-  startupRequestMessage.sourceTaskId = appTaskId::kMain;
-  startupRequestMessage.destinationTaskId = destinationTaskId;
-  startupRequestMessage.messageType = appMessageType::kStartupRequest;
-  startupRequestMessage.intValue = 1;
-  strncpy(startupRequestMessage.text, "startup request from main", sizeof(startupRequestMessage.text) - 1);
-  startupRequestMessage.text[sizeof(startupRequestMessage.text) - 1] = '\0';
-
-  bool sendResult = messageService.sendMessage(startupRequestMessage, pdMS_TO_TICKS(200));
-  if (!sendResult) {
-    appLogWarn("mainTaskEntry: startup request send failed. destination=%s", destinationName);
-    return false;
-  }
-
-  appLogInfo("mainTaskEntry: startup request sent. destination=%s", destinationName);
-  return true;
-}
-
-/**
- * @brief 宛先タスクから指定メッセージを待機する。
- * @param expectedSourceTaskId 期待する送信元タスクID。
- * @param expectedMessageType 期待するメッセージ種別。
- * @param timeoutMs 待機タイムアウト(ms)。
- * @param receivedMessageOut 受信メッセージ出力先（null不可）。
- * @return 期待メッセージ受信時true、タイムアウトまたは不一致継続でfalse。
- */
-bool waitForExpectedMessage(appTaskId expectedSourceTaskId,
-                            appMessageType expectedMessageType,
-                            uint32_t timeoutMs,
-                            appTaskMessage* receivedMessageOut) {
-  if (receivedMessageOut == nullptr) {
-    appLogError("waitForExpectedMessage failed. receivedMessageOut is null.");
-    return false;
-  }
-
-  TickType_t startTick = xTaskGetTickCount();
-  TickType_t timeoutTick = pdMS_TO_TICKS(timeoutMs);
-
-  while ((xTaskGetTickCount() - startTick) < timeoutTick) {
-    appTaskMessage currentMessage{};
-    bool receiveResult = messageService.receiveMessage(appTaskId::kMain, &currentMessage, pdMS_TO_TICKS(100));
-    if (!receiveResult) {
-      continue;
-    }
-
-    appLogInfo("waitForExpectedMessage: received src=%d type=%d text=%s",
-               static_cast<int>(currentMessage.sourceTaskId),
-               static_cast<int>(currentMessage.messageType),
-               currentMessage.text);
-
-    if (currentMessage.sourceTaskId == expectedSourceTaskId && currentMessage.messageType == appMessageType::kTaskError) {
-      appLogError("waitForExpectedMessage task error. source=%d detail=%s",
-                  static_cast<int>(currentMessage.sourceTaskId),
-                  currentMessage.text);
-      return false;
-    }
-
-    if (currentMessage.sourceTaskId == expectedSourceTaskId && currentMessage.messageType == expectedMessageType) {
-      *receivedMessageOut = currentMessage;
-      return true;
-    }
-  }
-
-  appLogError("waitForExpectedMessage timeout. expectedSource=%d expectedType=%d timeoutMs=%lu",
-              static_cast<int>(expectedSourceTaskId),
-              static_cast<int>(expectedMessageType),
-              static_cast<unsigned long>(timeoutMs));
-  return false;
-}
-
-/**
- * @brief Wi-Fi初期化要求をwifiTaskへ送信する。
- */
-bool sendWifiInitRequest(const String& wifiSsid, const String& wifiPass) {
-  appTaskMessage requestMessage{};
-  requestMessage.sourceTaskId = appTaskId::kMain;
-  requestMessage.destinationTaskId = appTaskId::kWifi;
-  requestMessage.messageType = appMessageType::kWifiInitRequest;
-  strncpy(requestMessage.text, wifiSsid.c_str(), sizeof(requestMessage.text) - 1);
-  requestMessage.text[sizeof(requestMessage.text) - 1] = '\0';
-  strncpy(requestMessage.text2, wifiPass.c_str(), sizeof(requestMessage.text2) - 1);
-  requestMessage.text2[sizeof(requestMessage.text2) - 1] = '\0';
-
-  appLogInfo("sendWifiInitRequest: request send. ssid=%s pass=%s",
-             requestMessage.text,
-             maskSecretForLog(String(requestMessage.text2)).c_str());
-
-  bool sendResult = messageService.sendMessage(requestMessage, pdMS_TO_TICKS(300));
-  if (!sendResult) {
-    appLogError("sendWifiInitRequest failed. ssid=%s", requestMessage.text);
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief MQTT初期化要求をmqttTaskへ送信する。
- */
-bool sendMqttInitRequest(const String& mqttUrl,
-                         const String& mqttUser,
-                         const String& mqttPass,
-                         int32_t mqttPort,
-                         bool mqttTls) {
-  appTaskMessage requestMessage{};
-  requestMessage.sourceTaskId = appTaskId::kMain;
-  requestMessage.destinationTaskId = appTaskId::kMqtt;
-  requestMessage.messageType = appMessageType::kMqttInitRequest;
-  requestMessage.intValue = mqttPort;
-  requestMessage.boolValue = mqttTls;
-  strncpy(requestMessage.text, mqttUrl.c_str(), sizeof(requestMessage.text) - 1);
-  requestMessage.text[sizeof(requestMessage.text) - 1] = '\0';
-  strncpy(requestMessage.text2, mqttUser.c_str(), sizeof(requestMessage.text2) - 1);
-  requestMessage.text2[sizeof(requestMessage.text2) - 1] = '\0';
-  strncpy(requestMessage.text3, mqttPass.c_str(), sizeof(requestMessage.text3) - 1);
-  requestMessage.text3[sizeof(requestMessage.text3) - 1] = '\0';
-
-  appLogInfo("sendMqttInitRequest: request send. url=%s user=%s pass=%s port=%ld tls=%d",
-             requestMessage.text,
-             requestMessage.text2,
-             maskSecretForLog(String(requestMessage.text3)).c_str(),
-             static_cast<long>(requestMessage.intValue),
-             static_cast<int>(requestMessage.boolValue));
-
-  bool sendResult = messageService.sendMessage(requestMessage, pdMS_TO_TICKS(300));
-  if (!sendResult) {
-    appLogError("sendMqttInitRequest failed. url=%s", requestMessage.text);
-    return false;
-  }
-  return true;
-}
-
-/**
- * @brief MQTT online publish要求をmqttTaskへ送信する。
- */
-bool sendMqttPublishOnlineRequest() {
-  appTaskMessage requestMessage{};
-  requestMessage.sourceTaskId = appTaskId::kMain;
-  requestMessage.destinationTaskId = appTaskId::kMqtt;
-  requestMessage.messageType = appMessageType::kMqttPublishOnlineRequest;
-  requestMessage.boolValue = true;
-  strncpy(requestMessage.text, "status online publish request", sizeof(requestMessage.text) - 1);
-  requestMessage.text[sizeof(requestMessage.text) - 1] = '\0';
-
-  appLogInfo("sendMqttPublishOnlineRequest: request send.");
-  bool sendResult = messageService.sendMessage(requestMessage, pdMS_TO_TICKS(300));
-  if (!sendResult) {
-    appLogError("sendMqttPublishOnlineRequest failed.");
-    return false;
-  }
-  return true;
-}
-
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -362,67 +203,125 @@ void mainTaskEntry(void* taskParameter) {
   ledService.startTask();
   inputService.startTask();
 
-  sendStartupRequest(appTaskId::kWifi, "wifiTask");
-  sendStartupRequest(appTaskId::kMqtt, "mqttTask");
-  sendStartupRequest(appTaskId::kHttp, "httpTask");
-  sendStartupRequest(appTaskId::kOta, "otaTask");
-  sendStartupRequest(appTaskId::kExternalDevice, "externalDeviceTask");
-  sendStartupRequest(appTaskId::kDisplay, "displayTask");
-  sendStartupRequest(appTaskId::kLed, "ledTask");
-  sendStartupRequest(appTaskId::kInput, "inputTask");
+  appUtil::appTaskMessageDetail startupDetail = appUtil::createEmptyMessageDetail();
+  startupDetail.hasIntValue = true;
+  startupDetail.intValue = 1;
+  startupDetail.text = "startup request from main";
+  appUtil::sendMessage(appTaskId::kWifi, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kMqtt, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kHttp, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kOta, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kExternalDevice, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kDisplay, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kLed, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kInput, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
 
   // [重要] wifiTaskにメッセージを投げてWi-Fi初期化を依頼する（接続情報を同梱）。
-  bool wifiInitSendResult = sendWifiInitRequest(wifiSsid, wifiPass);
+  appUtil::appTaskMessageDetail wifiInitDetail = appUtil::createEmptyMessageDetail();
+  wifiInitDetail.text = wifiSsid.c_str();
+  wifiInitDetail.text2 = wifiPass.c_str();
+  appLogInfo("mainTaskEntry: wifi init request send. ssid=%s pass=%s",
+             wifiSsid.c_str(),
+             maskSecretForLog(wifiPass).c_str());
+  bool wifiInitSendResult = appUtil::sendMessage(
+      appTaskId::kWifi,
+      appTaskId::kMain,
+      appMessageType::kWifiInitRequest,
+      &wifiInitDetail,
+      300);
   if (!wifiInitSendResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. sendWifiInitRequest returned false.");
+    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kWifiInitRequest) returned false.");
     vTaskDelete(nullptr);
   }
 
   // [重要] wifiTaskからの初期化完了メッセージを待つ。
   appTaskMessage wifiInitResponseMessage{};
-  bool wifiInitWaitResult = waitForExpectedMessage(
-      appTaskId::kWifi, appMessageType::kWifiInitDone, 35000, &wifiInitResponseMessage);
+  bool wifiInitWaitResult = appUtil::waitMessage(
+      appTaskId::kWifi,
+      appTaskId::kMain,
+      appMessageType::kWifiInitDone,
+      nullptr,
+      35000,
+      &wifiInitResponseMessage);
   if (!wifiInitWaitResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. waitForExpectedMessage(kWifiInitDone) timeout.");
+    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kWifiInitDone) timeout.");
     vTaskDelete(nullptr);
   }
   appLogInfo("mainTaskEntry: wifi initialization completed. detail=%s", wifiInitResponseMessage.text);
 
   // [重要] mqttTaskにメッセージを投げてMQTT初期化を依頼する（接続情報を同梱）。
-  bool mqttInitSendResult = sendMqttInitRequest(mqttUrl, mqttUser, mqttPass, mqttPort, mqttTls);
+  appUtil::appTaskMessageDetail mqttInitDetail = appUtil::createEmptyMessageDetail();
+  mqttInitDetail.hasIntValue = true;
+  mqttInitDetail.intValue = mqttPort;
+  mqttInitDetail.hasBoolValue = true;
+  mqttInitDetail.boolValue = mqttTls;
+  mqttInitDetail.text = mqttUrl.c_str();
+  mqttInitDetail.text2 = mqttUser.c_str();
+  mqttInitDetail.text3 = mqttPass.c_str();
+  appLogInfo("mainTaskEntry: mqtt init request send. url=%s user=%s pass=%s port=%ld tls=%d",
+             mqttUrl.c_str(),
+             mqttUser.c_str(),
+             maskSecretForLog(mqttPass).c_str(),
+             static_cast<long>(mqttPort),
+             static_cast<int>(mqttTls));
+  bool mqttInitSendResult = appUtil::sendMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttInitRequest,
+      &mqttInitDetail,
+      300);
   if (!mqttInitSendResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. sendMqttInitRequest returned false.");
+    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttInitRequest) returned false.");
     vTaskDelete(nullptr);
   }
 
   // [重要] mqttTaskからの初期化完了メッセージを待つ。
   appTaskMessage mqttInitResponseMessage{};
-  bool mqttInitWaitResult = waitForExpectedMessage(
-      appTaskId::kMqtt, appMessageType::kMqttInitDone, 20000, &mqttInitResponseMessage);
+  bool mqttInitWaitResult = appUtil::waitMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttInitDone,
+      nullptr,
+      20000,
+      &mqttInitResponseMessage);
   if (!mqttInitWaitResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. waitForExpectedMessage(kMqttInitDone) timeout.");
+    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttInitDone) timeout.");
     vTaskDelete(nullptr);
   }
   appLogInfo("mainTaskEntry: mqtt initialization completed. detail=%s", mqttInitResponseMessage.text);
 
   // [重要] mqttTaskへ「status online publish」を依頼し、完了を待つ。
-  bool mqttPublishRequestResult = sendMqttPublishOnlineRequest();
+  appUtil::appTaskMessageDetail mqttPublishDetail = appUtil::createEmptyMessageDetail();
+  mqttPublishDetail.hasBoolValue = true;
+  mqttPublishDetail.boolValue = true;
+  mqttPublishDetail.text = "status online publish request";
+  bool mqttPublishRequestResult = appUtil::sendMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttPublishOnlineRequest,
+      &mqttPublishDetail,
+      300);
   if (!mqttPublishRequestResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. sendMqttPublishOnlineRequest returned false.");
+    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttPublishOnlineRequest) returned false.");
     vTaskDelete(nullptr);
   }
 
   appTaskMessage mqttPublishResponseMessage{};
-  bool mqttPublishWaitResult = waitForExpectedMessage(
-      appTaskId::kMqtt, appMessageType::kMqttPublishOnlineDone, 20000, &mqttPublishResponseMessage);
+  bool mqttPublishWaitResult = appUtil::waitMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttPublishOnlineDone,
+      nullptr,
+      20000,
+      &mqttPublishResponseMessage);
   if (!mqttPublishWaitResult) {
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. waitForExpectedMessage(kMqttPublishOnlineDone) timeout.");
+    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttPublishOnlineDone) timeout.");
     vTaskDelete(nullptr);
   }
   appLogInfo("mainTaskEntry: mqtt online publish completed. detail=%s", mqttPublishResponseMessage.text);
