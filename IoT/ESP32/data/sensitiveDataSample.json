@@ -31,8 +31,6 @@
   },
   "timeServer": {
     "timeServerUrl": "127.0.0.1",
-    "timeServerUser": "DUMMY_USER",
-    "timeServerPass": "DUMMY_PASSWORD",
     "timeServerPort": 123,
     "timeServerTls": false
   }
