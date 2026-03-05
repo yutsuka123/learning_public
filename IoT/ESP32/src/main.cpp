@@ -14,6 +14,7 @@
 
 #include "certification.h"
 #include "display.h"
+#include "error.h"
 #include "externalDevice.h"
 #include "filesystem.h"
 #include "http.h"
@@ -96,6 +97,8 @@ interTaskMessageService& messageService = getInterTaskMessageService();
 
 String maskSecretForLog(const String& rawValue);
 String getCurrentTimeString();
+iotError::errorCodeType mapTaskErrorCode(appTaskId sourceTaskId);
+void writeErrText(iotError::errorCodeType errorCode, char* errTextOut, size_t errTextOutSize);
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -133,6 +136,43 @@ String getCurrentTimeString() {
 }
 
 /**
+ * @brief タスク起因エラーを共通エラーコードへ変換する。
+ * @param sourceTaskId エラー発生元タスクID。
+ * @return 共通エラーコード。
+ */
+iotError::errorCodeType mapTaskErrorCode(appTaskId sourceTaskId) {
+  switch (sourceTaskId) {
+    case appTaskId::kWifi:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kNetworkWifiTaskError);
+    case appTaskId::kMqtt:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kNetworkMqttTaskError);
+    case appTaskId::kHttp:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kNetworkHttpTaskError);
+    case appTaskId::kOta:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kNetworkOtaTaskError);
+    case appTaskId::kTimeServer:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kNetworkTimeServerTaskError);
+    case appTaskId::kExternalDevice:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kHardwareGeneral);
+    default:
+      return static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kOtherGeneral);
+  }
+}
+
+/**
+ * @brief エラーコードを `ERRxxx` 形式へ変換する。
+ * @param errorCode 共通エラーコード。
+ * @param errTextOut 出力先バッファ。
+ * @param errTextOutSize 出力先バッファサイズ。
+ */
+void writeErrText(iotError::errorCodeType errorCode, char* errTextOut, size_t errTextOutSize) {
+  bool result = iotError::formatErrCodeText(errorCode, errTextOut, errTextOutSize);
+  if (!result && errTextOut != nullptr && errTextOutSize > 0) {
+    snprintf(errTextOut, errTextOutSize, "ERR999");
+  }
+}
+
+/**
  * @brief メインタスク本体。将来ここから各機能タスクを起動する。
  * @param taskParameter タスク引数（未使用）。
  * @return なし（無限ループ）。
@@ -149,8 +189,10 @@ void mainTaskEntry(void* taskParameter) {
 
   bool i2cStartResult = i2cModule.startTask();
   if (!i2cStartResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupI2cTaskStartFailed), errText, sizeof(errText));
     ledController::indicateAbortPattern();
-    appLogFatal("mainTaskEntry failed. i2cModule.startTask returned false.");
+    appLogFatal("%s mainTaskEntry failed. i2cModule.startTask returned false.", errText);
     vTaskDelete(nullptr);
   }
   bool startDisplayResult = i2cModule.requestLcdText("BOOT DONE", "", 0);
@@ -296,9 +338,11 @@ void mainTaskEntry(void* taskParameter) {
       &wifiInitDetail,
       300);
   if (!wifiInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitRequestFailed), errText, sizeof(errText));
     ledController::indicateAbortPattern();
     startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING FAILED", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kWifiInitRequest) returned false.");
+    appLogFatal("%s mainTaskEntry failed. appUtil::sendMessage(kWifiInitRequest) returned false.", errText);
     vTaskDelete(nullptr);
   }
 
@@ -312,9 +356,11 @@ void mainTaskEntry(void* taskParameter) {
       35000,
       &wifiInitResponseMessage);
   if (!wifiInitWaitResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitTimeout), errText, sizeof(errText));
     ledController::indicateAbortPattern();
     startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING TIMEOUT", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kWifiInitDone) timeout.");
+    appLogFatal("%s mainTaskEntry failed. appUtil::waitMessage(kWifiInitDone) timeout.", errText);
     vTaskDelete(nullptr);
   }
   startDisplayResult = i2cModule.requestLcdText("WIFI CONNECTED", "", 0);
@@ -343,9 +389,11 @@ void mainTaskEntry(void* taskParameter) {
       &mqttInitDetail,
       300);
   if (!mqttInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitRequestFailed), errText, sizeof(errText));
     ledController::indicateAbortPattern();
     startDisplayResult = i2cModule.requestLcdText("MQTT INIT FAILED", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttInitRequest) returned false.");
+    appLogFatal("%s mainTaskEntry failed. appUtil::sendMessage(kMqttInitRequest) returned false.", errText);
     vTaskDelete(nullptr);
   }
   startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZING...", "", 0);
@@ -360,9 +408,11 @@ void mainTaskEntry(void* taskParameter) {
       20000,
       &mqttInitResponseMessage);
   if (!mqttInitWaitResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitTimeout), errText, sizeof(errText));
     ledController::indicateAbortPattern();
     startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZATION TIMEOUT", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttInitDone) timeout.");
+    appLogFatal("%s mainTaskEntry failed. appUtil::waitMessage(kMqttInitDone) timeout.", errText);
     vTaskDelete(nullptr);
   }
   startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZED", "", 0);
@@ -425,8 +475,10 @@ void mainTaskEntry(void* taskParameter) {
       &timeServerInitDetail,
       300);
   if (!timeServerInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitRequestFailed), errText, sizeof(errText));
     startDisplayResult = i2cModule.requestLcdText("TIME SERVER INIT FAILED", "", 0);
-    appLogWarn("mainTaskEntry: appUtil::sendMessage(kTimeServerInitRequest) returned false. time sync is skipped.");
+    appLogWarn("%s mainTaskEntry: appUtil::sendMessage(kTimeServerInitRequest) returned false. time sync is skipped.", errText);
   } else {
     appTaskMessage timeServerInitResponseMessage{};
     bool timeServerInitWaitResult = appUtil::waitMessage(
@@ -437,7 +489,9 @@ void mainTaskEntry(void* taskParameter) {
         20000,
         &timeServerInitResponseMessage);
     if (!timeServerInitWaitResult) {
-      appLogWarn("mainTaskEntry: appUtil::waitMessage(kTimeServerInitDone) timeout. time sync will be retried by timeServerTask.");
+      char errText[8] = {};
+      writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitTimeout), errText, sizeof(errText));
+      appLogWarn("%s mainTaskEntry: appUtil::waitMessage(kTimeServerInitDone) timeout. time sync will be retried by timeServerTask.", errText);
       startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZATION TIMEOUT", "", 0);
     } else if (timeServerInitResponseMessage.intValue == 1) {
       appLogInfo("mainTaskEntry: time server initialization completed. detail=%s utcNow=%s",
@@ -455,7 +509,7 @@ void mainTaskEntry(void* taskParameter) {
 
   for (;;) {
     static uint32_t heartbeatCount = 0;
-    static uint32_t errorCount = 0;
+    static iotError::errorCodeType currentErrorCode = iotError::kNoError;
 
     appTaskMessage receivedMessage{};
     bool receiveResult = messageService.receiveMessage(appTaskId::kMain, &receivedMessage, pdMS_TO_TICKS(100));
@@ -466,16 +520,28 @@ void mainTaskEntry(void* taskParameter) {
                  static_cast<int>(receivedMessage.messageType),
                  receivedMessage.text);
       if (receivedMessage.messageType == appMessageType::kTaskError) {
-        ++errorCount;
+        currentErrorCode = mapTaskErrorCode(receivedMessage.sourceTaskId);
+        char errText[8] = {};
+        writeErrText(currentErrorCode, errText, sizeof(errText));
+        appLogError("%s mainTaskEntry: task error received. src=%d text=%s",
+                    errText,
+                    static_cast<int>(receivedMessage.sourceTaskId),
+                    receivedMessage.text);
       }
     }
 
     appLogDebug("mainTask heartbeat.");
     //1行目時刻表示　2行目ハートビートカウント表示（エラー時はエラー番号表示）
     String timeString = getCurrentTimeString();
-    String heartbeatCountString = String(heartbeatCount);
-    String errorString = String(errorCount);
-    String secondLine = String("HB ") + heartbeatCountString + String(" ERR ") + errorString;
+    char errText[8] = {};
+    writeErrText(currentErrorCode, errText, sizeof(errText));
+    char secondLineBuffer[17] = {};
+    snprintf(secondLineBuffer,
+             sizeof(secondLineBuffer),
+             "HB%03lu %s",
+             static_cast<unsigned long>(heartbeatCount % 1000),
+             errText);
+    String secondLine = String(secondLineBuffer);
     startDisplayResult = i2cModule.requestLcdText(timeString.c_str(), secondLine.c_str(), 0);
     ++heartbeatCount;
     vTaskDelay(pdMS_TO_TICKS(mainTaskIntervalMs));
@@ -524,7 +590,9 @@ void setup() {
       ARDUINO_RUNNING_CORE);
 
   if (createTaskResult != pdPASS) {
-    appLogFatal("setup failed. xTaskCreatePinnedToCore(mainTask) failed.");
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kFatalMainTaskCreateFailed), errText, sizeof(errText));
+    appLogFatal("%s setup failed. xTaskCreatePinnedToCore(mainTask) failed.", errText);
     return;
   }
 
