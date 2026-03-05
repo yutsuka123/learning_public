@@ -27,6 +27,7 @@ enum class appTaskId : uint8_t {
   kDisplay = 8,
   kLed = 9,
   kInput = 10,
+  kTimeServer = 11,
 };
 
 /**
@@ -44,6 +45,8 @@ enum class appMessageType : uint8_t {
   kMqttInitDone = 21,
   kMqttPublishOnlineRequest = 22,
   kMqttPublishOnlineDone = 23,
+  kTimeServerInitRequest = 30,
+  kTimeServerInitDone = 31,
   kTaskError = 255,
 };
 
@@ -65,6 +68,7 @@ enum class appTaskFlagName : uint8_t {
   kLedReady = 10,
   kInputReady = 11,
   kTaskErrorRaised = 12,
+  kTimeServerInitialized = 13,
 };
 
 namespace appDefine {
@@ -108,7 +112,7 @@ constexpr uint32_t kHttpPathMaxLength = 128;
  * @brief タスクIDの最大値。
  * @note [重要] 配列の静的確保サイズ計算に使用する。
  */
-constexpr uint8_t kTaskIdMaxValue = static_cast<uint8_t>(appTaskId::kInput);
+constexpr uint8_t kTaskIdMaxValue = static_cast<uint8_t>(appTaskId::kTimeServer);
 
 /**
  * @brief タスク管理スロット数（0番を含む）。
@@ -118,7 +122,7 @@ constexpr uint8_t kTaskSlotCount = kTaskIdMaxValue + 1;
 /**
  * @brief フラグ名の最大値。
  */
-constexpr uint8_t kTaskFlagNameMaxValue = static_cast<uint8_t>(appTaskFlagName::kTaskErrorRaised);
+constexpr uint8_t kTaskFlagNameMaxValue = static_cast<uint8_t>(appTaskFlagName::kTimeServerInitialized);
 
 /**
  * @brief フラグ管理スロット数（0番を含む）。

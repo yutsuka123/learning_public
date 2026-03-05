@@ -1,13 +1,16 @@
 /**
  * @file main.cpp
- * @brief IoT ESP32の起動エントリ。mainTaskから各機能タスクを起動するためのひな形。
- * @details 今回はタスク起動箇所をコメント化し、将来の実装着手点のみ用意する。
+ * @brief IoT ESP32の起動エントリ。mainTaskから各機能タスクを起動・初期化する。
+ * @details
+ * - [重要] Wi-Fi/MQTT/時刻同期の初期化シーケンスをmainTaskで制御する。
+ * - [厳守] 時刻同期はtimeServerTaskへ委譲し、24時間周期の再同期をタスク側で継続する。
  */
 
 #include <Arduino.h>
 #include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <time.h>
 
 #include "certification.h"
 #include "display.h"
@@ -24,6 +27,7 @@
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
 #include "tcpip.h"
+#include "timeServer.h"
 #include "util.h"
 #include "../header/wifi.h"
 
@@ -50,7 +54,7 @@ constexpr UBaseType_t mainTaskPriority = 1;
  * @brief mainTask心拍ログの送信間隔(ms)。
  * @type uint32_t
  */
-constexpr uint32_t mainTaskIntervalMs = 1000;
+constexpr uint32_t mainTaskIntervalMs = 500;
 /**
  * @brief LCD診断モードの有効/無効。
  * @type bool
@@ -76,6 +80,8 @@ displayTask displayService;
 ledTask ledService;
 /** @brief 入力制御タスクサービスインスタンス。 */
 inputTask inputService;
+/** @brief タイムサーバー同期タスクサービスインスタンス。 */
+timeServerTask timeServerService;
 /** @brief I2Cサービスインスタンス。LCD表示要求を直列化する。 */
 i2cService i2cModule;
 
@@ -89,6 +95,7 @@ sensitiveDataService sensitiveDataModule;
 interTaskMessageService& messageService = getInterTaskMessageService();
 
 String maskSecretForLog(const String& rawValue);
+String getCurrentTimeString();
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -103,11 +110,34 @@ String maskSecretForLog(const String& rawValue) {
 }
 
 /**
+ * @brief 内部UTC時刻をLCD表示向け文字列に変換する。
+ * @return "YYMMDD HH:MM:SS" 形式。未同期時は "TIME UNSYNC"。
+ */
+String getCurrentTimeString() {
+  time_t currentEpochSeconds = time(nullptr);
+  if (currentEpochSeconds <= 0) {
+    return "TIME UNSYNC";
+  }
+
+  struct tm utcTimeInfo {};
+  if (gmtime_r(&currentEpochSeconds, &utcTimeInfo) == nullptr) {
+    return "TIME ERROR";
+  }
+
+  char timeBuffer[20] = {};
+  size_t writtenLength = strftime(timeBuffer, sizeof(timeBuffer), "%y%m%d %H:%M:%S", &utcTimeInfo);
+  if (writtenLength == 0) {
+    return "TIME ERROR";
+  }
+  return String(timeBuffer);
+}
+
+/**
  * @brief メインタスク本体。将来ここから各機能タスクを起動する。
  * @param taskParameter タスク引数（未使用）。
  * @return なし（無限ループ）。
  * @details
- * - [重要] START表示 -> Wi-Fi初期化 -> MQTT初期化 -> online publish -> DONE表示 の順序を厳守する。
+ * - [重要] START表示 -> Wi-Fi初期化 -> MQTT初期化 -> online publish -> 初回時刻同期 -> DONE表示 の順序を厳守する。
  * - [厳守] 各段階の失敗時は赤LEDアボートパターンを表示し、タスクを終了する。
  */
 void mainTaskEntry(void* taskParameter) {
@@ -123,27 +153,27 @@ void mainTaskEntry(void* taskParameter) {
     appLogFatal("mainTaskEntry failed. i2cModule.startTask returned false.");
     vTaskDelete(nullptr);
   }
-  bool startDisplayResult = i2cModule.requestLcdText("START", "", 0);
+  bool startDisplayResult = i2cModule.requestLcdText("BOOT DONE", "", 0);
   if (!startDisplayResult) {
     appLogWarn("mainTaskEntry: requestLcdText(START) failed.");
   }
   if (i2cLcdDiagnosticMode) {
-    appLogWarn("mainTaskEntry: I2C LCD diagnostic mode enabled. normal startup is skipped.");
-    uint32_t displayCounter = 0;
-    for (;;) {
+    appLogWarn("mainTaskEntry: I2C LCD diagnostic mode enabled. run finite diagnostics and resume normal startup.");
+    constexpr uint32_t diagnosticLoopCount = 5;
+    for (uint32_t displayCounter = 0; displayCounter < diagnosticLoopCount; ++displayCounter) {
       char secondLineBuffer[17];
       snprintf(secondLineBuffer,
                sizeof(secondLineBuffer),
                "Counter:%lu",
                static_cast<unsigned long>(displayCounter));
-      bool diagnosticDisplayResult = i2cModule.requestLcdText("hello, world!", secondLineBuffer, 0);
+      bool diagnosticDisplayResult = i2cModule.requestLcdText("I2C:0x27 OK", secondLineBuffer, 0);
       if (!diagnosticDisplayResult) {
         appLogWarn("mainTaskEntry: diagnostic requestLcdText failed. counter=%lu",
                    static_cast<unsigned long>(displayCounter));
       }
-      ++displayCounter;
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
+    appLogInfo("mainTaskEntry: I2C LCD diagnostic completed. resume normal startup.");
   }
 
 
@@ -156,6 +186,11 @@ void mainTaskEntry(void* taskParameter) {
   String mqttPass;
   int32_t mqttPort = 0;
   bool mqttTls = false;
+  String timeServerUrl;
+  String timeServerUser;
+  String timeServerPass;
+  int32_t timeServerPort = 123;
+  bool timeServerTls = false;
 
   bool wifiLoadResult = sensitiveDataModule.loadWifiCredentials(&wifiSsid, &wifiPass);
   if (!wifiLoadResult) {
@@ -167,6 +202,26 @@ void mainTaskEntry(void* taskParameter) {
     appLogWarn("mainTaskEntry: loadMqttConfig failed. fallback default values.");
     mqttPort = 8883;
     mqttTls = false;
+  }
+
+  bool timeServerLoadResult = sensitiveDataModule.loadTimeServerConfig(
+      &timeServerUrl,
+      &timeServerUser,
+      &timeServerPass,
+      &timeServerPort,
+      &timeServerTls);
+  if (!timeServerLoadResult) {
+    appLogWarn("mainTaskEntry: loadTimeServerConfig failed. fallback default values.");
+    timeServerUrl = "";
+    timeServerUser = "";
+    timeServerPass = "";
+    timeServerPort = 123;
+    timeServerTls = false;
+  }
+  if (timeServerUrl.length() <= 0 && mqttUrl.length() > 0) {
+    // [重要] 旧設定ファイル互換: timeServerUrl未設定時は同一ファイル内のmqttUrlを引き継ぐ。
+    timeServerUrl = mqttUrl;
+    appLogWarn("mainTaskEntry: timeServerUrl is empty. fallback to mqttUrl=%s", mqttUrl.c_str());
   }
 
 #if defined(SENSITIVE_DATA_USE_HEADER_VALUES) && (SENSITIVE_DATA_USE_HEADER_VALUES == 1)
@@ -190,6 +245,12 @@ void mainTaskEntry(void* taskParameter) {
              maskSecretForLog(mqttPass).c_str(),
              static_cast<long>(mqttPort),
              static_cast<int>(mqttTls));
+  appLogInfo("mainTaskEntry: time server loaded. url=%s, user=%s, pass=%s, port=%ld, tls=%d",
+             timeServerUrl.c_str(),
+             timeServerUser.c_str(),
+             maskSecretForLog(timeServerPass).c_str(),
+             static_cast<long>(timeServerPort),
+             static_cast<int>(timeServerTls));
 
   // [重要] FreeRTOS Queueによる一般的なメッセージ連携を開始する。
   // [補足] mainTaskは指令側として各機能タスクを起動し、応答のみを待機する。
@@ -202,6 +263,7 @@ void mainTaskEntry(void* taskParameter) {
   displayService.startTask();
   ledService.startTask();
   inputService.startTask();
+  timeServerService.startTask();
 
   appUtil::appTaskMessageDetail startupDetail = appUtil::createEmptyMessageDetail();
   startupDetail.hasIntValue = true;
@@ -215,6 +277,10 @@ void mainTaskEntry(void* taskParameter) {
   appUtil::sendMessage(appTaskId::kDisplay, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
   appUtil::sendMessage(appTaskId::kLed, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
   appUtil::sendMessage(appTaskId::kInput, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+  appUtil::sendMessage(appTaskId::kTimeServer, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
+
+
+  startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING...", "", 0);
 
   // [重要] wifiTaskにメッセージを投げてWi-Fi初期化を依頼する（接続情報を同梱）。
   appUtil::appTaskMessageDetail wifiInitDetail = appUtil::createEmptyMessageDetail();
@@ -231,6 +297,7 @@ void mainTaskEntry(void* taskParameter) {
       300);
   if (!wifiInitSendResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING FAILED", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kWifiInitRequest) returned false.");
     vTaskDelete(nullptr);
   }
@@ -246,9 +313,12 @@ void mainTaskEntry(void* taskParameter) {
       &wifiInitResponseMessage);
   if (!wifiInitWaitResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING TIMEOUT", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kWifiInitDone) timeout.");
     vTaskDelete(nullptr);
   }
+  startDisplayResult = i2cModule.requestLcdText("WIFI CONNECTED", "", 0);
+
   appLogInfo("mainTaskEntry: wifi initialization completed. detail=%s", wifiInitResponseMessage.text);
 
   // [重要] mqttTaskにメッセージを投げてMQTT初期化を依頼する（接続情報を同梱）。
@@ -274,9 +344,11 @@ void mainTaskEntry(void* taskParameter) {
       300);
   if (!mqttInitSendResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("MQTT INIT FAILED", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttInitRequest) returned false.");
     vTaskDelete(nullptr);
   }
+  startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZING...", "", 0);
 
   // [重要] mqttTaskからの初期化完了メッセージを待つ。
   appTaskMessage mqttInitResponseMessage{};
@@ -289,9 +361,11 @@ void mainTaskEntry(void* taskParameter) {
       &mqttInitResponseMessage);
   if (!mqttInitWaitResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZATION TIMEOUT", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttInitDone) timeout.");
     vTaskDelete(nullptr);
   }
+  startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZED", "", 0);
   appLogInfo("mainTaskEntry: mqtt initialization completed. detail=%s", mqttInitResponseMessage.text);
 
   // [重要] mqttTaskへ「status online publish」を依頼し、完了を待つ。
@@ -307,9 +381,11 @@ void mainTaskEntry(void* taskParameter) {
       300);
   if (!mqttPublishRequestResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISH FAILED", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttPublishOnlineRequest) returned false.");
     vTaskDelete(nullptr);
   }
+  startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISHING", "", 0);
 
   appTaskMessage mqttPublishResponseMessage{};
   bool mqttPublishWaitResult = appUtil::waitMessage(
@@ -321,18 +397,66 @@ void mainTaskEntry(void* taskParameter) {
       &mqttPublishResponseMessage);
   if (!mqttPublishWaitResult) {
     ledController::indicateAbortPattern();
+    startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISHING TIMEOUT", "", 0);
     appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttPublishOnlineDone) timeout.");
     vTaskDelete(nullptr);
   }
   appLogInfo("mainTaskEntry: mqtt online publish completed. detail=%s", mqttPublishResponseMessage.text);
-  bool doneDisplayResult = i2cModule.requestLcdText("DONE", "", 0);
-  if (!doneDisplayResult) {
-    appLogWarn("mainTaskEntry: requestLcdText(DONE) failed.");
+
+  // [重要] タイムサーバーへ接続して初回時刻同期を行う。同期後は内部時刻をUTCで継続運用する。
+  appUtil::appTaskMessageDetail timeServerInitDetail = appUtil::createEmptyMessageDetail();
+  timeServerInitDetail.text = timeServerUrl.c_str();
+  timeServerInitDetail.text2 = timeServerUser.c_str();
+  timeServerInitDetail.text3 = timeServerPass.c_str();
+  timeServerInitDetail.hasIntValue = true;
+  timeServerInitDetail.intValue = timeServerPort;
+  timeServerInitDetail.hasBoolValue = true;
+  timeServerInitDetail.boolValue = timeServerTls;
+  appLogInfo("mainTaskEntry: time server init request send. url=%s user=%s pass=%s port=%ld tls=%d",
+             timeServerUrl.c_str(),
+             timeServerUser.c_str(),
+             maskSecretForLog(timeServerPass).c_str(),
+             static_cast<long>(timeServerPort),
+             static_cast<int>(timeServerTls));
+  bool timeServerInitSendResult = appUtil::sendMessage(
+      appTaskId::kTimeServer,
+      appTaskId::kMain,
+      appMessageType::kTimeServerInitRequest,
+      &timeServerInitDetail,
+      300);
+  if (!timeServerInitSendResult) {
+    startDisplayResult = i2cModule.requestLcdText("TIME SERVER INIT FAILED", "", 0);
+    appLogWarn("mainTaskEntry: appUtil::sendMessage(kTimeServerInitRequest) returned false. time sync is skipped.");
+  } else {
+    appTaskMessage timeServerInitResponseMessage{};
+    bool timeServerInitWaitResult = appUtil::waitMessage(
+        appTaskId::kTimeServer,
+        appTaskId::kMain,
+        appMessageType::kTimeServerInitDone,
+        nullptr,
+        20000,
+        &timeServerInitResponseMessage);
+    if (!timeServerInitWaitResult) {
+      appLogWarn("mainTaskEntry: appUtil::waitMessage(kTimeServerInitDone) timeout. time sync will be retried by timeServerTask.");
+      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZATION TIMEOUT", "", 0);
+    } else if (timeServerInitResponseMessage.intValue == 1) {
+      appLogInfo("mainTaskEntry: time server initialization completed. detail=%s utcNow=%s",
+                 timeServerInitResponseMessage.text,
+                 timeServerInitResponseMessage.text2);
+      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZED", "", 0);
+    } else {
+      appLogWarn("mainTaskEntry: time server initialization failed. detail=%s utcNow=%s",
+                 timeServerInitResponseMessage.text,
+                 timeServerInitResponseMessage.text2);
+      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZATION FAILED", "", 0);
+    }
+    startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZED", "", 0);
   }
 
-
-
   for (;;) {
+    static uint32_t heartbeatCount = 0;
+    static uint32_t errorCount = 0;
+
     appTaskMessage receivedMessage{};
     bool receiveResult = messageService.receiveMessage(appTaskId::kMain, &receivedMessage, pdMS_TO_TICKS(100));
     if (receiveResult) {
@@ -341,9 +465,19 @@ void mainTaskEntry(void* taskParameter) {
                  static_cast<int>(receivedMessage.destinationTaskId),
                  static_cast<int>(receivedMessage.messageType),
                  receivedMessage.text);
+      if (receivedMessage.messageType == appMessageType::kTaskError) {
+        ++errorCount;
+      }
     }
 
     appLogDebug("mainTask heartbeat.");
+    //1行目時刻表示　2行目ハートビートカウント表示（エラー時はエラー番号表示）
+    String timeString = getCurrentTimeString();
+    String heartbeatCountString = String(heartbeatCount);
+    String errorString = String(errorCount);
+    String secondLine = String("HB ") + heartbeatCountString + String(" ERR ") + errorString;
+    startDisplayResult = i2cModule.requestLcdText(timeString.c_str(), secondLine.c_str(), 0);
+    ++heartbeatCount;
     vTaskDelay(pdMS_TO_TICKS(mainTaskIntervalMs));
   }
 }

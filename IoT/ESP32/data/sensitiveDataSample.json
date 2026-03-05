@@ -14,5 +14,26 @@
     "mqttPass": "DUMMY_PASSWORD",
     "mqttPort": 8883,
     "mqttTls": false
+  },
+  "server": {
+    "serverUrl": "127.0.0.1",
+    "serverUser": "DUMMY_USER",
+    "serverPass": "DUMMY_PASSWORD",
+    "serverPort": 443,
+    "serverTls": true
+  },
+  "ota": {
+    "otaUrl": "127.0.0.1",
+    "otaUser": "DUMMY_USER",
+    "otaPass": "DUMMY_PASSWORD",
+    "otaPort": 443,
+    "otaTls": true
+  },
+  "timeServer": {
+    "timeServerUrl": "127.0.0.1",
+    "timeServerUser": "DUMMY_USER",
+    "timeServerPass": "DUMMY_PASSWORD",
+    "timeServerPort": 123,
+    "timeServerTls": false
   }
 }

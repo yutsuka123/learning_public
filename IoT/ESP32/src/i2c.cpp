@@ -8,6 +8,7 @@
 
 #include "i2c.h"
 
+#include <Arduino.h>
 #include <Wire.h>
 #include <hd44780.h>
 #include <hd44780ioClass/hd44780_I2Cexp.h>
@@ -166,8 +167,12 @@ bool initializeLcdDevice() {
     return false;
   }
 
+  // [重要] 一部LCDモジュールではbegin直後のコマンド連続送信で表示が不安定になるため待機する。
+  delay(50);
   i2cLcd.backlight();
+  delay(10);
   i2cLcd.clear();
+  delay(5);
   i2cLcd.home();
   i2cLcd.display();
   isLcdInitialized = true;
@@ -194,15 +199,50 @@ bool renderLcdText(const i2cDisplayRequest& request) {
   }
 
   i2cLcd.clear();
+  delay(2);
   i2cLcd.setCursor(0, 0);
   i2cLcd.print(request.line1);
   i2cLcd.setCursor(0, 1);
   i2cLcd.print(request.line2);
+  i2cLcd.display();
   appLogInfo("renderLcdText success. line1=%s line2=%s holdMs=%lu",
              request.line1,
              request.line2,
              static_cast<unsigned long>(request.holdMs));
   return true;
+}
+
+/**
+ * @brief LCD表示文字列を16文字制約に合わせて整形する。
+ * @param rawText 元文字列（null可）。
+ * @return 16文字以内の整形済み文字列。
+ * @details
+ * - [重要] 長い語は意味が分かる略語へ変換してから詰める。
+ * - [厳守] 16文字を超える場合は末尾を `~` にして省略を明示する。
+ */
+String normalizeLcdLine(const char* rawText) {
+  String normalizedText = (rawText == nullptr) ? "" : String(rawText);
+
+  normalizedText.replace("INITIALIZATION", "INIT");
+  normalizedText.replace("INITIALIZING", "INIT");
+  normalizedText.replace("SEARCHING", "SRCH");
+  normalizedText.replace("CONNECTED", "CONN");
+  normalizedText.replace("PUBLISHING", "PUBL");
+  normalizedText.replace("PUBLISH", "PUB");
+  normalizedText.replace("HEARTBEAT", "HEART");
+  normalizedText.replace("SERVER", "SRV");
+  normalizedText.replace("FAILED", "FAIL");
+  normalizedText.replace("TIMEOUT", "TMOUT");
+
+  while (normalizedText.indexOf("  ") >= 0) {
+    normalizedText.replace("  ", " ");
+  }
+  normalizedText.trim();
+
+  if (normalizedText.length() > 16) {
+    normalizedText = normalizedText.substring(0, 15) + "~";
+  }
+  return normalizedText;
 }
 }  // namespace
 
@@ -260,13 +300,11 @@ bool i2cService::requestLcdText(const char* line1, const char* line2, uint32_t h
   }
 
   i2cDisplayRequest request{};
-  if (line1 != nullptr) {
-    strncpy(request.line1, line1, sizeof(request.line1) - 1);
-  }
+  String normalizedLine1 = normalizeLcdLine(line1);
+  String normalizedLine2 = normalizeLcdLine(line2);
+  strncpy(request.line1, normalizedLine1.c_str(), sizeof(request.line1) - 1);
   request.line1[sizeof(request.line1) - 1] = '\0';
-  if (line2 != nullptr) {
-    strncpy(request.line2, line2, sizeof(request.line2) - 1);
-  }
+  strncpy(request.line2, normalizedLine2.c_str(), sizeof(request.line2) - 1);
   request.line2[sizeof(request.line2) - 1] = '\0';
   request.holdMs = holdMs;
 
