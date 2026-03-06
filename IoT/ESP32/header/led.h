@@ -63,6 +63,21 @@ class ledController {
    * @brief エラー時表示（赤LED: 4回短点滅 + 1秒消灯 を3回）。
    */
   static void indicateErrorPattern();
+
+  /**
+   * @brief ボタン短押し通知表示（青/緑: 0.5秒消灯後0.5秒点灯を1回）。
+   */
+  static void indicateButtonShortPressPattern();
+
+  /**
+   * @brief ボタン長押し再起動前表示（青: 0.5秒消灯後0.5秒点灯を3回）。
+   */
+  static void indicateButtonLongPressRebootPattern();
+
+  /**
+   * @brief メンテナンスモード表示（赤LED点灯維持）。
+   */
+  static void indicateMaintenanceModeRedOn();
 };
 
 class ledTask {

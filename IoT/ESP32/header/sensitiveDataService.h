@@ -3,7 +3,7 @@
  * @brief 機密データ（Wi-Fi/MQTT/サーバー設定）をJSONファイルへ保存・読込するサービス定義。
  * @details
  * - [重要] 本クラスは LittleFS 上の `/sensitiveData.json` を唯一の保存先として扱う。
- * - [厳守] TLS認証有効/無効とポートはペアで管理し、初期値は「TLSなし・8883」を採用する。
+ * - [厳守] TLS認証有効/無効とポートはペアで管理し、初期値は「TLSあり・8883」を採用する。
  * - [禁止] 認証情報の生値をログへ出力しない（マスクなし出力禁止）。
  * - [制限] 本クラスは単純な排他なし実装。複数タスクから同時書込する場合は上位で排他する。
  */
@@ -73,15 +73,11 @@ class sensitiveDataService {
   /**
    * @brief タイムサーバー設定を読み込む。
    * @param timeServerUrlOut 読込先URLポインタ（null不可）。
-   * @param timeServerUserOut 読込先ユーザー名ポインタ（null不可）。
-   * @param timeServerPassOut 読込先パスワードポインタ（null不可）。
    * @param timeServerPortOut 読込先ポート番号ポインタ（null不可）。
    * @param timeServerTlsOut 読込先TLS有効フラグポインタ（null不可）。
    * @return 読込成功時true、失敗時false。
    */
   bool loadTimeServerConfig(String* timeServerUrlOut,
-                            String* timeServerUserOut,
-                            String* timeServerPassOut,
                             int32_t* timeServerPortOut,
                             bool* timeServerTlsOut);
 

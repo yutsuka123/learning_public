@@ -13,7 +13,7 @@
     "mqttUser": "DUMMY_USER",
     "mqttPass": "DUMMY_PASSWORD",
     "mqttPort": 8883,
-    "mqttTls": false
+    "mqttTls": true
   },
   "server": {
     "serverUrl": "127.0.0.1",

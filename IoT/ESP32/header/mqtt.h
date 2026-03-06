@@ -25,7 +25,7 @@ class mqttTask {
   void runLoop();
 
   /** @brief MQTTタスクスタックサイズ。@type uint32_t */
-  static constexpr uint32_t taskStackSize = 4096;
+  static constexpr uint32_t taskStackSize = 8192;
   /** @brief MQTTタスク優先度。@type UBaseType_t */
   static constexpr UBaseType_t taskPriority = 1;
 };

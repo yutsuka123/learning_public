@@ -11,8 +11,10 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <time.h>
+#include <WiFi.h>
 
 #include "certification.h"
+#include "common.h"
 #include "display.h"
 #include "error.h"
 #include "externalDevice.h"
@@ -57,11 +59,22 @@ constexpr UBaseType_t mainTaskPriority = 1;
  */
 constexpr uint32_t mainTaskIntervalMs = 500;
 /**
+ * @brief UTC同期済み判定に使う最小エポック秒（2020-01-01T00:00:00Z）。
+ * @type time_t
+ */
+constexpr time_t minimumValidUtcEpochSeconds = 1577836800;
+/**
  * @brief LCD診断モードの有効/無効。
  * @type bool
  * @note [推奨] 通常運用ではfalseを維持する。
  */
 constexpr bool i2cLcdDiagnosticMode = false;
+/** @brief 再接続リトライ間隔(ms)。@type uint32_t */
+constexpr uint32_t reconnectRetryIntervalMs = 5000;
+/** @brief NTP同期状態確認周期(ms): 12時間。@type uint32_t */
+constexpr uint32_t ntpCheckIntervalMs = 12UL * 60UL * 60UL * 1000UL;
+/** @brief NTP未同期時の再試行間隔(ms)。@type uint32_t */
+constexpr uint32_t ntpUnsyncedRetryIntervalMs = 30000;
 
 /** @brief Wi-Fi制御タスクサービスインスタンス。 */
 wifiTask wifiService;
@@ -98,7 +111,16 @@ interTaskMessageService& messageService = getInterTaskMessageService();
 String maskSecretForLog(const String& rawValue);
 String getCurrentTimeString();
 iotError::errorCodeType mapTaskErrorCode(appTaskId sourceTaskId);
+bool isUtcTimeSynchronized();
 void writeErrText(iotError::errorCodeType errorCode, char* errTextOut, size_t errTextOutSize);
+bool executeWifiConnectAndConfirm(const String& wifiSsid, const String& wifiPass);
+bool executeMqttConnectAndConfirm(const String& mqttUrl,
+                                  const String& mqttUser,
+                                  const String& mqttPass,
+                                  int32_t mqttPort,
+                                  bool mqttTls);
+bool executeMqttStatusPublishAndConfirm(uint32_t startupCpuMillis, const char* publishSubName, const char* publishReasonText);
+bool executeNtpSyncAndConfirm(const String& timeServerUrl, int32_t timeServerPort, bool timeServerTls);
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -117,10 +139,10 @@ String maskSecretForLog(const String& rawValue) {
  * @return "YYMMDD HH:MM:SS" 形式。未同期時は "TIME UNSYNC"。
  */
 String getCurrentTimeString() {
-  time_t currentEpochSeconds = time(nullptr);
-  if (currentEpochSeconds <= 0) {
+  if (!isUtcTimeSynchronized()) {
     return "TIME UNSYNC";
   }
+  time_t currentEpochSeconds = time(nullptr);
 
   struct tm utcTimeInfo {};
   if (gmtime_r(&currentEpochSeconds, &utcTimeInfo) == nullptr) {
@@ -133,6 +155,15 @@ String getCurrentTimeString() {
     return "TIME ERROR";
   }
   return String(timeBuffer);
+}
+
+/**
+ * @brief 現在時刻が有効なUTCへ同期済みか判定する。
+ * @return 同期済みならtrue、未同期ならfalse。
+ */
+bool isUtcTimeSynchronized() {
+  const time_t currentEpochSeconds = time(nullptr);
+  return (currentEpochSeconds >= minimumValidUtcEpochSeconds);
 }
 
 /**
@@ -173,6 +204,215 @@ void writeErrText(iotError::errorCodeType errorCode, char* errTextOut, size_t er
 }
 
 /**
+ * @brief Wi-Fi接続要求を送信し、接続完了応答まで待機する。
+ * @param wifiSsid SSID。
+ * @param wifiPass パスワード。
+ * @return 成功時true、失敗時false。
+ */
+bool executeWifiConnectAndConfirm(const String& wifiSsid, const String& wifiPass) {
+  appUtil::appTaskMessageDetail wifiInitDetail = appUtil::createEmptyMessageDetail();
+  wifiInitDetail.text = wifiSsid.c_str();
+  wifiInitDetail.text2 = wifiPass.c_str();
+  appLogInfo("mainTaskEntry: wifi init request send. ssid=%s pass=%s",
+             wifiSsid.c_str(),
+             maskSecretForLog(wifiPass).c_str());
+  bool wifiInitSendResult = appUtil::sendMessage(
+      appTaskId::kWifi,
+      appTaskId::kMain,
+      appMessageType::kWifiInitRequest,
+      &wifiInitDetail,
+      300);
+  if (!wifiInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitRequestFailed), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::sendMessage(kWifiInitRequest) returned false.", errText);
+    return false;
+  }
+
+  appTaskMessage wifiInitResponseMessage{};
+  bool wifiInitWaitResult = appUtil::waitMessage(
+      appTaskId::kWifi,
+      appTaskId::kMain,
+      appMessageType::kWifiInitDone,
+      nullptr,
+      35000,
+      &wifiInitResponseMessage);
+  if (!wifiInitWaitResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitTimeout), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::waitMessage(kWifiInitDone) timeout.", errText);
+    return false;
+  }
+  appLogInfo("mainTaskEntry: wifi initialization completed. detail=%s", wifiInitResponseMessage.text);
+  return true;
+}
+
+/**
+ * @brief MQTT接続要求を送信し、接続完了応答まで待機する。
+ * @param mqttUrl ブローカーURL。
+ * @param mqttUser ユーザー名。
+ * @param mqttPass パスワード。
+ * @param mqttPort ポート。
+ * @param mqttTls TLSフラグ。
+ * @return 成功時true、失敗時false。
+ */
+bool executeMqttConnectAndConfirm(const String& mqttUrl,
+                                  const String& mqttUser,
+                                  const String& mqttPass,
+                                  int32_t mqttPort,
+                                  bool mqttTls) {
+  appUtil::appTaskMessageDetail mqttInitDetail = appUtil::createEmptyMessageDetail();
+  mqttInitDetail.hasIntValue = true;
+  mqttInitDetail.intValue = mqttPort;
+  mqttInitDetail.hasBoolValue = true;
+  mqttInitDetail.boolValue = mqttTls;
+  mqttInitDetail.text = mqttUrl.c_str();
+  mqttInitDetail.text2 = mqttUser.c_str();
+  mqttInitDetail.text3 = mqttPass.c_str();
+  appLogInfo("mainTaskEntry: mqtt init request send. url=%s user=%s pass=%s port=%ld tls=%d",
+             mqttUrl.c_str(),
+             mqttUser.c_str(),
+             maskSecretForLog(mqttPass).c_str(),
+             static_cast<long>(mqttPort),
+             static_cast<int>(mqttTls));
+  bool mqttInitSendResult = appUtil::sendMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttInitRequest,
+      &mqttInitDetail,
+      300);
+  if (!mqttInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitRequestFailed), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::sendMessage(kMqttInitRequest) returned false.", errText);
+    return false;
+  }
+
+  appTaskMessage mqttInitResponseMessage{};
+  bool mqttInitWaitResult = appUtil::waitMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttInitDone,
+      nullptr,
+      20000,
+      &mqttInitResponseMessage);
+  if (!mqttInitWaitResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitTimeout), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::waitMessage(kMqttInitDone) timeout.", errText);
+    return false;
+  }
+  appLogInfo("mainTaskEntry: mqtt initialization completed. detail=%s", mqttInitResponseMessage.text);
+  return true;
+}
+
+/**
+ * @brief MQTT status publish要求を送信し、完了応答まで待機する。
+ * @param startupCpuMillis 起動CPU時刻(ms)。
+ * @param publishSubName sub値。
+ * @param publishReasonText ログ用理由文字列。
+ * @return 成功時true、失敗時false。
+ */
+bool executeMqttStatusPublishAndConfirm(uint32_t startupCpuMillis, const char* publishSubName, const char* publishReasonText) {
+  appUtil::appTaskMessageDetail mqttPublishDetail = appUtil::createEmptyMessageDetail();
+  mqttPublishDetail.hasBoolValue = true;
+  mqttPublishDetail.boolValue = true;
+  mqttPublishDetail.hasIntValue = true;
+  mqttPublishDetail.intValue = static_cast<int32_t>(startupCpuMillis);
+  mqttPublishDetail.text = "status online publish request";
+  mqttPublishDetail.text2 = publishSubName;
+  mqttPublishDetail.text3 = "Online";
+  bool mqttPublishRequestResult = appUtil::sendMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttPublishOnlineRequest,
+      &mqttPublishDetail,
+      300);
+  if (!mqttPublishRequestResult) {
+    appLogWarn("mainTaskEntry: appUtil::sendMessage(kMqttPublishOnlineRequest) failed. reason=%s",
+               (publishReasonText == nullptr ? "(null)" : publishReasonText));
+    return false;
+  }
+
+  appTaskMessage mqttPublishResponseMessage{};
+  bool mqttPublishWaitResult = appUtil::waitMessage(
+      appTaskId::kMqtt,
+      appTaskId::kMain,
+      appMessageType::kMqttPublishOnlineDone,
+      nullptr,
+      20000,
+      &mqttPublishResponseMessage);
+  if (!mqttPublishWaitResult) {
+    appLogWarn("mainTaskEntry: appUtil::waitMessage(kMqttPublishOnlineDone) timeout. reason=%s",
+               (publishReasonText == nullptr ? "(null)" : publishReasonText));
+    return false;
+  }
+  appLogInfo("mainTaskEntry: mqtt status publish completed. reason=%s detail=%s",
+             (publishReasonText == nullptr ? "(null)" : publishReasonText),
+             mqttPublishResponseMessage.text);
+  return true;
+}
+
+/**
+ * @brief NTP同期要求を送信し、同期完了応答を待機する。
+ * @param timeServerUrl タイムサーバーURL。
+ * @param timeServerPort タイムサーバーポート。
+ * @param timeServerTls TLSフラグ。
+ * @return 同期成功時true、失敗時false。
+ */
+bool executeNtpSyncAndConfirm(const String& timeServerUrl, int32_t timeServerPort, bool timeServerTls) {
+  appUtil::appTaskMessageDetail timeServerInitDetail = appUtil::createEmptyMessageDetail();
+  timeServerInitDetail.text = timeServerUrl.c_str();
+  timeServerInitDetail.text2 = "";
+  timeServerInitDetail.text3 = "";
+  timeServerInitDetail.hasIntValue = true;
+  timeServerInitDetail.intValue = timeServerPort;
+  timeServerInitDetail.hasBoolValue = true;
+  timeServerInitDetail.boolValue = timeServerTls;
+  appLogInfo("mainTaskEntry: time server init request send. url=%s port=%ld tls=%d",
+             timeServerUrl.c_str(),
+             static_cast<long>(timeServerPort),
+             static_cast<int>(timeServerTls));
+  bool timeServerInitSendResult = appUtil::sendMessage(
+      appTaskId::kTimeServer,
+      appTaskId::kMain,
+      appMessageType::kTimeServerInitRequest,
+      &timeServerInitDetail,
+      300);
+  if (!timeServerInitSendResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitRequestFailed), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::sendMessage(kTimeServerInitRequest) returned false.", errText);
+    return false;
+  }
+
+  appTaskMessage timeServerInitResponseMessage{};
+  bool timeServerInitWaitResult = appUtil::waitMessage(
+      appTaskId::kTimeServer,
+      appTaskId::kMain,
+      appMessageType::kTimeServerInitDone,
+      nullptr,
+      20000,
+      &timeServerInitResponseMessage);
+  if (!timeServerInitWaitResult) {
+    char errText[8] = {};
+    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitTimeout), errText, sizeof(errText));
+    appLogWarn("%s mainTaskEntry: appUtil::waitMessage(kTimeServerInitDone) timeout.", errText);
+    return false;
+  }
+  if (timeServerInitResponseMessage.intValue != 1) {
+    appLogWarn("mainTaskEntry: time server initialization failed. detail=%s utcNow=%s",
+               timeServerInitResponseMessage.text,
+               timeServerInitResponseMessage.text2);
+    return false;
+  }
+  appLogInfo("mainTaskEntry: time server initialization completed. detail=%s utcNow=%s",
+             timeServerInitResponseMessage.text,
+             timeServerInitResponseMessage.text2);
+  return true;
+}
+
+/**
  * @brief メインタスク本体。将来ここから各機能タスクを起動する。
  * @param taskParameter タスク引数（未使用）。
  * @return なし（無限ループ）。
@@ -182,6 +422,7 @@ void writeErrText(iotError::errorCodeType errorCode, char* errTextOut, size_t er
  */
 void mainTaskEntry(void* taskParameter) {
   (void)taskParameter;
+  const uint32_t mainTaskEntryCpuMillis = millis();
 
   // [重要] 起動時は青LEDを一旦消灯後0.5秒待機してから点灯する。
   ledController::initializeByMainOnBoot();
@@ -229,8 +470,6 @@ void mainTaskEntry(void* taskParameter) {
   int32_t mqttPort = 0;
   bool mqttTls = false;
   String timeServerUrl;
-  String timeServerUser;
-  String timeServerPass;
   int32_t timeServerPort = 123;
   bool timeServerTls = false;
 
@@ -243,20 +482,16 @@ void mainTaskEntry(void* taskParameter) {
   if (!mqttLoadResult) {
     appLogWarn("mainTaskEntry: loadMqttConfig failed. fallback default values.");
     mqttPort = 8883;
-    mqttTls = false;
+    mqttTls = true;
   }
 
   bool timeServerLoadResult = sensitiveDataModule.loadTimeServerConfig(
       &timeServerUrl,
-      &timeServerUser,
-      &timeServerPass,
       &timeServerPort,
       &timeServerTls);
   if (!timeServerLoadResult) {
     appLogWarn("mainTaskEntry: loadTimeServerConfig failed. fallback default values.");
     timeServerUrl = "";
-    timeServerUser = "";
-    timeServerPass = "";
     timeServerPort = 123;
     timeServerTls = false;
   }
@@ -268,6 +503,7 @@ void mainTaskEntry(void* taskParameter) {
 
 #if defined(SENSITIVE_DATA_USE_HEADER_VALUES) && (SENSITIVE_DATA_USE_HEADER_VALUES == 1)
   // [重要] 開発初期はヘッダー機密値を優先して即時反映する。
+  // [将来対応] 本ブロックはNVS移行完了後に廃止し、NVS読込値を唯一の正とする。
   wifiSsid = SENSITIVE_WIFI_SSID;
   wifiPass = SENSITIVE_WIFI_PASS;
   mqttUrl = SENSITIVE_MQTT_URL;
@@ -275,6 +511,9 @@ void mainTaskEntry(void* taskParameter) {
   mqttPass = SENSITIVE_MQTT_PASS;
   mqttPort = static_cast<int32_t>(SENSITIVE_MQTT_PORT);
   mqttTls = (SENSITIVE_MQTT_TLS != 0);
+  timeServerUrl = SENSITIVE_TIME_SERVER_URL;
+  timeServerPort = static_cast<int32_t>(SENSITIVE_TIME_SERVER_PORT);
+  timeServerTls = (SENSITIVE_TIME_SERVER_TLS != 0);
   appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden.");
 #endif
 
@@ -287,10 +526,8 @@ void mainTaskEntry(void* taskParameter) {
              maskSecretForLog(mqttPass).c_str(),
              static_cast<long>(mqttPort),
              static_cast<int>(mqttTls));
-  appLogInfo("mainTaskEntry: time server loaded. url=%s, user=%s, pass=%s, port=%ld, tls=%d",
+  appLogInfo("mainTaskEntry: time server loaded. url=%s, port=%ld, tls=%d",
              timeServerUrl.c_str(),
-             timeServerUser.c_str(),
-             maskSecretForLog(timeServerPass).c_str(),
              static_cast<long>(timeServerPort),
              static_cast<int>(timeServerTls));
 
@@ -322,195 +559,24 @@ void mainTaskEntry(void* taskParameter) {
   appUtil::sendMessage(appTaskId::kTimeServer, appTaskId::kMain, appMessageType::kStartupRequest, &startupDetail, 200);
 
 
+  // [重要] 起動時から同一ロジックで接続/確認/再試行を行うため、状態フラグを明示的に管理する。
+  bool isWifiReady = false;
+  bool isMqttReady = false;
+  bool isStartupStatusPublished = false;
+  bool shouldPublishReconnectStatus = false;
+  bool shouldRunNtpReconnectAfterPublish = false;
+  uint32_t lastWifiRetryAtMs = 0;
+  uint32_t lastMqttRetryAtMs = 0;
+  uint32_t lastPublishRetryAtMs = 0;
+  uint32_t lastNtpCheckAtMs = 0;
+  uint32_t lastNtpRetryAtMs = 0;
+
   startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING...", "", 0);
 
-  // [重要] wifiTaskにメッセージを投げてWi-Fi初期化を依頼する（接続情報を同梱）。
-  appUtil::appTaskMessageDetail wifiInitDetail = appUtil::createEmptyMessageDetail();
-  wifiInitDetail.text = wifiSsid.c_str();
-  wifiInitDetail.text2 = wifiPass.c_str();
-  appLogInfo("mainTaskEntry: wifi init request send. ssid=%s pass=%s",
-             wifiSsid.c_str(),
-             maskSecretForLog(wifiPass).c_str());
-  bool wifiInitSendResult = appUtil::sendMessage(
-      appTaskId::kWifi,
-      appTaskId::kMain,
-      appMessageType::kWifiInitRequest,
-      &wifiInitDetail,
-      300);
-  if (!wifiInitSendResult) {
-    char errText[8] = {};
-    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitRequestFailed), errText, sizeof(errText));
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING FAILED", "", 0);
-    appLogFatal("%s mainTaskEntry failed. appUtil::sendMessage(kWifiInitRequest) returned false.", errText);
-    vTaskDelete(nullptr);
-  }
-
-  // [重要] wifiTaskからの初期化完了メッセージを待つ。
-  appTaskMessage wifiInitResponseMessage{};
-  bool wifiInitWaitResult = appUtil::waitMessage(
-      appTaskId::kWifi,
-      appTaskId::kMain,
-      appMessageType::kWifiInitDone,
-      nullptr,
-      35000,
-      &wifiInitResponseMessage);
-  if (!wifiInitWaitResult) {
-    char errText[8] = {};
-    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupWifiInitTimeout), errText, sizeof(errText));
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("WIFI SEARCHING TIMEOUT", "", 0);
-    appLogFatal("%s mainTaskEntry failed. appUtil::waitMessage(kWifiInitDone) timeout.", errText);
-    vTaskDelete(nullptr);
-  }
-  startDisplayResult = i2cModule.requestLcdText("WIFI CONNECTED", "", 0);
-
-  appLogInfo("mainTaskEntry: wifi initialization completed. detail=%s", wifiInitResponseMessage.text);
-
-  // [重要] mqttTaskにメッセージを投げてMQTT初期化を依頼する（接続情報を同梱）。
-  appUtil::appTaskMessageDetail mqttInitDetail = appUtil::createEmptyMessageDetail();
-  mqttInitDetail.hasIntValue = true;
-  mqttInitDetail.intValue = mqttPort;
-  mqttInitDetail.hasBoolValue = true;
-  mqttInitDetail.boolValue = mqttTls;
-  mqttInitDetail.text = mqttUrl.c_str();
-  mqttInitDetail.text2 = mqttUser.c_str();
-  mqttInitDetail.text3 = mqttPass.c_str();
-  appLogInfo("mainTaskEntry: mqtt init request send. url=%s user=%s pass=%s port=%ld tls=%d",
-             mqttUrl.c_str(),
-             mqttUser.c_str(),
-             maskSecretForLog(mqttPass).c_str(),
-             static_cast<long>(mqttPort),
-             static_cast<int>(mqttTls));
-  bool mqttInitSendResult = appUtil::sendMessage(
-      appTaskId::kMqtt,
-      appTaskId::kMain,
-      appMessageType::kMqttInitRequest,
-      &mqttInitDetail,
-      300);
-  if (!mqttInitSendResult) {
-    char errText[8] = {};
-    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitRequestFailed), errText, sizeof(errText));
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("MQTT INIT FAILED", "", 0);
-    appLogFatal("%s mainTaskEntry failed. appUtil::sendMessage(kMqttInitRequest) returned false.", errText);
-    vTaskDelete(nullptr);
-  }
-  startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZING...", "", 0);
-
-  // [重要] mqttTaskからの初期化完了メッセージを待つ。
-  appTaskMessage mqttInitResponseMessage{};
-  bool mqttInitWaitResult = appUtil::waitMessage(
-      appTaskId::kMqtt,
-      appTaskId::kMain,
-      appMessageType::kMqttInitDone,
-      nullptr,
-      20000,
-      &mqttInitResponseMessage);
-  if (!mqttInitWaitResult) {
-    char errText[8] = {};
-    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupMqttInitTimeout), errText, sizeof(errText));
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZATION TIMEOUT", "", 0);
-    appLogFatal("%s mainTaskEntry failed. appUtil::waitMessage(kMqttInitDone) timeout.", errText);
-    vTaskDelete(nullptr);
-  }
-  startDisplayResult = i2cModule.requestLcdText("MQTT INITIALIZED", "", 0);
-  appLogInfo("mainTaskEntry: mqtt initialization completed. detail=%s", mqttInitResponseMessage.text);
-
-  // [重要] mqttTaskへ「status online publish」を依頼し、完了を待つ。
-  appUtil::appTaskMessageDetail mqttPublishDetail = appUtil::createEmptyMessageDetail();
-  mqttPublishDetail.hasBoolValue = true;
-  mqttPublishDetail.boolValue = true;
-  mqttPublishDetail.text = "status online publish request";
-  bool mqttPublishRequestResult = appUtil::sendMessage(
-      appTaskId::kMqtt,
-      appTaskId::kMain,
-      appMessageType::kMqttPublishOnlineRequest,
-      &mqttPublishDetail,
-      300);
-  if (!mqttPublishRequestResult) {
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISH FAILED", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::sendMessage(kMqttPublishOnlineRequest) returned false.");
-    vTaskDelete(nullptr);
-  }
-  startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISHING", "", 0);
-
-  appTaskMessage mqttPublishResponseMessage{};
-  bool mqttPublishWaitResult = appUtil::waitMessage(
-      appTaskId::kMqtt,
-      appTaskId::kMain,
-      appMessageType::kMqttPublishOnlineDone,
-      nullptr,
-      20000,
-      &mqttPublishResponseMessage);
-  if (!mqttPublishWaitResult) {
-    ledController::indicateAbortPattern();
-    startDisplayResult = i2cModule.requestLcdText("MQTT ONLINE PUBLISHING TIMEOUT", "", 0);
-    appLogFatal("mainTaskEntry failed. appUtil::waitMessage(kMqttPublishOnlineDone) timeout.");
-    vTaskDelete(nullptr);
-  }
-  appLogInfo("mainTaskEntry: mqtt online publish completed. detail=%s", mqttPublishResponseMessage.text);
-
-  // [重要] タイムサーバーへ接続して初回時刻同期を行う。同期後は内部時刻をUTCで継続運用する。
-  appUtil::appTaskMessageDetail timeServerInitDetail = appUtil::createEmptyMessageDetail();
-  timeServerInitDetail.text = timeServerUrl.c_str();
-  timeServerInitDetail.text2 = timeServerUser.c_str();
-  timeServerInitDetail.text3 = timeServerPass.c_str();
-  timeServerInitDetail.hasIntValue = true;
-  timeServerInitDetail.intValue = timeServerPort;
-  timeServerInitDetail.hasBoolValue = true;
-  timeServerInitDetail.boolValue = timeServerTls;
-  appLogInfo("mainTaskEntry: time server init request send. url=%s user=%s pass=%s port=%ld tls=%d",
-             timeServerUrl.c_str(),
-             timeServerUser.c_str(),
-             maskSecretForLog(timeServerPass).c_str(),
-             static_cast<long>(timeServerPort),
-             static_cast<int>(timeServerTls));
-  bool timeServerInitSendResult = appUtil::sendMessage(
-      appTaskId::kTimeServer,
-      appTaskId::kMain,
-      appMessageType::kTimeServerInitRequest,
-      &timeServerInitDetail,
-      300);
-  if (!timeServerInitSendResult) {
-    char errText[8] = {};
-    writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitRequestFailed), errText, sizeof(errText));
-    startDisplayResult = i2cModule.requestLcdText("TIME SERVER INIT FAILED", "", 0);
-    appLogWarn("%s mainTaskEntry: appUtil::sendMessage(kTimeServerInitRequest) returned false. time sync is skipped.", errText);
-  } else {
-    appTaskMessage timeServerInitResponseMessage{};
-    bool timeServerInitWaitResult = appUtil::waitMessage(
-        appTaskId::kTimeServer,
-        appTaskId::kMain,
-        appMessageType::kTimeServerInitDone,
-        nullptr,
-        20000,
-        &timeServerInitResponseMessage);
-    if (!timeServerInitWaitResult) {
-      char errText[8] = {};
-      writeErrText(static_cast<iotError::errorCodeType>(iotError::errorCodeEnum::kEspStartupTimeInitTimeout), errText, sizeof(errText));
-      appLogWarn("%s mainTaskEntry: appUtil::waitMessage(kTimeServerInitDone) timeout. time sync will be retried by timeServerTask.", errText);
-      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZATION TIMEOUT", "", 0);
-    } else if (timeServerInitResponseMessage.intValue == 1) {
-      appLogInfo("mainTaskEntry: time server initialization completed. detail=%s utcNow=%s",
-                 timeServerInitResponseMessage.text,
-                 timeServerInitResponseMessage.text2);
-      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZED", "", 0);
-    } else {
-      appLogWarn("mainTaskEntry: time server initialization failed. detail=%s utcNow=%s",
-                 timeServerInitResponseMessage.text,
-                 timeServerInitResponseMessage.text2);
-      startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZATION FAILED", "", 0);
-    }
-    startDisplayResult = i2cModule.requestLcdText("TIME SERVER INITIALIZED", "", 0);
-  }
 
   for (;;) {
     static uint32_t heartbeatCount = 0;
     static iotError::errorCodeType currentErrorCode = iotError::kNoError;
-
     appTaskMessage receivedMessage{};
     bool receiveResult = messageService.receiveMessage(appTaskId::kMain, &receivedMessage, pdMS_TO_TICKS(100));
     if (receiveResult) {
@@ -527,6 +593,112 @@ void mainTaskEntry(void* taskParameter) {
                     errText,
                     static_cast<int>(receivedMessage.sourceTaskId),
                     receivedMessage.text);
+        if (receivedMessage.sourceTaskId == appTaskId::kWifi) {
+          // [重要] Wi-Fi系エラーはチェーン再接続の起点に戻す。
+          isWifiReady = false;
+          isMqttReady = false;
+          shouldPublishReconnectStatus = true;
+          shouldRunNtpReconnectAfterPublish = true;
+          lastWifiRetryAtMs = 0;
+          lastMqttRetryAtMs = 0;
+          lastPublishRetryAtMs = 0;
+        } else if (receivedMessage.sourceTaskId == appTaskId::kMqtt) {
+          // [重要] MQTT系エラー時はMQTT再接続→ReConnect publishを即再試行する。
+          isMqttReady = false;
+          shouldPublishReconnectStatus = true;
+          shouldRunNtpReconnectAfterPublish = true;
+          lastMqttRetryAtMs = 0;
+          lastPublishRetryAtMs = 0;
+        } else if (receivedMessage.sourceTaskId == appTaskId::kTimeServer) {
+          // [重要] NTP系エラー時はNTP再同期タイマをリセットして短周期再試行へ戻す。
+          lastNtpRetryAtMs = 0;
+        }
+      }
+    }
+
+    uint32_t nowMs = millis();
+    bool isWifiCurrentlyConnected = (WiFi.status() == WL_CONNECTED);
+    if (!isWifiCurrentlyConnected) {
+      if (isWifiReady || isMqttReady) {
+        appLogWarn("mainTaskEntry: wifi disconnected detected. run reconnect chain.");
+      }
+      isWifiReady = false;
+      isMqttReady = false;
+      shouldPublishReconnectStatus = true;
+      if (lastWifiRetryAtMs == 0 || (nowMs - lastWifiRetryAtMs >= reconnectRetryIntervalMs)) {
+        lastWifiRetryAtMs = nowMs;
+        startDisplayResult = i2cModule.requestLcdText("WIFI RECONNECT", "", 0);
+        if (executeWifiConnectAndConfirm(wifiSsid, wifiPass)) {
+          isWifiReady = true;
+          startDisplayResult = i2cModule.requestLcdText("WIFI CONNECTED", "", 0);
+          shouldRunNtpReconnectAfterPublish = true;
+        } else {
+          startDisplayResult = i2cModule.requestLcdText("WIFI RECON FAIL", "", 0);
+        }
+      }
+    } else {
+      isWifiReady = true;
+    }
+
+    const bool isStartupPhase = !isStartupStatusPublished;
+    const bool canRegisterWillWithSynchronizedTime = isUtcTimeSynchronized();
+    const bool canStartMqttConnect = !isStartupPhase || canRegisterWillWithSynchronizedTime;
+    if (isWifiReady && !isMqttReady && !canStartMqttConnect) {
+      // [重要] 起動フェーズのWill登録はUTC同期後に行う。
+      // [理由] Willのts/startUpTimeへ時刻を入れ、(unsynchronized)フォールバックを常用しないため。
+      startDisplayResult = i2cModule.requestLcdText("WAIT NTP FOR WILL", "", 0);
+      if (lastNtpRetryAtMs == 0 || (nowMs - lastNtpRetryAtMs >= ntpUnsyncedRetryIntervalMs)) {
+        appLogInfo("mainTaskEntry: skip mqtt connect until UTC sync for startup will registration.");
+      }
+    }
+    if (isWifiReady && !isMqttReady && canStartMqttConnect &&
+        (lastMqttRetryAtMs == 0 || (nowMs - lastMqttRetryAtMs >= reconnectRetryIntervalMs))) {
+      lastMqttRetryAtMs = nowMs;
+      startDisplayResult = i2cModule.requestLcdText("MQTT RECONNECT", "", 0);
+      if (executeMqttConnectAndConfirm(mqttUrl, mqttUser, mqttPass, mqttPort, mqttTls)) {
+        isMqttReady = true;
+        shouldPublishReconnectStatus = true;
+        shouldRunNtpReconnectAfterPublish = true;
+        startDisplayResult = i2cModule.requestLcdText("MQTT CONNECTED", "", 0);
+      } else {
+        startDisplayResult = i2cModule.requestLcdText("MQTT RECON FAIL", "", 0);
+      }
+    }
+
+    if (isWifiReady && isMqttReady && (lastPublishRetryAtMs == 0 || (nowMs - lastPublishRetryAtMs >= reconnectRetryIntervalMs))) {
+      if (!isStartupStatusPublished || shouldPublishReconnectStatus) {
+        const bool isReconnectPublish = isStartupStatusPublished && shouldPublishReconnectStatus;
+        const char* publishSubName = isReconnectPublish
+                                         ? iotCommon::mqtt::subCommand::status::kReConnect
+                                         : iotCommon::mqtt::subCommand::status::kStartUp;
+        const char* publishReasonText = isReconnectPublish ? "ReConnect" : "StartUp";
+        lastPublishRetryAtMs = nowMs;
+        startDisplayResult = i2cModule.requestLcdText("MQTT STATUS PUBL", "", 0);
+        bool publishResult = executeMqttStatusPublishAndConfirm(mainTaskEntryCpuMillis, publishSubName, publishReasonText);
+        if (publishResult) {
+          isStartupStatusPublished = true;
+          shouldPublishReconnectStatus = false;
+          startDisplayResult = i2cModule.requestLcdText("MQTT PUBLISH OK", "", 0);
+        } else {
+          startDisplayResult = i2cModule.requestLcdText("MQTT PUBLISH NG", "", 0);
+        }
+      }
+    }
+
+    bool shouldCheckNtp = (!isUtcTimeSynchronized()) || (nowMs - lastNtpCheckAtMs >= ntpCheckIntervalMs);
+    if (shouldRunNtpReconnectAfterPublish) {
+      shouldCheckNtp = true;
+    }
+    if (shouldCheckNtp && (lastNtpRetryAtMs == 0 || (nowMs - lastNtpRetryAtMs >= ntpUnsyncedRetryIntervalMs))) {
+      lastNtpRetryAtMs = nowMs;
+      startDisplayResult = i2cModule.requestLcdText("NTP SYNC...", "", 0);
+      bool ntpSyncResult = executeNtpSyncAndConfirm(timeServerUrl, timeServerPort, timeServerTls);
+      if (ntpSyncResult) {
+        lastNtpCheckAtMs = nowMs;
+        shouldRunNtpReconnectAfterPublish = false;
+        startDisplayResult = i2cModule.requestLcdText("NTP SYNC OK", "", 0);
+      } else {
+        startDisplayResult = i2cModule.requestLcdText("NTP SYNC FAIL", "", 0);
       }
     }
 

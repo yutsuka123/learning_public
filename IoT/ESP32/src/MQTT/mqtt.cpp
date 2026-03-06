@@ -4,14 +4,18 @@
  * @details
  * - [重要] mainTaskから受け取った設定でブローカー接続し、online状態をpublishする。
  * - [厳守] MQTT接続前にブローカー到達確認（TCPプローブ）を実施する。
- * - [制限] TLS(mqttTls=true)は現時点で未実装。
+ * - [厳守] MQTT認証はユーザー名/パスワード必須とし、未設定時は接続しない。
+ * - [重要] TLS有効時は `SENSITIVE_MQTT_TLS_CA_CERT` を設定し、証明書検証を有効化する。
  */
 
 #include "mqtt.h"
 
 #include <esp_heap_caps.h>
 #include <string.h>
+#include <sys/time.h>
+#include <time.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <PubSubClient.h>
 
 #include "common.h"
@@ -19,6 +23,7 @@
 #include "mqttMessages.h"
 #include "led.h"
 #include "log.h"
+#include "sensitiveData.h"
 
 namespace {
 /** @brief mqttTask用スタック領域。PSRAM優先で確保し、失敗時は内部RAMへフォールバックする。 */
@@ -27,6 +32,8 @@ StackType_t* mqttTaskStackBuffer = nullptr;
 StaticTask_t mqttTaskControlBlock;
 /** @brief MQTT通信用の下位TCPクライアント。 */
 WiFiClient mqttNetworkClient;
+/** @brief MQTT(TLS)通信用の下位TCPクライアント。 */
+WiFiClientSecure mqttTlsNetworkClient;
 /** @brief PubSubClient本体。mqttNetworkClientを介して通信する。 */
 PubSubClient mqttClient(mqttNetworkClient);
 
@@ -44,26 +51,243 @@ bool mqttTls = false;
 bool isMqttInitialized = false;
 /** @brief status online状態値。 */
 constexpr const char* statusValueOnline = "Online";
+/** @brief UTC同期済みとみなす最小エポックミリ秒(2021-01-01T00:00:00.000Z)。 */
+constexpr int64_t minimumValidUtcEpochMillis = 1609459200000LL;
+/** @brief mainTaskEntry開始時CPU時刻(ms)。publish要求時にmainTaskから受け取る。 */
+uint32_t mainTaskStartupCpuMillis = 0;
+/** @brief 送信者/受信者名として利用するデバイス識別子。 */
+String deviceNodeName = "";
+
 
 /**
- * @brief online通知トピックを生成する。
+ * @brief ESP32のeFuse由来Base MACを区切りなし16進文字列へ変換する。
+ * @param compactMacTextOut 出力先文字列ポインタ。
+ * @return 変換成功時true、失敗時false。
+ */
+bool createCompactMacAddressText(String* compactMacTextOut) {
+  if (compactMacTextOut == nullptr) {
+    appLogError("createCompactMacAddressText failed. compactMacTextOut is null.");
+    return false;
+  }
+  uint64_t efuseMac = ESP.getEfuseMac();
+  char compactMacBuffer[13] = {};
+  int writtenLength = snprintf(compactMacBuffer,
+                               sizeof(compactMacBuffer),
+                               "%02X%02X%02X%02X%02X%02X",
+                               static_cast<unsigned>((efuseMac >> 40) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 32) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 24) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 16) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 8) & 0xFF),
+                               static_cast<unsigned>(efuseMac & 0xFF));
+  if (writtenLength <= 0 || writtenLength >= static_cast<int>(sizeof(compactMacBuffer))) {
+    appLogError("createCompactMacAddressText failed. snprintf overflow. writtenLength=%d", writtenLength);
+    return false;
+  }
+  *compactMacTextOut = String(compactMacBuffer);
+  return true;
+}
+
+/**
+ * @brief ESP32のeFuse由来Base MACをコロン区切り16進文字列へ変換する。
+ * @param macTextOut 出力先文字列ポインタ。
+ * @return 変換成功時true、失敗時false。
+ */
+bool createEfuseMacAddressText(String* macTextOut) {
+  if (macTextOut == nullptr) {
+    appLogError("createEfuseMacAddressText failed. macTextOut is null.");
+    return false;
+  }
+  uint64_t efuseMac = ESP.getEfuseMac();
+  char macBuffer[18] = {};
+  int writtenLength = snprintf(macBuffer,
+                               sizeof(macBuffer),
+                               "%02X:%02X:%02X:%02X:%02X:%02X",
+                               static_cast<unsigned>((efuseMac >> 40) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 32) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 24) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 16) & 0xFF),
+                               static_cast<unsigned>((efuseMac >> 8) & 0xFF),
+                               static_cast<unsigned>(efuseMac & 0xFF));
+  if (writtenLength <= 0 || writtenLength >= static_cast<int>(sizeof(macBuffer))) {
+    appLogError("createEfuseMacAddressText failed. snprintf overflow. writtenLength=%d", writtenLength);
+    return false;
+  }
+  *macTextOut = String(macBuffer);
+  return true;
+}
+
+/**
+ * @brief UTCエポックミリ秒をISO8601(ミリ秒付き)文字列へ変換する。
+ * @param utcEpochMillis UTCエポックミリ秒。
+ * @param iso8601TextOut 変換結果の出力先。
+ * @return 変換成功時true、失敗時false。
+ */
+bool formatUtcIso8601FromEpochMillis(int64_t utcEpochMillis, String* iso8601TextOut) {
+  if (iso8601TextOut == nullptr) {
+    appLogError("formatUtcIso8601FromEpochMillis failed. iso8601TextOut is null.");
+    return false;
+  }
+  if (utcEpochMillis < 0) {
+    utcEpochMillis = 0;
+  }
+  const time_t epochSeconds = static_cast<time_t>(utcEpochMillis / 1000LL);
+  const int64_t millisecondPart = utcEpochMillis % 1000LL;
+  struct tm utcTimeInfo {};
+  if (gmtime_r(&epochSeconds, &utcTimeInfo) == nullptr) {
+    appLogError("formatUtcIso8601FromEpochMillis failed. gmtime_r returned null. utcEpochMillis=%lld",
+                static_cast<long long>(utcEpochMillis));
+    return false;
+  }
+  char dateTimeBuffer[32] = {};
+  size_t dateTimeLength = strftime(dateTimeBuffer, sizeof(dateTimeBuffer), "%Y-%m-%dT%H:%M:%S", &utcTimeInfo);
+  if (dateTimeLength == 0) {
+    appLogError("formatUtcIso8601FromEpochMillis failed. strftime returned 0. utcEpochMillis=%lld",
+                static_cast<long long>(utcEpochMillis));
+    return false;
+  }
+  char iso8601Buffer[40] = {};
+  int printLength = snprintf(iso8601Buffer,
+                             sizeof(iso8601Buffer),
+                             "%s.%03lldZ",
+                             dateTimeBuffer,
+                             static_cast<long long>(millisecondPart));
+  if (printLength <= 0 || printLength >= static_cast<int>(sizeof(iso8601Buffer))) {
+    appLogError("formatUtcIso8601FromEpochMillis failed. snprintf overflow. printLength=%d", printLength);
+    return false;
+  }
+  *iso8601TextOut = String(iso8601Buffer);
+  return true;
+}
+
+/**
+ * @brief Willフォールバック用の時刻文字列を計算する。
+ * @details UTCが未同期の場合は空文字を返す。
+ * @param startupCpuMillis mainTask開始時CPU時刻(ms)。
+ * @param currentTsOut tsフィールド出力先。
+ * @param startupTsOut startUpTimeフィールド出力先。
+ * @return UTCが有効で両方計算できた場合true、未同期または失敗時false。
+ */
+bool buildWillFallbackTimeText(uint32_t startupCpuMillis, String* currentTsOut, String* startupTsOut) {
+  if (currentTsOut == nullptr || startupTsOut == nullptr) {
+    appLogError("buildWillFallbackTimeText failed. output parameter is null. currentTsOut=%p startupTsOut=%p",
+                currentTsOut,
+                startupTsOut);
+    return false;
+  }
+  *currentTsOut = "";
+  *startupTsOut = "";
+
+  struct timeval currentTimeValue {};
+  int getTimeResult = gettimeofday(&currentTimeValue, nullptr);
+  if (getTimeResult != 0) {
+    appLogWarn("buildWillFallbackTimeText skipped. gettimeofday failed. result=%d", getTimeResult);
+    return false;
+  }
+  const int64_t currentUtcEpochMillis = static_cast<int64_t>(currentTimeValue.tv_sec) * 1000LL +
+                                        static_cast<int64_t>(currentTimeValue.tv_usec) / 1000LL;
+  if (currentUtcEpochMillis < minimumValidUtcEpochMillis) {
+    appLogInfo("buildWillFallbackTimeText skipped. utc is not synchronized. epochMillis=%lld",
+               static_cast<long long>(currentUtcEpochMillis));
+    return false;
+  }
+  uint32_t currentCpuMillis = millis();
+  uint32_t elapsedCpuMillis = (currentCpuMillis >= startupCpuMillis) ? (currentCpuMillis - startupCpuMillis) : 0;
+  int64_t startupUtcEpochMillis = currentUtcEpochMillis - static_cast<int64_t>(elapsedCpuMillis);
+  if (startupUtcEpochMillis < 0) {
+    startupUtcEpochMillis = 0;
+  }
+
+  String currentTsText;
+  String startupTsText;
+  if (!formatUtcIso8601FromEpochMillis(currentUtcEpochMillis, &currentTsText)) {
+    return false;
+  }
+  if (!formatUtcIso8601FromEpochMillis(startupUtcEpochMillis, &startupTsText)) {
+    return false;
+  }
+  *currentTsOut = currentTsText;
+  *startupTsOut = startupTsText;
+  return true;
+}
+
+/**
+ * @brief MQTT通信で使用するトランスポートクライアントを設定する。
+ * @param tlsEnabled TLS有効ならtrue。
+ * @return 設定成功時true、失敗時false。
+ */
+bool configureMqttTransportClient(bool tlsEnabled) {
+  if (tlsEnabled) {
+    // [厳守] 証明書検証を無効化しない。CA証明書未設定時はTLS接続を開始しない。
+#if !defined(SENSITIVE_MQTT_TLS_CA_CERT)
+    appLogError("configureMqttTransportClient failed. SENSITIVE_MQTT_TLS_CA_CERT is not defined.");
+    return false;
+#else
+    if (strlen(SENSITIVE_MQTT_TLS_CA_CERT) == 0) {
+      appLogError("configureMqttTransportClient failed. SENSITIVE_MQTT_TLS_CA_CERT is empty.");
+      return false;
+    }
+    mqttTlsNetworkClient.setCACert(SENSITIVE_MQTT_TLS_CA_CERT);
+    mqttClient.setClient(mqttTlsNetworkClient);
+    appLogInfo("configureMqttTransportClient: TLS transport selected.");
+    return true;
+#endif
+  }
+  mqttClient.setClient(mqttNetworkClient);
+  appLogInfo("configureMqttTransportClient: plain TCP transport selected.");
+  return true;
+}
+
+/**
+ * @brief デバイス名（トピックの末尾識別子）を解決する。
+ * @param deviceNameTextOut 出力先（null不可）。
+ * @return 解決成功時true、失敗時false。
+ */
+bool resolveDeviceNodeName(String* deviceNameTextOut) {
+  if (deviceNameTextOut == nullptr) {
+    appLogError("resolveDeviceNodeName failed. deviceNameTextOut is null.");
+    return false;
+  }
+  // [重要] デバイス名未設定時の標準識別子として IoT_<BaseMacNoColon> を使用する。
+  String compactMacText;
+  if (!createCompactMacAddressText(&compactMacText)) {
+    return false;
+  }
+  *deviceNameTextOut = String("IoT_") + compactMacText;
+  return true;
+}
+
+/**
+ * @brief 共通トピックを生成する（esp32lab/<kind>/<sub>/<name>）。
+ * @param kind 種別（notice/set/get/call/network）。
+ * @param sub サブコマンド（status等）。
+ * @param endpointName 発信者名または受信者名。
  * @param topicTextOut 生成先（null不可）。
  * @return 成功時true、失敗時false。
  */
-bool createStatusTopic(String* topicTextOut) {
+bool createTopicText(const char* kind, const char* sub, const char* endpointName, String* topicTextOut) {
   if (topicTextOut == nullptr) {
-    appLogError("createStatusTopic failed. topicTextOut is null.");
+    appLogError("createTopicText failed. topicTextOut is null.");
+    return false;
+  }
+  if (kind == nullptr || sub == nullptr || endpointName == nullptr ||
+      strlen(kind) == 0 || strlen(sub) == 0 || strlen(endpointName) == 0) {
+    appLogError("createTopicText failed. invalid parameter. kind=%p sub=%p endpointName=%p",
+                kind,
+                sub,
+                endpointName);
     return false;
   }
 
-  char topicBuffer[96];
+  char topicBuffer[160];
   int writtenLength = snprintf(topicBuffer,
                                sizeof(topicBuffer),
-                               "%s%s",
-                               iotCommon::mqtt::kTopicPrefixNotice,
-                               iotCommon::mqtt::jsonKey::status::kCommand);
+                               "esp32lab/%s/%s/%s",
+                               kind,
+                               sub,
+                               endpointName);
   if (writtenLength <= 0 || writtenLength >= static_cast<int>(sizeof(topicBuffer))) {
-    appLogError("createStatusTopic failed. snprintf overflow. writtenLength=%ld",
+    appLogError("createTopicText failed. snprintf overflow. writtenLength=%ld",
                 static_cast<long>(writtenLength));
     return false;
   }
@@ -96,13 +320,12 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
                payloadText.c_str());
     return;
   }
-  appLogInfo("onMqttMessageReceived: parsed. type=%d command=%s sub=%s requestId=%s replyId=%s noticeId=%s",
+  appLogInfo("onMqttMessageReceived: parsed. type=%d command=%s sub=%s dstId=%s srcId=%s",
              static_cast<int>(parsedMessage.messageType),
              parsedMessage.commandName.c_str(),
              parsedMessage.subName.c_str(),
-             parsedMessage.requestId.c_str(),
-             parsedMessage.replyId.c_str(),
-             parsedMessage.noticeId.c_str());
+             parsedMessage.dstId.c_str(),
+             parsedMessage.srcId.c_str());
 }
 
 /**
@@ -170,8 +393,15 @@ bool connectToMqttBroker() {
     appLogError("connectToMqttBroker failed. invalid port=%ld", static_cast<long>(mqttPort));
     return false;
   }
-  if (mqttTls) {
-    appLogError("connectToMqttBroker failed. mqttTls=true is not implemented yet.");
+  if (strlen(mqttUser) == 0 || strlen(mqttPass) == 0) {
+    appLogError("connectToMqttBroker failed. mqtt user/password is required. userLength=%ld passLength=%ld",
+                static_cast<long>(strlen(mqttUser)),
+                static_cast<long>(strlen(mqttPass)));
+    return false;
+  }
+  if (!configureMqttTransportClient(mqttTls)) {
+    appLogError("connectToMqttBroker failed. configureMqttTransportClient failed. mqttTls=%d",
+                static_cast<int>(mqttTls));
     return false;
   }
   if (WiFi.status() != WL_CONNECTED) {
@@ -197,17 +427,65 @@ bool connectToMqttBroker() {
     return false;
   }
   String clientId = "esp32lab-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  if (deviceNodeName.length() <= 0) {
+    bool resolveNameResult = resolveDeviceNodeName(&deviceNodeName);
+    if (!resolveNameResult) {
+      appLogError("connectToMqttBroker failed. resolveDeviceNodeName failed.");
+      return false;
+    }
+  }
   String willTopicText;
-  bool willTopicResult = createStatusTopic(&willTopicText);
+  bool willTopicResult = createTopicText("notice",
+                                         iotCommon::mqtt::jsonKey::status::kCommand,
+                                         deviceNodeName.c_str(),
+                                         &willTopicText);
   if (!willTopicResult) {
-    appLogError("connectToMqttBroker failed. createStatusTopic for will failed.");
+    appLogError("connectToMqttBroker failed. createTopicText for will failed.");
     return false;
   }
   String willPayloadText;
-  bool willPayloadResult = mqtt::buildMqttStatusPayload("", statusValueOnline, &willPayloadText);
+  bool willPayloadResult = mqtt::buildMqttStatusPayload(iotCommon::mqtt::subCommand::status::kWill,
+                                                        "Offline",
+                                                        mainTaskStartupCpuMillis,
+                                                        &willPayloadText);
   if (!willPayloadResult) {
-    appLogError("connectToMqttBroker failed. mqtt::buildMqttStatusPayload for will failed.");
-    return false;
+    // [重要] NTP未同期の起動直後でもMQTT接続自体は成立させるため、同一キー構造のwill payloadへフォールバックする。
+    String efuseMacText = "00:00:00:00:00:00";
+    createEfuseMacAddressText(&efuseMacText);
+    String networkMacText = WiFi.macAddress();
+    if (networkMacText.length() <= 0) {
+      networkMacText = efuseMacText;
+    }
+    String fallbackIdText = String("will-") + String(static_cast<unsigned long>(millis()));
+    String fallbackTsText = "";
+    String fallbackStartUpTimeText = "";
+    buildWillFallbackTimeText(mainTaskStartupCpuMillis, &fallbackTsText, &fallbackStartUpTimeText);
+    String fallbackWifiSsid = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : String("(dummy-ssid)");
+    String fallbackIpAddress = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("0.0.0.0");
+    long fallbackRssi = static_cast<long>(WiFi.RSSI());
+    char willFallbackBuffer[700] = {};
+    int printLength = snprintf(
+        willFallbackBuffer,
+        sizeof(willFallbackBuffer),
+        "{\"v\":\"1\",\"DstID\":\"all\",\"SrcID\":\"%s\",\"Request\":\"Notice\",\"macAddr\":\"%s\",\"macAddrNetwork\":\"%s\","
+        "\"id\":\"%s\",\"ts\":\"%s\",\"status\":\"status\",\"sub\":\"Will\",\"onlineState\":\"Offline\","
+        "\"startUpTime\":\"%s\",\"firmwareVersion\":\"0.0.0-dev\",\"wifiSignalLevel\":%ld,"
+        "\"ipAddress\":\"%s\",\"wifiSsid\":\"%s\",\"detail\":\"Disconnect\"}",
+        deviceNodeName.c_str(),
+        efuseMacText.c_str(),
+        networkMacText.c_str(),
+        fallbackIdText.c_str(),
+        fallbackTsText.c_str(),
+        fallbackStartUpTimeText.c_str(),
+        fallbackRssi,
+        fallbackIpAddress.c_str(),
+        fallbackWifiSsid.c_str());
+    if (printLength > 0 && printLength < static_cast<int>(sizeof(willFallbackBuffer))) {
+      willPayloadText = String(willFallbackBuffer);
+    } else {
+      willPayloadText = "{\"v\":\"1\",\"status\":\"status\",\"sub\":\"Will\",\"onlineState\":\"Offline\",\"detail\":\"Disconnect\"}";
+    }
+    appLogWarn("connectToMqttBroker: will payload fallback applied. reason=utc unsynchronized or payload build failure");
   }
   appLogInfo("connectToMqttBroker: will payload prepared. topicLength=%ld payloadLength=%ld",
              static_cast<long>(willTopicText.length()),
@@ -222,29 +500,34 @@ bool connectToMqttBroker() {
   for (int32_t retryIndex = 0; retryIndex < maxRetryCount; ++retryIndex) {
     ledController::indicateMqttConnecting();
     ledController::indicateCommunicationActivity();
-    bool connectResult = false;
-    if (strlen(mqttUser) > 0 || strlen(mqttPass) > 0) {
-      connectResult = mqttClient.connect(clientId.c_str(),
-                                         mqttUser,
-                                         mqttPass,
-                                         willTopicText.c_str(),
-                                         1,
-                                         true,
-                                         willPayloadText.c_str());
-    } else {
-      connectResult = mqttClient.connect(clientId.c_str(),
-                                         nullptr,
-                                         nullptr,
-                                         willTopicText.c_str(),
-                                         1,
-                                         true,
-                                         willPayloadText.c_str());
-    }
+    bool connectResult = mqttClient.connect(clientId.c_str(),
+                                            mqttUser,
+                                            mqttPass,
+                                            willTopicText.c_str(),
+                                            1,
+                                            true,
+                                            willPayloadText.c_str());
 
     if (connectResult) {
-      bool subscribeResult = mqttClient.subscribe("cmd/esp32lab/#", 1);
+      String subscribeTopicSet = String("esp32lab/set/+/") + deviceNodeName;
+      String subscribeTopicGet = String("esp32lab/get/+/") + deviceNodeName;
+      String subscribeTopicCall = String("esp32lab/call/+/") + deviceNodeName;
+      String subscribeTopicNetwork = String("esp32lab/network/+/") + deviceNodeName;
+      String subscribeTopicSetAll = "esp32lab/set/+/all";
+      String subscribeTopicGetAll = "esp32lab/get/+/all";
+      String subscribeTopicCallAll = "esp32lab/call/+/all";
+      String subscribeTopicNetworkAll = "esp32lab/network/+/all";
+      bool subscribeResult =
+          mqttClient.subscribe(subscribeTopicSet.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicGet.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicCall.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicNetwork.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicSetAll.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicGetAll.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicCallAll.c_str(), 1) &&
+          mqttClient.subscribe(subscribeTopicNetworkAll.c_str(), 1);
       if (!subscribeResult) {
-        appLogWarn("connectToMqttBroker: subscribe failed. topic=cmd/esp32lab/#");
+        appLogWarn("connectToMqttBroker: subscribe failed. receiver=%s", deviceNodeName.c_str());
       }
       ledController::indicateMqttConnected();
       appLogInfo("connectToMqttBroker success. state=%d", mqttClient.state());
@@ -264,28 +547,50 @@ bool connectToMqttBroker() {
  * @brief MQTTへonlineステータスを初回publishする。
  * @return publish成功時true、失敗時false。
  */
-bool publishOnlineStatus() {
+bool publishStatusNotice(const char* subName, const char* onlineStateText, uint32_t startupCpuMillis) {
   if (!mqttClient.connected()) {
-    appLogError("publishOnlineStatus failed. mqtt is not connected.");
+    appLogError("publishStatusNotice failed. mqtt is not connected.");
     return false;
   }
 
   String topicText;
-  bool topicResult = createStatusTopic(&topicText);
+  if (deviceNodeName.length() <= 0) {
+    bool resolveNameResult = resolveDeviceNodeName(&deviceNodeName);
+    if (!resolveNameResult) {
+      appLogError("publishStatusNotice failed. resolveDeviceNodeName failed.");
+      return false;
+    }
+  }
+  bool topicResult = createTopicText("notice",
+                                     iotCommon::mqtt::jsonKey::status::kCommand,
+                                     deviceNodeName.c_str(),
+                                     &topicText);
   if (!topicResult) {
-    appLogError("publishOnlineStatus failed. createStatusTopic failed.");
+    appLogError("publishStatusNotice failed. createTopicText failed.");
     return false;
   }
 
-  bool publishResult = mqtt::sendMqttStatus(&mqttClient, topicText.c_str(), "", statusValueOnline);
+  const char* safeSubName = (subName == nullptr || strlen(subName) == 0) ? iotCommon::mqtt::subCommand::status::kStartUp : subName;
+  const char* safeOnlineStateText = (onlineStateText == nullptr || strlen(onlineStateText) == 0) ? statusValueOnline : onlineStateText;
+  bool publishResult = mqtt::sendMqttStatus(&mqttClient,
+                                            topicText.c_str(),
+                                            safeSubName,
+                                            safeOnlineStateText,
+                                            startupCpuMillis);
   ledController::indicateCommunicationActivity();
   if (!publishResult) {
-    appLogError("publishOnlineStatus failed. topic=%s", topicText.c_str());
+    appLogError("publishStatusNotice failed. topic=%s sub=%s onlineState=%s",
+                topicText.c_str(),
+                safeSubName,
+                safeOnlineStateText);
     return false;
   }
 
   mqttClient.loop();
-  appLogInfo("publishOnlineStatus success. topic=%s", topicText.c_str());
+  appLogInfo("publishStatusNotice success. topic=%s sub=%s onlineState=%s",
+             topicText.c_str(),
+             safeSubName,
+             safeOnlineStateText);
   return true;
 }
 }
@@ -391,8 +696,23 @@ void mqttTask::runLoop() {
     }
     if (receiveResult && receivedMessage.messageType == appMessageType::kMqttPublishOnlineRequest) {
       appLogInfo("mqttTask: publish online request received. message=%s", receivedMessage.text);
+      if (receivedMessage.intValue > 0) {
+        mainTaskStartupCpuMillis = static_cast<uint32_t>(receivedMessage.intValue);
+      }
 
-      bool publishResult = isMqttInitialized && publishOnlineStatus();
+      const char* requestSubName = (strlen(receivedMessage.text2) > 0)
+                                       ? receivedMessage.text2
+                                       : iotCommon::mqtt::subCommand::status::kStartUp;
+      const char* requestOnlineState = (strlen(receivedMessage.text3) > 0)
+                                           ? receivedMessage.text3
+                                           : statusValueOnline;
+      bool publishResult = isMqttInitialized && publishStatusNotice(requestSubName,
+                                                                    requestOnlineState,
+                                                                    mainTaskStartupCpuMillis);
+      if (!publishResult && !mqttClient.connected()) {
+        // [重要] 送信失敗かつ切断状態なら初期化完了フラグを落として再接続シーケンスへ委譲する。
+        isMqttInitialized = false;
+      }
       appTaskMessage doneMessage{};
       doneMessage.sourceTaskId = appTaskId::kMqtt;
       doneMessage.destinationTaskId = appTaskId::kMain;

@@ -3,7 +3,7 @@
  * @brief MQTT受信メッセージ解析処理。
  * @details
  * - [重要] サーバー要求/通知（call/get/set/network/status）の入口を1か所へ集約する。
- * - [推奨] 解析対象は共通キー（requestId/replyId/noticeId/sub）を優先する。
+ * - [推奨] 解析対象は共通キー（DstID/SrcID/sub）を優先する。
  */
 
 #include "mqttMessages.h"
@@ -58,25 +58,18 @@ bool parseMqttIncomingMessage(const char* topicName, const char* payloadText, mq
     parsedMessage.subName = "";
   }
 
-  String requestId;
-  if (payloadJsonService.getValueByPath(payloadString, iotCommon::mqtt::jsonKey::status::kRequestId, &requestId)) {
-    parsedMessage.requestId = requestId;
+  String dstId;
+  if (payloadJsonService.getValueByPath(payloadString, iotCommon::mqtt::jsonKey::status::kDstId, &dstId)) {
+    parsedMessage.dstId = dstId;
   } else {
-    parsedMessage.requestId = "";
+    parsedMessage.dstId = "";
   }
 
-  String replyId;
-  if (payloadJsonService.getValueByPath(payloadString, iotCommon::mqtt::jsonKey::status::kReplyId, &replyId)) {
-    parsedMessage.replyId = replyId;
+  String srcId;
+  if (payloadJsonService.getValueByPath(payloadString, iotCommon::mqtt::jsonKey::status::kSrcId, &srcId)) {
+    parsedMessage.srcId = srcId;
   } else {
-    parsedMessage.replyId = "";
-  }
-
-  String noticeId;
-  if (payloadJsonService.getValueByPath(payloadString, iotCommon::mqtt::jsonKey::status::kNoticeId, &noticeId)) {
-    parsedMessage.noticeId = noticeId;
-  } else {
-    parsedMessage.noticeId = "";
+    parsedMessage.srcId = "";
   }
 
   switch (parsedMessage.messageType) {

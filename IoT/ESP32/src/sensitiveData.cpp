@@ -3,7 +3,7 @@
  * @brief 機密データ（Wi-Fi/MQTT/サーバー設定）をJSONで保存・読込する実装。
  * @details
  * - [重要] 保存先は LittleFS の `/sensitiveData.json` 固定。
- * - [厳守] デフォルト値は MQTT TLS=false / MQTT Port=8883。
+ * - [厳守] デフォルト値は MQTT TLS=true / MQTT Port=8883。
  * - [禁止] パスワード値をログへ直接出力しない。
  * - [将来対応] 暗号化保存やNVS移行は別タスクで対応する。
  */
@@ -25,8 +25,10 @@ constexpr const char* mqttRootKey = "mqtt";
 constexpr const char* serverRootKey = "server";
 constexpr const char* otaRootKey = "ota";
 constexpr const char* timeServerRootKey = "timeServer";
+constexpr const char* legacyTimeServerUserKey = "timeServerUser";
+constexpr const char* legacyTimeServerPassKey = "timeServerPass";
 constexpr int32_t defaultMqttPort = 8883;
-constexpr bool defaultMqttTls = false;
+constexpr bool defaultMqttTls = true;
 constexpr int32_t defaultServerPort = 443;
 constexpr bool defaultServerTls = true;
 constexpr int32_t defaultOtaPort = 443;
@@ -164,6 +166,9 @@ bool sensitiveDataService::initialize() {
     cJSON_Delete(rootObject);
     return false;
   }
+  // [旧仕様] timeServerUser/timeServerPass は廃止済みのため自動除去する。
+  cJSON_DeleteItemFromObjectCaseSensitive(timeServerObject, legacyTimeServerUserKey);
+  cJSON_DeleteItemFromObjectCaseSensitive(timeServerObject, legacyTimeServerPassKey);
 
   bool migrationResult =
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl))), functionName) &&
@@ -177,8 +182,6 @@ bool sensitiveDataService::initialize() {
       setNumberItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort)->valuedouble) : defaultOtaPort, functionName) &&
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) : defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl))), functionName) &&
-      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUser, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUser)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUser))), functionName) &&
-      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPass, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPass)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPass))), functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)->valuedouble) : defaultTimeServerPort, functionName) &&
       setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) : defaultTimeServerTls, functionName);
   if (!migrationResult) {
@@ -417,18 +420,13 @@ bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
 }
 
 bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
-                                                String* timeServerUserOut,
-                                                String* timeServerPassOut,
                                                 int32_t* timeServerPortOut,
                                                 bool* timeServerTlsOut) {
   constexpr const char* functionName = "sensitiveDataService::loadTimeServerConfig";
-  if (timeServerUrlOut == nullptr || timeServerUserOut == nullptr || timeServerPassOut == nullptr ||
-      timeServerPortOut == nullptr || timeServerTlsOut == nullptr) {
-    appLogError("%s failed. output parameter is null. timeServerUrlOut=%p, timeServerUserOut=%p, timeServerPassOut=%p, timeServerPortOut=%p, timeServerTlsOut=%p",
+  if (timeServerUrlOut == nullptr || timeServerPortOut == nullptr || timeServerTlsOut == nullptr) {
+    appLogError("%s failed. output parameter is null. timeServerUrlOut=%p, timeServerPortOut=%p, timeServerTlsOut=%p",
                 functionName,
                 timeServerUrlOut,
-                timeServerUserOut,
-                timeServerPassOut,
                 timeServerPortOut,
                 timeServerTlsOut);
     return false;
@@ -454,17 +452,12 @@ bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
   }
 
   cJSON* timeServerUrlItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl);
-  cJSON* timeServerUserItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUser);
-  cJSON* timeServerPassItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPass);
   cJSON* timeServerPortItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort);
   cJSON* timeServerTlsItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls);
-  if (!cJSON_IsString(timeServerUrlItem) || !cJSON_IsString(timeServerUserItem) || !cJSON_IsString(timeServerPassItem) ||
-      !cJSON_IsNumber(timeServerPortItem) || !cJSON_IsBool(timeServerTlsItem)) {
-    appLogError("%s failed. timeServer item type mismatch. url=%d user=%d pass=%d port=%d tls=%d",
+  if (!cJSON_IsString(timeServerUrlItem) || !cJSON_IsNumber(timeServerPortItem) || !cJSON_IsBool(timeServerTlsItem)) {
+    appLogError("%s failed. timeServer item type mismatch. url=%d port=%d tls=%d",
                 functionName,
                 cJSON_IsString(timeServerUrlItem),
-                cJSON_IsString(timeServerUserItem),
-                cJSON_IsString(timeServerPassItem),
                 cJSON_IsNumber(timeServerPortItem),
                 cJSON_IsBool(timeServerTlsItem));
     cJSON_Delete(rootObject);
@@ -472,8 +465,6 @@ bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
   }
 
   *timeServerUrlOut = timeServerUrlItem->valuestring;
-  *timeServerUserOut = timeServerUserItem->valuestring;
-  *timeServerPassOut = timeServerPassItem->valuestring;
   *timeServerPortOut = static_cast<int32_t>(timeServerPortItem->valuedouble);
   *timeServerTlsOut = cJSON_IsTrue(timeServerTlsItem);
   cJSON_Delete(rootObject);
@@ -537,8 +528,6 @@ bool sensitiveDataService::ensureDefaultFileExists() {
       setNumberItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort, defaultOtaPort, functionName) &&
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, "", functionName) &&
-      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUser, "", functionName) &&
-      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPass, "", functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, defaultTimeServerPort, functionName) &&
       setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, defaultTimeServerTls, functionName);
   if (!defaultResult) {

@@ -33,9 +33,8 @@ struct mqttIncomingMessage {
   mqttIncomingType messageType;
   String commandName;
   String subName;
-  String requestId;
-  String replyId;
-  String noticeId;
+  String dstId;
+  String srcId;
   String rawPayload;
 };
 
@@ -43,10 +42,14 @@ struct mqttIncomingMessage {
  * @brief status payloadを生成する。
  * @param subName サブ種別（例: boot）。
  * @param reservedArgument 予備引数（statusではonlineStateとして使用）。
+ * @param startupCpuMillis mainTaskEntry開始時のCPU時刻(ms)。
  * @param payloadTextOut 出力先（null不可）。
  * @return 成功時true、失敗時false。
  */
-bool buildMqttStatusPayload(const char* subName, const char* reservedArgument, String* payloadTextOut);
+bool buildMqttStatusPayload(const char* subName,
+                            const char* reservedArgument,
+                            uint32_t startupCpuMillis,
+                            String* payloadTextOut);
 
 /**
  * @brief statusメッセージを送信する。
@@ -54,9 +57,14 @@ bool buildMqttStatusPayload(const char* subName, const char* reservedArgument, S
  * @param topicName 送信topic（null不可）。
  * @param subName サブ種別。
  * @param reservedArgument 予備引数（statusではonlineStateとして使用）。
+ * @param startupCpuMillis mainTaskEntry開始時のCPU時刻(ms)。
  * @return 成功時true、失敗時false。
  */
-bool sendMqttStatus(PubSubClient* mqttClientOut, const char* topicName, const char* subName, const char* reservedArgument);
+bool sendMqttStatus(PubSubClient* mqttClientOut,
+                    const char* topicName,
+                    const char* subName,
+                    const char* reservedArgument,
+                    uint32_t startupCpuMillis);
 
 /**
  * @brief callメッセージを送信する。

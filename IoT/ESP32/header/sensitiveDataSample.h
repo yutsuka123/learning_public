@@ -26,7 +26,15 @@
 /** MQTT Port */
 #define SENSITIVE_MQTT_PORT 8883
 /** MQTT TLS: 0=false, 1=true */
-#define SENSITIVE_MQTT_TLS 0
+#define SENSITIVE_MQTT_TLS 1
+/**
+ * MQTT TLS CA証明書(PEM)サンプル。
+ * [厳守] 実運用ではブローカー証明書チェーンを検証可能なCA証明書を設定する。
+ */
+#define SENSITIVE_MQTT_TLS_CA_CERT \
+    "-----BEGIN CERTIFICATE-----\n" \
+    "DUMMY_CA_CERTIFICATE_CONTENT\n" \
+    "-----END CERTIFICATE-----\n"
 
 /** Server Host / IP */
 #define SENSITIVE_SERVER_URL "127.0.0.1"
