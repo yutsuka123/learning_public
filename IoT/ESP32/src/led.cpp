@@ -247,6 +247,45 @@ void ledController::indicateErrorPattern() {
   executeRedPattern(3, 4, 300, 300, 1000);
 }
 
+void ledController::indicateButtonShortPressPattern() {
+  if (!lockLedControl(portMAX_DELAY)) {
+    return;
+  }
+  // [重要] 要件どおり青/緑を同時に 0.5s OFF -> 0.5s ON を1回実施する。
+  setBlueLed(false);
+  setGreenLed(false);
+  vTaskDelay(pdMS_TO_TICKS(500));
+  setBlueLed(true);
+  setGreenLed(true);
+  vTaskDelay(pdMS_TO_TICKS(500));
+  unlockLedControl();
+}
+
+void ledController::indicateButtonLongPressRebootPattern() {
+  if (!lockLedControl(portMAX_DELAY)) {
+    return;
+  }
+  // [重要] 要件どおり青LEDを 0.5s OFF -> 0.5s ON で3回点滅する。
+  for (uint32_t blinkIndex = 0; blinkIndex < 3; ++blinkIndex) {
+    setBlueLed(false);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    setBlueLed(true);
+    vTaskDelay(pdMS_TO_TICKS(500));
+  }
+  unlockLedControl();
+}
+
+void ledController::indicateMaintenanceModeRedOn() {
+  if (!lockLedControl(portMAX_DELAY)) {
+    return;
+  }
+  // [重要] メンテナンスモードは赤LED点灯を継続状態として示す。
+  setBlueLed(false);
+  setGreenLed(false);
+  setRedLed(true);
+  unlockLedControl();
+}
+
 /**
  * @brief LEDタスクを生成し、受信用キューを登録する。
  * @return 生成成功時true、失敗時false。

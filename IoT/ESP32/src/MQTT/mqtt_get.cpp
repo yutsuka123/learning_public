@@ -23,9 +23,8 @@ bool sendMqttGet(PubSubClient* mqttClientOut, const char* topicName, const char*
   jsonService payloadJsonService;
   jsonKeyValueItem itemList[] = {
       {iotCommon::mqtt::jsonKey::get::kVersion, jsonValueType::kString, "1", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::get::kRequestId, jsonValueType::kString, "", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::get::kReplyId, jsonValueType::kString, "", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::get::kNoticeId, jsonValueType::kString, noticeIdText.c_str(), 0, 0, false},
+      {iotCommon::mqtt::jsonKey::get::kDstId, jsonValueType::kString, "all", 0, 0, false},
+      {iotCommon::mqtt::jsonKey::get::kSrcId, jsonValueType::kString, noticeIdText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::get::kKind, jsonValueType::kString, "Notice", 0, 0, false},
       {iotCommon::mqtt::jsonKey::get::kCommand, jsonValueType::kString, iotCommon::mqtt::jsonKey::get::kCommand, 0, 0, false},
       {iotCommon::mqtt::jsonKey::get::kSub, jsonValueType::kString, selectedSubName, 0, 0, false},

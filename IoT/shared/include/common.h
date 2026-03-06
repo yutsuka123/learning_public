@@ -53,29 +53,65 @@ namespace mqtt {
     /** @brief コマンド名: ネットワーク設定 */
     constexpr const char* kCmdNetwork = "network";
 
+    /**
+     * @brief レスポンス結果コード文字列。
+     * @details
+     * - [重要] 要求を受けた側が `jsonKey::*::kRes` へ設定する。
+     * - [厳守] `kNg` の場合は `detail` に異常理由を記載する。
+     */
+    namespace responseResult {
+        constexpr const char* kOk = "OK";
+        constexpr const char* kNg = "NG";
+        constexpr const char* kBusy = "BUSY";
+    }
+
+    /**
+     * @brief `kSub` に設定するサブコマンド値定義（文字列定数）。
+     * @details
+     * - [重要] `kSub` は本定義を使用し、ハードコード文字列を避ける。
+     * - [禁止] `gpioSet` / `gpioGet` は現時点で新規利用禁止（セキュリティ方針）。
+     */
+    namespace subCommand {
+        namespace set {
+            constexpr const char* kGpioSet = "gpioSet";
+            constexpr const char* kRelaySet = "relaySet";
+        }
+        namespace get {
+            constexpr const char* kGpioGet = "gpioGet";
+            constexpr const char* kRelayGet = "relayGet";
+            constexpr const char* kTempGet = "tempGet";
+            constexpr const char* kHumidityGet = "humidityGet";
+            constexpr const char* kLightGet = "lightGet";
+        }
+        namespace call {
+            constexpr const char* kLedOn = "ledON";
+            constexpr const char* kLedOff = "ledOFF";
+            constexpr const char* kBuzzOn = "buzzON";
+            constexpr const char* kBuzzOff = "buzzOFF";
+            constexpr const char* kOtaStart = "otaStart";
+        }
+        namespace status {
+            constexpr const char* kStartUp = "start-up";
+            constexpr const char* kWill = "Will";
+            constexpr const char* kReConnect = "reconnect";
+            constexpr const char* kButton = "button";
+            constexpr const char* kReply = "reply";
+            constexpr const char* kRestartButton = "restart(button)";
+            constexpr const char* kRestartAbort = "restart(abort)";
+            constexpr const char* kRestartCall = "restart(call)";
+        }
+    }
+
     /** @brief JSONフィールドキー定義 */
     namespace jsonKey {
-        /** @brief [推奨] すべてのコマンドで共通利用するエンベロープキー。 */
-        namespace common {
-            constexpr const char* kVersion = "v";
-            constexpr const char* kDeviceId = "deviceId";
-            constexpr const char* kMacAddr = "macAddr";
-            constexpr const char* kId = "id";
-            constexpr const char* kTimestamp = "ts";
-            constexpr const char* kOperation = "op";
-            constexpr const char* kArgs = "args";
-            constexpr const char* kResult = "result";
-            constexpr const char* kDetail = "detail";
-        }
-
         /** @brief [推奨] networkコマンド専用キー。 */
         namespace network {
             constexpr const char* kVersion = "v"; // 共通キー
-            constexpr const char* kRequestId = "requestId";
-            constexpr const char* kReplyId = "replyId";
-            constexpr const char* kNoticeId = "noticeId";
-            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kDstId = "DstID"; // 発信先ID
+            constexpr const char* kSrcId = "SrcID"; // 発信元ID
             constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
+            constexpr const char* kRes = "Res"; // 返答用。値は responseResult::kOk / kNg / kBusy を使用。
+            constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kWifiSsid = "wifiSSID";
             constexpr const char* kWifiPass = "wifiPass";
             constexpr const char* kMqttUrl = "mqttUrl";
@@ -97,8 +133,6 @@ namespace mqtt {
             constexpr const char* kOtaTls = "otaTls";
             constexpr const char* kTimeServer = "timeServer";
             constexpr const char* kTimeServerUrl = "timeServerUrl";
-            constexpr const char* kTimeServerUser = "timeServerUser";
-            constexpr const char* kTimeServerPass = "timeServerPass";
             constexpr const char* kTimeServerPort = "timeServerPort";
             constexpr const char* kTimeServerTls = "timeServerTls";
             constexpr const char* kApply = "apply";
@@ -108,13 +142,12 @@ namespace mqtt {
         /** @brief setコマンド専用キー。 */
         namespace set {
             constexpr const char* kVersion = "v"; // 共通キー
-            constexpr const char* kRequestId = "requestId";
-            constexpr const char* kReplyId = "replyId";
-            constexpr const char* kNoticeId = "noticeId";
-            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kDstId = "DstID"; // 発信先ID
+            constexpr const char* kSrcId = "SrcID"; // 発信元ID
             constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
+            constexpr const char* kRes = "Res"; // 返答用。値は responseResult::kOk / kNg / kBusy を使用。
             constexpr const char* kMacAddr = "macAddr";
-            constexpr const char* kId = "id";
+            constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "set";
             constexpr const char* kSub = "sub";
@@ -124,13 +157,12 @@ namespace mqtt {
         /** @brief getコマンド専用キー。 */
         namespace get {
             constexpr const char* kVersion = "v"; // 共通キー
-            constexpr const char* kRequestId = "requestId";
-            constexpr const char* kReplyId = "replyId";
-            constexpr const char* kNoticeId = "noticeId";
-            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kDstId = "DstID"; // 発信先ID
+            constexpr const char* kSrcId = "SrcID"; // 発信元ID
             constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
+            constexpr const char* kRes = "Res"; // 返答用。値は responseResult::kOk / kNg / kBusy を使用。
             constexpr const char* kMacAddr = "macAddr";
-            constexpr const char* kId = "id";
+            constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "get";
             constexpr const char* kSub = "sub";
@@ -140,13 +172,12 @@ namespace mqtt {
         /** @brief callコマンド専用キー。 */
         namespace call {
             constexpr const char* kVersion = "v"; // 共通キー
-            constexpr const char* kRequestId = "requestId";
-            constexpr const char* kReplyId = "replyId";
-            constexpr const char* kNoticeId = "noticeId";
-            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kDstId = "DstID"; // 発信先ID
+            constexpr const char* kSrcId = "SrcID"; // 発信元ID
             constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
+            constexpr const char* kRes = "Res"; // 返答用。値は responseResult::kOk / kNg / kBusy を使用。
             constexpr const char* kMacAddr = "macAddr";
-            constexpr const char* kId = "id";
+            constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "call";
             constexpr const char* kSub = "sub";
@@ -156,37 +187,37 @@ namespace mqtt {
         /** @brief statusコマンド専用キー。 */
         namespace status {
             constexpr const char* kVersion = "v"; // 共通キー
-            constexpr const char* kRequestId = "requestId";
-            constexpr const char* kReplyId = "replyId";
-            constexpr const char* kNoticeId = "noticeId";
-            constexpr const char* kDeviceId = "deviceId";
+            constexpr const char* kDstId = "DstID"; // 発信先ID
+            constexpr const char* kSrcId = "SrcID"; // 発信元ID
             constexpr const char* kKind = "Request";/**返信ならResponse、通知ならNotice */
-            constexpr const char* kMacAddr = "macAddr";
-            constexpr const char* kId = "id";
+            constexpr const char* kRes = "Res"; // 返答用。値は responseResult::kOk / kNg / kBusy を使用。
+            constexpr const char* kMacAddr = "macAddr"; // [重要] ESP32のeFuse由来Base MAC（変更不可）
+            constexpr const char* kMacAddrNetwork = "macAddrNetwork"; // [重要] ネットワークアダプタMAC（ESP32は通常Wi-Fi MAC）
+            constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "status";
             constexpr const char* kSub = "sub";
             constexpr const char* kOnlineState = "onlineState";
             constexpr const char* kStartUpTime = "startUpTime";
-            constexpr const char* kDeviceTime = "deviceTime";
             constexpr const char* kFirmwareVersion = "firmwareVersion";
             constexpr const char* kWifiSignalLevel = "wifiSignalLevel";
             constexpr const char* kIpAddress = "ipAddress";
             constexpr const char* kWifiSsid = "wifiSsid";
+            constexpr const char* kDetail = "detail";
         }
         /**
          * @brief [旧仕様] 既存参照互換のためのエイリアス。
-         * @details 移行中は残す。新規実装では common / network を直接参照すること。
+         * @details 移行中は残す。新規実装では network を直接参照すること。
          */
-        constexpr const char* kVersion = common::kVersion;
-        constexpr const char* kDeviceId = common::kDeviceId;
-        constexpr const char* kMacAddr = common::kMacAddr;
-        constexpr const char* kId = common::kId;
-        constexpr const char* kTimestamp = common::kTimestamp;
-        constexpr const char* kOperation = common::kOperation;
-        constexpr const char* kArgs = common::kArgs;
-        constexpr const char* kResult = common::kResult;
-        constexpr const char* kDetail = common::kDetail;
+        constexpr const char* kVersion = "v";
+        constexpr const char* kDeviceId = "deviceId";
+        constexpr const char* kMacAddr = "macAddr";
+        constexpr const char* kId = "id";
+        constexpr const char* kTimestamp = "ts";
+        constexpr const char* kOperation = "op";
+        constexpr const char* kArgs = "args";
+        constexpr const char* kResult = "result";
+        constexpr const char* kDetail = "detail";
         constexpr const char* kWifiSsid = network::kWifiSsid;
         constexpr const char* kWifiPass = network::kWifiPass;
         constexpr const char* kMqttUrl = network::kMqttUrl;
@@ -208,8 +239,6 @@ namespace mqtt {
         constexpr const char* kOtaTls = network::kOtaTls;
         constexpr const char* kTimeServer = network::kTimeServer;
         constexpr const char* kTimeServerUrl = network::kTimeServerUrl;
-        constexpr const char* kTimeServerUser = network::kTimeServerUser;
-        constexpr const char* kTimeServerPass = network::kTimeServerPass;
         constexpr const char* kTimeServerPort = network::kTimeServerPort;
         constexpr const char* kTimeServerTls = network::kTimeServerTls;
         constexpr const char* kApply = network::kApply;

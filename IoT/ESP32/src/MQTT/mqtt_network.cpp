@@ -23,10 +23,8 @@ bool sendMqttNetwork(PubSubClient* mqttClientOut, const char* topicName, const c
   jsonService payloadJsonService;
   jsonKeyValueItem itemList[] = {
       {iotCommon::mqtt::jsonKey::network::kVersion, jsonValueType::kString, "1", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::network::kRequestId, jsonValueType::kString, "", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::network::kReplyId, jsonValueType::kString, "", 0, 0, false},
-      {iotCommon::mqtt::jsonKey::network::kNoticeId, jsonValueType::kString, noticeIdText.c_str(), 0, 0, false},
-      {iotCommon::mqtt::jsonKey::network::kDeviceId, jsonValueType::kString, noticeIdText.c_str(), 0, 0, false},
+      {iotCommon::mqtt::jsonKey::network::kDstId, jsonValueType::kString, "all", 0, 0, false},
+      {iotCommon::mqtt::jsonKey::network::kSrcId, jsonValueType::kString, noticeIdText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::network::kKind, jsonValueType::kString, "Notice", 0, 0, false},
       {iotCommon::mqtt::jsonKey::network::kWifiSsid, jsonValueType::kString, selectedSubName, 0, 0, false},
       {iotCommon::mqtt::jsonKey::kDetail, jsonValueType::kString, selectedReserved, 0, 0, false},

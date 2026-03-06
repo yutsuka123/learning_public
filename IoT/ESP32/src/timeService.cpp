@@ -18,9 +18,13 @@ namespace {
 /** @brief 同期完了判定に使う最小妥当UNIX時刻（2021-01-01 UTC）。 */
 constexpr time_t minimumValidEpochSeconds = 1609459200;
 /** @brief 同期完了待機回数。 */
-constexpr int32_t syncWaitRetryCount = 30;
+constexpr int32_t syncWaitRetryCount = 60;
 /** @brief 同期完了待機間隔(ms)。 */
 constexpr int32_t syncWaitIntervalMs = 500;
+/** @brief 予備NTPサーバー1。 */
+constexpr const char* fallbackNtpServer1 = "pool.ntp.org";
+/** @brief 予備NTPサーバー2。 */
+constexpr const char* fallbackNtpServer2 = "time.google.com";
 }
 
 bool timeService::initializeAndSync(const String& timeServerUrl,
@@ -67,8 +71,13 @@ bool timeService::syncNow() {
     appLogWarn("%s note. user/password for time server are currently not used by NTP implementation.", functionName);
   }
 
-  appLogInfo("%s start. timeServerUrl=%s", functionName, timeServerUrl_.c_str());
-  configTime(0, 0, timeServerUrl_.c_str());
+  appLogInfo("%s start. primary=%s fallback1=%s fallback2=%s",
+             functionName,
+             timeServerUrl_.c_str(),
+             fallbackNtpServer1,
+             fallbackNtpServer2);
+  // [重要] 主サーバー不達時に過去回帰を避けるため、既知の公開NTPを予備として同時設定する。
+  configTime(0, 0, timeServerUrl_.c_str(), fallbackNtpServer1, fallbackNtpServer2);
   bool syncResult = waitForSntpSync(functionName);
   if (!syncResult) {
     appLogError("%s failed. waitForSntpSync returned false. timeServerUrl=%s", functionName, timeServerUrl_.c_str());
