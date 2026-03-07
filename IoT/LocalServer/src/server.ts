@@ -10,17 +10,40 @@
 import fs from "fs";
 import path from "path";
 import https from "https";
+import crypto from "crypto";
 import express, { Request, Response } from "express";
+import multer from "multer";
 import { WebSocketServer } from "ws";
 import { loadConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
 import { mqttGateway } from "./mqttGateway";
-import { commandRequestBody, otaCommandRequestBody } from "./types";
+import { SettingsStore } from "./settingsStore";
+import { commandRequestBody, otaCommandRequestBody, localServerSettings } from "./types";
 
 const config = loadConfig();
 const app = express();
 const registry = new DeviceRegistry(config.statusOfflineTimeoutSeconds);
 const gateway = new mqttGateway(config, registry);
+const settingsStore = new SettingsStore(config);
+const uploadDirectoryPath = path.resolve(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDirectoryPath)) {
+  fs.mkdirSync(uploadDirectoryPath, { recursive: true });
+}
+const firmwareUploadMiddleware = multer({
+  storage: multer.diskStorage({
+    destination: (_request, _file, callback) => {
+      callback(null, uploadDirectoryPath);
+    },
+    filename: (_request, file, callback) => {
+      const timestampText = new Date().toISOString().replace(/[:.]/g, "-");
+      const normalizedName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
+      callback(null, `${timestampText}_${normalizedName}`);
+    }
+  }),
+  limits: {
+    fileSize: 16 * 1024 * 1024
+  }
+});
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.resolve(process.cwd(), "public")));
@@ -44,6 +67,75 @@ app.get("/api/devices", (_request: Request, response: Response) => {
     devices: registry.listDevices()
   });
 });
+
+/**
+ * @description 現在のローカル設定を返すAPI。
+ */
+app.get("/api/settings", (_request: Request, response: Response) => {
+  try {
+    const currentSettings = settingsStore.getSettings();
+    const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+    const metadata = readOtaFirmwareMetadata(activeFirmwarePath, false);
+    response.json({
+      settings: currentSettings,
+      activeFirmwarePath,
+      firmwareInfo: metadata
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description ローカル設定を更新するAPI。
+ */
+app.put("/api/settings", (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as Partial<localServerSettings>;
+    const updatedSettings = settingsStore.updateSettings(requestBody);
+    response.json({
+      result: "OK",
+      settings: updatedSettings
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description OTAファームウェアをアップロードするAPI。
+ */
+app.post(
+  "/api/settings/firmware-upload",
+  firmwareUploadMiddleware.single("firmware"),
+  (request: Request, response: Response) => {
+    try {
+      if (request.file === undefined) {
+        throw new Error("firmware upload failed. file is required.");
+      }
+      const updatedSettings = settingsStore.setUploadedFirmwareFileName(request.file.filename);
+      const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+      const metadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
+      response.json({
+        result: "OK",
+        settings: updatedSettings,
+        activeFirmwarePath,
+        firmwareInfo: metadata
+      });
+    } catch (apiError) {
+      response.status(400).json({
+        result: "NG",
+        detail: getErrorMessage(apiError)
+      });
+    }
+  }
+);
 
 /**
  * @description status要求コマンド発行API。
@@ -74,14 +166,19 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
   try {
     const requestBody = request.body as otaCommandRequestBody;
     validateCommandBody("ota", requestBody);
+    const currentSettings = settingsStore.getSettings();
+    const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+    const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
     const otaManifestUrl = requestBody.manifestUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/manifest.json`;
     const otaFirmwareUrl = requestBody.firmwareUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`;
-    const otaFirmwareVersion = requestBody.firmwareVersion ?? config.otaFirmwareVersion;
+    const otaFirmwareVersion = requestBody.firmwareVersion ?? currentSettings.otaFirmwareVersion;
+    const otaSha256 = requestBody.sha256 ?? otaFirmwareMetadata.sha256;
     const timeoutSeconds = requestBody.timeoutSeconds ?? 120;
     await gateway.requestOta(requestBody.targetNames, {
       manifestUrl: otaManifestUrl,
       firmwareUrl: otaFirmwareUrl,
       firmwareVersion: otaFirmwareVersion,
+      sha256: otaSha256,
       timeoutSeconds
     });
     response.json({
@@ -90,7 +187,8 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
       targetNames: requestBody.targetNames,
       manifestUrl: otaManifestUrl,
       firmwareUrl: otaFirmwareUrl,
-      firmwareVersion: otaFirmwareVersion
+      firmwareVersion: otaFirmwareVersion,
+      sha256: otaSha256
     });
   } catch (apiError) {
     response.status(400).json({
@@ -105,14 +203,17 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
  * @description OTA用manifestを返す。
  */
 app.get("/ota/manifest.json", (_request: Request, response: Response) => {
-  const firmwareExists = fs.existsSync(config.otaFirmwarePath);
-  const firmwareFileName = path.basename(config.otaFirmwarePath);
+  const currentSettings = settingsStore.getSettings();
+  const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+  const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, false);
   response.json({
-    version: config.otaFirmwareVersion,
-    fileName: firmwareFileName,
+    version: currentSettings.otaFirmwareVersion,
+    fileName: otaFirmwareMetadata.fileName,
     firmwareUrl: `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`,
+    sha256: otaFirmwareMetadata.sha256,
+    fileSize: otaFirmwareMetadata.fileSize,
     generatedAt: new Date().toISOString(),
-    fileExists: firmwareExists
+    fileExists: otaFirmwareMetadata.fileExists
   });
 });
 
@@ -120,14 +221,15 @@ app.get("/ota/manifest.json", (_request: Request, response: Response) => {
  * @description OTA配布ファイルを返す。
  */
 app.get("/ota/firmware.bin", (_request: Request, response: Response) => {
-  if (!fs.existsSync(config.otaFirmwarePath)) {
+  const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+  if (!fs.existsSync(activeFirmwarePath)) {
     response.status(404).json({
       result: "NG",
       detail: "firmware.bin not found"
     });
     return;
   }
-  response.sendFile(config.otaFirmwarePath);
+  response.sendFile(activeFirmwarePath);
 });
 
 const httpServer = app.listen(config.httpPort, () => {
@@ -149,6 +251,10 @@ webSocketServer.on("connection", (clientSocket) => {
 });
 
 gateway.on("statusUpdated", () => {
+  broadcastDeviceList();
+});
+
+gateway.on("otaProgressUpdated", () => {
   broadcastDeviceList();
 });
 
@@ -207,21 +313,29 @@ function startOtaHttpsServer(): void {
 
   const otaApp = express();
   otaApp.get("/ota/manifest.json", (_request: Request, response: Response) => {
+    const currentSettings = settingsStore.getSettings();
+    const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+    const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, false);
     response.json({
-      version: config.otaFirmwareVersion,
+      version: currentSettings.otaFirmwareVersion,
+      fileName: otaFirmwareMetadata.fileName,
       firmwareUrl: `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`,
-      generatedAt: new Date().toISOString()
+      sha256: otaFirmwareMetadata.sha256,
+      fileSize: otaFirmwareMetadata.fileSize,
+      generatedAt: new Date().toISOString(),
+      fileExists: otaFirmwareMetadata.fileExists
     });
   });
   otaApp.get("/ota/firmware.bin", (_request: Request, response: Response) => {
-    if (!fs.existsSync(config.otaFirmwarePath)) {
+    const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+    if (!fs.existsSync(activeFirmwarePath)) {
       response.status(404).json({
         result: "NG",
         detail: "firmware.bin not found"
       });
       return;
     }
-    response.sendFile(config.otaFirmwarePath);
+    response.sendFile(activeFirmwarePath);
   });
 
   const otaServer = https.createServer(
@@ -261,4 +375,38 @@ function validateCommandBody(commandName: string, requestBody: commandRequestBod
  */
 function getErrorMessage(errorValue: unknown): string {
   return errorValue instanceof Error ? errorValue.message : String(errorValue);
+}
+
+/**
+ * @description OTA配布ファームウェアのメタ情報を取得する。
+ * @param throwIfMissing trueならファイル未存在時に例外を投げる。
+ * @returns メタ情報。
+ */
+function readOtaFirmwareMetadata(firmwarePath: string, throwIfMissing: boolean): {
+  fileExists: boolean;
+  fileName: string;
+  fileSize: number;
+  sha256: string;
+} {
+  const fileExists = fs.existsSync(firmwarePath);
+  const fileName = path.basename(firmwarePath);
+  if (!fileExists) {
+    if (throwIfMissing) {
+      throw new Error(`readOtaFirmwareMetadata failed. firmwarePath=${firmwarePath} file not found`);
+    }
+    return {
+      fileExists: false,
+      fileName,
+      fileSize: 0,
+      sha256: ""
+    };
+  }
+
+  const firmwareBuffer = fs.readFileSync(firmwarePath);
+  return {
+    fileExists: true,
+    fileName,
+    fileSize: firmwareBuffer.byteLength,
+    sha256: crypto.createHash("sha256").update(firmwareBuffer).digest("hex")
+  };
 }

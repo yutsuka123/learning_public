@@ -45,8 +45,11 @@ enum class appMessageType : uint8_t {
   kMqttInitDone = 21,
   kMqttPublishOnlineRequest = 22,
   kMqttPublishOnlineDone = 23,
+  kMqttPublishOtaProgressRequest = 24,
+  kMqttPublishOtaProgressDone = 25,
   kTimeServerInitRequest = 30,
   kTimeServerInitDone = 31,
+  kOtaStartRequest = 40,
   kTaskError = 255,
 };
 

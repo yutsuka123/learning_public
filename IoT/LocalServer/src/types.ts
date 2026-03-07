@@ -23,6 +23,11 @@ export interface deviceState {
   ipAddress: string;
   wifiSsid: string;
   firmwareVersion: string;
+  firmwareWrittenAt: string;
+  otaProgressPercent: number | null;
+  otaPhase: string;
+  otaDetail: string;
+  otaUpdatedAt: string;
   onlineState: deviceOnlineState;
   detail: string;
   lastMessageId: string;
@@ -43,8 +48,24 @@ export interface statusMessage {
   ipAddress: string;
   wifiSsid: string;
   firmwareVersion: string;
+  firmwareWrittenAt: string;
   onlineState: string;
   statusSub: string;
+  detail: string;
+  receivedAt: string;
+}
+
+/**
+ * @description OTA進捗通知の正規化結果。
+ */
+export interface otaProgressMessage {
+  topic: string;
+  srcId: string;
+  dstId: string;
+  messageId: string;
+  firmwareVersion: string;
+  progressPercent: number | null;
+  phase: string;
   detail: string;
   receivedAt: string;
 }
@@ -64,6 +85,23 @@ export interface otaCommandRequestBody extends commandRequestBody {
   manifestUrl?: string;
   firmwareUrl?: string;
   firmwareVersion?: string;
+  sha256?: string;
+}
+
+/**
+ * @description OTA配布ファームウェアの取得方式。
+ */
+export type firmwareSourceType = "localPath" | "uploadedFile";
+
+/**
+ * @description LocalServerの永続設定モデル。
+ */
+export interface localServerSettings {
+  timeZone: string;
+  firmwareSource: firmwareSourceType;
+  firmwareLocalPath: string;
+  firmwareUploadedFileName: string;
+  otaFirmwareVersion: string;
 }
 
 /**
