@@ -19,13 +19,32 @@
 #include <PubSubClient.h>
 
 #include "common.h"
+#include "firmwareInfo.h"
 #include "interTaskMessage.h"
+#include "jsonService.h"
 #include "mqttMessages.h"
 #include "led.h"
 #include "log.h"
+#include "ota.h"
 #include "sensitiveData.h"
+#include "util.h"
+#include "version.h"
 
 namespace {
+/**
+ * @brief OTA進捗フェーズが終端（done/error）か判定する。
+ * @param phaseText フェーズ文字列。
+ * @return 終端フェーズならtrue。
+ */
+bool isTerminalOtaPhase(const char* phaseText) {
+  if (phaseText == nullptr) {
+    return false;
+  }
+  String normalizedPhase = String(phaseText);
+  normalizedPhase.trim();
+  return normalizedPhase.equalsIgnoreCase("done") || normalizedPhase.equalsIgnoreCase("error");
+}
+
 /**
  * @brief MQTT向けTLSクライアント。
  * @details
@@ -382,6 +401,72 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
              parsedMessage.subName.c_str(),
              parsedMessage.dstId.c_str(),
              parsedMessage.srcId.c_str());
+
+  bool isStatusCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/status/") != nullptr);
+  if (isStatusCallTopic &&
+      parsedMessage.subName == iotCommon::mqtt::jsonKey::status::kCommand) {
+    appUtil::appTaskMessageDetail statusReplyDetail = appUtil::createEmptyMessageDetail();
+    statusReplyDetail.hasIntValue = true;
+    statusReplyDetail.intValue = static_cast<int32_t>(mainTaskStartupCpuMillis);
+    statusReplyDetail.text = "status reply requested by mqtt callback";
+    statusReplyDetail.text2 = iotCommon::mqtt::subCommand::status::kReply;
+    statusReplyDetail.text3 = statusValueOnline;
+    bool sendResult = appUtil::sendMessage(appTaskId::kMqtt,
+                                           appTaskId::kMqtt,
+                                           appMessageType::kMqttPublishOnlineRequest,
+                                           &statusReplyDetail,
+                                           100);
+    if (!sendResult) {
+      appLogError("onMqttMessageReceived failed. could not queue status reply. topic=%s srcId=%s dstId=%s",
+                  (topicName == nullptr ? "(null)" : topicName),
+                  parsedMessage.srcId.c_str(),
+                  parsedMessage.dstId.c_str());
+    } else {
+      appLogInfo("onMqttMessageReceived: status reply queued. topic=%s srcId=%s dstId=%s",
+                 (topicName == nullptr ? "(null)" : topicName),
+                 parsedMessage.srcId.c_str(),
+                 parsedMessage.dstId.c_str());
+    }
+  }
+
+  bool isOtaStartCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/otaStart/") != nullptr);
+  if (isOtaStartCallTopic &&
+      parsedMessage.subName == iotCommon::mqtt::subCommand::call::kOtaStart) {
+    jsonService payloadJsonService;
+    otaStartRequestContext otaRequestContext;
+    payloadJsonService.getValueByPath(parsedMessage.rawPayload, "id", &otaRequestContext.transactionId);
+    payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.firmwareVersion", &otaRequestContext.firmwareVersion);
+    payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.firmwareUrl", &otaRequestContext.firmwareUrl);
+    payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.sha256", &otaRequestContext.firmwareSha256);
+    if (otaRequestContext.firmwareSha256.length() == 0) {
+      payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.firmwareSha256", &otaRequestContext.firmwareSha256);
+    }
+
+    if (otaRequestContext.firmwareUrl.length() == 0) {
+      appLogError("onMqttMessageReceived failed. otaStart firmwareUrl is empty. topic=%s payload=%s",
+                  (topicName == nullptr ? "(null)" : topicName),
+                  payloadText.c_str());
+      return;
+    }
+
+    storePendingOtaStartRequest(otaRequestContext);
+    bool sendResult = appUtil::sendMessage(appTaskId::kOta,
+                                           appTaskId::kMqtt,
+                                           appMessageType::kOtaStartRequest,
+                                           nullptr,
+                                           100);
+    if (!sendResult) {
+      appLogError("onMqttMessageReceived failed. could not queue ota start. topic=%s version=%s url=%s",
+                  (topicName == nullptr ? "(null)" : topicName),
+                  otaRequestContext.firmwareVersion.c_str(),
+                  otaRequestContext.firmwareUrl.c_str());
+    } else {
+      appLogInfo("onMqttMessageReceived: ota start queued. topic=%s version=%s url=%s",
+                 (topicName == nullptr ? "(null)" : topicName),
+                 otaRequestContext.firmwareVersion.c_str(),
+                 otaRequestContext.firmwareUrl.c_str());
+    }
+  }
 }
 
 /**
@@ -551,13 +636,15 @@ bool connectToMqttBroker() {
     String fallbackWifiSsid = (WiFi.status() == WL_CONNECTED) ? WiFi.SSID() : String("(dummy-ssid)");
     String fallbackIpAddress = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("0.0.0.0");
     long fallbackRssi = static_cast<long>(WiFi.RSSI());
+    const String resolvedFirmwareWrittenAt =
+        firmwareInfo::resolveFirmwareWrittenAtForStatus(appVersion::kFirmwareVersion, appVersion::kFirmwareWrittenAt);
     char willFallbackBuffer[700] = {};
     int printLength = snprintf(
         willFallbackBuffer,
         sizeof(willFallbackBuffer),
         "{\"v\":\"1\",\"DstID\":\"all\",\"SrcID\":\"%s\",\"Request\":\"Notice\",\"macAddr\":\"%s\",\"macAddrNetwork\":\"%s\","
         "\"id\":\"%s\",\"ts\":\"%s\",\"status\":\"status\",\"sub\":\"Will\",\"onlineState\":\"Offline\","
-        "\"startUpTime\":\"%s\",\"firmwareVersion\":\"0.0.0-dev\",\"wifiSignalLevel\":%ld,"
+        "\"startUpTime\":\"%s\",\"fwVersion\":\"%s\",\"fwWrittenAt\":\"%s\",\"firmwareVersion\":\"%s\",\"firmwareWrittenAt\":\"%s\",\"wifiSignalLevel\":%ld,"
         "\"ipAddress\":\"%s\",\"wifiSsid\":\"%s\",\"detail\":\"Disconnect\"}",
         deviceNodeName.c_str(),
         efuseMacText.c_str(),
@@ -565,6 +652,10 @@ bool connectToMqttBroker() {
         fallbackIdText.c_str(),
         fallbackTsText.c_str(),
         fallbackStartUpTimeText.c_str(),
+        appVersion::kFirmwareVersion,
+        resolvedFirmwareWrittenAt.c_str(),
+        appVersion::kFirmwareVersion,
+        resolvedFirmwareWrittenAt.c_str(),
         fallbackRssi,
         fallbackIpAddress.c_str(),
         fallbackWifiSsid.c_str());
@@ -681,6 +772,76 @@ bool publishStatusNotice(const char* subName, const char* onlineStateText, uint3
              safeOnlineStateText);
   return true;
 }
+
+/**
+ * @brief OTA進捗通知をpublishする。
+ * @param progressPercent 進捗率。
+ * @param phase OTAフェーズ。
+ * @param detail 補足メッセージ。
+ * @param firmwareVersion 対象ファームウェア版数。
+ * @return publish成功時true。
+ */
+bool publishOtaProgressNotice(int32_t progressPercent,
+                              const char* phase,
+                              const char* detail,
+                              const char* firmwareVersion) {
+  if (!mqttClient.connected()) {
+    appLogError("publishOtaProgressNotice failed. mqtt is not connected.");
+    return false;
+  }
+
+  if (deviceNodeName.length() <= 0) {
+    bool resolveNameResult = resolveDeviceNodeName(&deviceNodeName);
+    if (!resolveNameResult) {
+      appLogError("publishOtaProgressNotice failed. resolveDeviceNodeName failed.");
+      return false;
+    }
+  }
+
+  String topicText;
+  if (!createTopicText("notice", "otaProgress", deviceNodeName.c_str(), &topicText)) {
+    appLogError("publishOtaProgressNotice failed. createTopicText failed.");
+    return false;
+  }
+
+  const String messageId = String(deviceNodeName) + "-" + millis();
+  String payloadText;
+  jsonService payloadJsonService;
+  jsonKeyValueItem itemList[] = {
+      {"v", jsonValueType::kString, iotCommon::kProtocolVersion, 0, 0, false},
+      {"DstID", jsonValueType::kString, "all", 0, 0, false},
+      {"SrcID", jsonValueType::kString, deviceNodeName.c_str(), 0, 0, false},
+      {"Request", jsonValueType::kString, "Notice", 0, 0, false},
+      {"id", jsonValueType::kString, messageId.c_str(), 0, 0, false},
+      {"sub", jsonValueType::kString, "otaProgress", 0, 0, false},
+      {"fwVersion", jsonValueType::kString, firmwareVersion == nullptr ? "" : firmwareVersion, 0, 0, false},
+      {"firmwareVersion", jsonValueType::kString, firmwareVersion == nullptr ? "" : firmwareVersion, 0, 0, false},
+      {"phase", jsonValueType::kString, phase == nullptr ? "" : phase, 0, 0, false},
+      {"detail", jsonValueType::kString, detail == nullptr ? "" : detail, 0, 0, false},
+      {"progressPercent", jsonValueType::kLong, nullptr, 0, progressPercent, false},
+  };
+  if (!payloadJsonService.setValuesByPath(&payloadText, itemList, sizeof(itemList) / sizeof(itemList[0]))) {
+    appLogError("publishOtaProgressNotice failed. setValuesByPath returned false. phase=%s detail=%s progress=%ld",
+                phase == nullptr ? "(null)" : phase,
+                detail == nullptr ? "(null)" : detail,
+                static_cast<long>(progressPercent));
+    return false;
+  }
+
+  const bool publishResult = mqttClient.publish(topicText.c_str(), payloadText.c_str(), false);
+  if (!publishResult) {
+    appLogError("publishOtaProgressNotice failed. topic=%s payloadLength=%ld",
+                topicText.c_str(),
+                static_cast<long>(payloadText.length()));
+    return false;
+  }
+  mqttClient.loop();
+  appLogInfo("publishOtaProgressNotice success. topic=%s phase=%s progress=%ld",
+             topicText.c_str(),
+             phase == nullptr ? "" : phase,
+             static_cast<long>(progressPercent));
+  return true;
+}
 }
 
 /**
@@ -742,6 +903,10 @@ void mqttTask::runLoop() {
   interTaskMessageService& messageService = getInterTaskMessageService();
   appLogInfo("mqttTask loop started. (skeleton)");
   for (;;) {
+    if (isMqttInitialized && mqttClient.connected()) {
+      mqttClient.loop();
+    }
+
     appTaskMessage receivedMessage{};
     bool receiveResult = messageService.receiveMessage(appTaskId::kMqtt, &receivedMessage, pdMS_TO_TICKS(50));
     if (receiveResult && receivedMessage.messageType == appMessageType::kStartupRequest) {
@@ -817,8 +982,59 @@ void mqttTask::runLoop() {
                    doneMessage.text);
       }
     }
+    if (receiveResult && receivedMessage.messageType == appMessageType::kMqttPublishOtaProgressRequest) {
+      bool publishResult = isMqttInitialized &&
+                           publishOtaProgressNotice(receivedMessage.intValue,
+                                                    receivedMessage.text,
+                                                    receivedMessage.text2,
+                                                    receivedMessage.text3);
+      if (!publishResult && !mqttClient.connected()) {
+        isMqttInitialized = false;
+      }
+      if (!publishResult) {
+        appLogError("mqttTask: ota progress publish failed. phase=%s detail=%s progress=%ld version=%s",
+                    receivedMessage.text,
+                    receivedMessage.text2,
+                    static_cast<long>(receivedMessage.intValue),
+                    receivedMessage.text3);
+      } else {
+        appLogInfo("mqttTask: ota progress published. phase=%s detail=%s progress=%ld version=%s",
+                   receivedMessage.text,
+                   receivedMessage.text2,
+                   static_cast<long>(receivedMessage.intValue),
+                   receivedMessage.text3);
+      }
+      if (isTerminalOtaPhase(receivedMessage.text)) {
+        appTaskMessage doneMessage{};
+        doneMessage.sourceTaskId = appTaskId::kMqtt;
+        doneMessage.destinationTaskId = receivedMessage.sourceTaskId;
+        doneMessage.messageType = appMessageType::kMqttPublishOtaProgressDone;
+        doneMessage.intValue = publishResult ? 1 : 0;
+        doneMessage.intValue2 = receivedMessage.intValue;
+        strncpy(doneMessage.text, receivedMessage.text, sizeof(doneMessage.text) - 1);
+        doneMessage.text[sizeof(doneMessage.text) - 1] = '\0';
+        strncpy(doneMessage.text2,
+                publishResult ? "mqtt ota terminal publish done" : "mqtt ota terminal publish failed",
+                sizeof(doneMessage.text2) - 1);
+        doneMessage.text2[sizeof(doneMessage.text2) - 1] = '\0';
+        bool sendResult = messageService.sendMessage(doneMessage, pdMS_TO_TICKS(300));
+        if (!sendResult) {
+          appLogError("mqttTask: failed to send ota terminal publish ack. phase=%s progress=%ld targetTask=%d",
+                      receivedMessage.text,
+                      static_cast<long>(receivedMessage.intValue),
+                      static_cast<int>(receivedMessage.sourceTaskId));
+        } else {
+          appLogInfo("mqttTask: ota terminal publish ack sent. phase=%s progress=%ld result=%d targetTask=%d",
+                     receivedMessage.text,
+                     static_cast<long>(receivedMessage.intValue),
+                     publishResult ? 1 : 0,
+                     static_cast<int>(receivedMessage.sourceTaskId));
+        }
+      }
+    }
 
     // TODO: MQTT初期化、接続、subscribe/publish処理を実装する。
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    // [重要] OTA終端通知(done/error)の遅延を抑えるため、ループ間隔を短縮する。
+    vTaskDelay(pdMS_TO_TICKS(50));
   }
 }

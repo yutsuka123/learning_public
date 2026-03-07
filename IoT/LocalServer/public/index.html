@@ -26,12 +26,20 @@
         flex-wrap: wrap;
         margin-bottom: 12px;
       }
+      .pageDescription {
+        margin-bottom: 12px;
+      }
       button {
         border: 1px solid #9ca3af;
         border-radius: 6px;
         padding: 6px 12px;
         background-color: #f9fafb;
         cursor: pointer;
+      }
+      .rowActionGroup {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
       }
       table {
         width: 100%;
@@ -71,25 +79,31 @@
   </head>
   <body>
     <h1>IoT LocalServer</h1>
-    <div>ESP32一覧・status取得・OTA実行（MQTT指令）</div>
+    <div class="pageDescription">
+      ESP32一覧をブラウザで確認し、各デバイスごとに `status更新` と `OTA開始` を実行します。
+    </div>
     <div class="toolbar">
       <button id="refreshButton">一覧更新</button>
       <button id="statusSelectedButton">選択へstatus要求</button>
       <button id="statusAllButton">全体へstatus要求</button>
       <button id="otaSelectedButton">選択へOTA要求</button>
       <button id="otaAllButton">全体へOTA要求</button>
+      <button id="openSettingsButton">設定</button>
     </div>
     <table>
       <thead>
         <tr>
           <th>選択</th>
-          <th>deviceName</th>
-          <th>onlineState</th>
-          <th>ipAddress</th>
-          <th>wifiSsid</th>
-          <th>firmwareVersion</th>
-          <th>detail</th>
-          <th>lastSeenAt</th>
+          <th>デバイス名</th>
+          <th>IPアドレス</th>
+          <th>status</th>
+          <th>Wi-Fi SSID</th>
+          <th>FWバージョン</th>
+          <th>FW書換日時</th>
+          <th>OTA進捗</th>
+          <th>詳細</th>
+          <th>最終更新日時</th>
+          <th>操作</th>
         </tr>
       </thead>
       <tbody id="deviceTableBody"></tbody>
@@ -103,14 +117,20 @@
        * @property {string} ipAddress IPアドレス
        * @property {string} wifiSsid SSID
        * @property {string} firmwareVersion ファームウェアバージョン
+       * @property {string} firmwareWrittenAt ファームウェア書換日時
+       * @property {number|null} otaProgressPercent OTA進捗率
+       * @property {string} otaPhase OTAフェーズ
+       * @property {string} otaDetail OTA詳細
+       * @property {string} otaUpdatedAt OTA進捗更新日時
        * @property {string} detail 詳細メッセージ
-       * @property {string} lastSeenAt 最終受信時刻
+       * @property {string} lastSeenAt 最終更新日時
        */
 
       const deviceTableBody = document.getElementById("deviceTableBody");
       const logArea = document.getElementById("logArea");
       const selectedDeviceSet = new Set();
       let latestDeviceList = [];
+      let currentTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
 
       /**
        * @description ログ表示を追記する。
@@ -129,20 +149,95 @@
       function renderDeviceList(deviceList) {
         latestDeviceList = Array.isArray(deviceList) ? deviceList : [];
         deviceTableBody.innerHTML = "";
+        if (latestDeviceList.length === 0) {
+          const emptyRow = document.createElement("tr");
+          emptyRow.innerHTML = `
+            <td colspan="11">デバイス未検出です。status更新で再取得してください。</td>
+          `;
+          deviceTableBody.appendChild(emptyRow);
+          return;
+        }
         latestDeviceList.forEach((deviceItem) => {
           const row = document.createElement("tr");
           const checkedValue = selectedDeviceSet.has(deviceItem.deviceName) ? "checked" : "";
+          const otaProgressText = formatOtaProgress(deviceItem);
+          const firmwareWrittenAtText = formatDateTimeByTimeZone(deviceItem.firmwareWrittenAt);
+          const lastSeenAtText = formatDateTimeByTimeZone(deviceItem.lastSeenAt);
           row.innerHTML = `
             <td><input type="checkbox" data-device-name="${deviceItem.deviceName}" ${checkedValue}></td>
             <td>${deviceItem.deviceName}</td>
-            <td class="${deviceItem.onlineState}">${deviceItem.onlineState}</td>
             <td>${deviceItem.ipAddress || ""}</td>
+            <td class="${deviceItem.onlineState}">${deviceItem.onlineState || "unknown"}</td>
             <td>${deviceItem.wifiSsid || ""}</td>
             <td>${deviceItem.firmwareVersion || ""}</td>
+            <td>${firmwareWrittenAtText}</td>
+            <td>${otaProgressText}</td>
             <td>${deviceItem.detail || ""}</td>
-            <td>${deviceItem.lastSeenAt || ""}</td>
+            <td>${lastSeenAtText}</td>
+            <td>
+              <div class="rowActionGroup">
+                <button type="button" data-row-action="status" data-device-name="${deviceItem.deviceName}">status更新</button>
+                <button type="button" data-row-action="ota" data-device-name="${deviceItem.deviceName}">OTA開始</button>
+              </div>
+            </td>
           `;
           deviceTableBody.appendChild(row);
+        });
+      }
+
+      /**
+       * @description OTA進捗表示文字列を返す。
+       * @param {DeviceState} deviceItem 表示対象デバイス。
+       * @returns {string} 表示用文字列。
+       */
+      function formatOtaProgress(deviceItem) {
+        const partList = [];
+        if (deviceItem.otaPhase) {
+          partList.push(deviceItem.otaPhase);
+        }
+        if (typeof deviceItem.otaProgressPercent === "number") {
+          partList.push(`${deviceItem.otaProgressPercent}%`);
+        }
+        if (deviceItem.otaDetail) {
+          partList.push(deviceItem.otaDetail);
+        }
+        const normalizedOtaPhase = (deviceItem.otaPhase || "").trim().toLowerCase();
+        if (normalizedOtaPhase === "done" && deviceItem.otaUpdatedAt) {
+          partList.push(`(done Time=${formatDateTimeByTimeZone(deviceItem.otaUpdatedAt)})`);
+        }
+        return partList.join(" ").trim();
+      }
+
+      /**
+       * @description サーバー設定を取得し、表示タイムゾーンを反映する。
+       */
+      async function loadSettings() {
+        const response = await fetch("/api/settings");
+        if (!response.ok) {
+          throw new Error(`loadSettings failed. status=${response.status}`);
+        }
+        const jsonObject = await response.json();
+        if (jsonObject && jsonObject.settings && typeof jsonObject.settings.timeZone === "string") {
+          currentTimeZone = jsonObject.settings.timeZone;
+        }
+      }
+
+      /**
+       * @description ISO8601文字列を設定タイムゾーン表示へ変換する。
+       * @param {string} rawDateTimeText 変換元文字列。
+       * @returns {string} 表示文字列。
+       */
+      function formatDateTimeByTimeZone(rawDateTimeText) {
+        if (typeof rawDateTimeText !== "string" || rawDateTimeText.trim().length === 0) {
+          return "";
+        }
+        const parsedDate = new Date(rawDateTimeText);
+        if (Number.isNaN(parsedDate.getTime())) {
+          return rawDateTimeText;
+        }
+        return parsedDate.toLocaleString("ja-JP", {
+          timeZone: currentTimeZone,
+          hour12: false
         });
       }
 
@@ -188,6 +283,20 @@
       }
 
       /**
+       * @description 単体デバイスへstatus要求を送信する。
+       * @param {string} deviceName 対象デバイス名。
+       */
+      async function sendStatusCommandToSingleDevice(deviceName) {
+        const response = await fetch("/api/commands/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetNames: [deviceName] })
+        });
+        const jsonObject = await response.json();
+        appendLog(`status command result=${jsonObject.result} target=${deviceName}`);
+      }
+
+      /**
        * @description OTA要求を送信する。
        * @param {"all"|"selected"} mode 送信モード。
        */
@@ -201,6 +310,20 @@
         });
         const jsonObject = await response.json();
         appendLog(`ota command result=${jsonObject.result} target=${JSON.stringify(body.targetNames)}`);
+      }
+
+      /**
+       * @description 単体デバイスへOTA要求を送信する。
+       * @param {string} deviceName 対象デバイス名。
+       */
+      async function sendOtaCommandToSingleDevice(deviceName) {
+        const response = await fetch("/api/commands/ota", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targetNames: [deviceName] })
+        });
+        const jsonObject = await response.json();
+        appendLog(`ota command result=${jsonObject.result} target=${deviceName}`);
       }
 
       /**
@@ -227,13 +350,38 @@
           syncSelectedDevicesFromView();
         }
       });
+      deviceTableBody.addEventListener("click", (event) => {
+        const clickedElement = event.target;
+        if (!(clickedElement instanceof HTMLButtonElement)) {
+          return;
+        }
+        const rowAction = clickedElement.getAttribute("data-row-action");
+        const deviceName = clickedElement.getAttribute("data-device-name");
+        if (deviceName === null || deviceName.length === 0) {
+          return;
+        }
+        if (rowAction === "status") {
+          sendStatusCommandToSingleDevice(deviceName).catch((error) => appendLog(error.message));
+        }
+        if (rowAction === "ota") {
+          sendOtaCommandToSingleDevice(deviceName).catch((error) => appendLog(error.message));
+        }
+      });
       document.getElementById("refreshButton").addEventListener("click", () => fetchDevices().catch((error) => appendLog(error.message)));
       document.getElementById("statusSelectedButton").addEventListener("click", () => sendStatusCommand("selected").catch((error) => appendLog(error.message)));
       document.getElementById("statusAllButton").addEventListener("click", () => sendStatusCommand("all").catch((error) => appendLog(error.message)));
       document.getElementById("otaSelectedButton").addEventListener("click", () => sendOtaCommand("selected").catch((error) => appendLog(error.message)));
       document.getElementById("otaAllButton").addEventListener("click", () => sendOtaCommand("all").catch((error) => appendLog(error.message)));
+      document.getElementById("openSettingsButton").addEventListener("click", () => {
+        window.location.href = "/settings.html";
+      });
 
-      fetchDevices().catch((error) => appendLog(error.message));
+      loadSettings()
+        .then(() => fetchDevices())
+        .catch((error) => appendLog(error.message));
+      setInterval(() => {
+        fetchDevices().catch((error) => appendLog(error.message));
+      }, 30000);
       connectWebSocket();
     </script>
   </body>

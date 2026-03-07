@@ -13,8 +13,10 @@
 #include <WiFi.h>
 
 #include "common.h"
+#include "firmwareInfo.h"
 #include "jsonService.h"
 #include "log.h"
+#include "version.h"
 
 namespace {
 constexpr int64_t minimumValidUtcEpochMillis = 1577836800000LL; // 2020-01-01T00:00:00.000Z
@@ -385,7 +387,9 @@ bool buildMqttStatusPayload(const char* subName,
   String ipAddressText = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : String("0.0.0.0");
   long wifiSignalLevelValue = static_cast<long>(WiFi.RSSI());
   const char* selectedSubName = (subName == nullptr || strlen(subName) == 0) ? "" : subName;
-  const char* dummyFirmwareVersion = "0.0.0-dev";
+  const char* currentFirmwareVersion = appVersion::kFirmwareVersion;
+  const String resolvedFirmwareWrittenAt =
+      firmwareInfo::resolveFirmwareWrittenAtForStatus(currentFirmwareVersion, appVersion::kFirmwareWrittenAt);
   String statusDetailText = resolveStatusDetailText(subName, reservedArgument);
   if (statusDetailText == "Reply" && selectedSubName[0] == '\0' &&
       reservedArgument != nullptr && String(reservedArgument) == "Online") {
@@ -432,7 +436,10 @@ bool buildMqttStatusPayload(const char* subName,
       {iotCommon::mqtt::jsonKey::status::kSub, jsonValueType::kString, selectedSubName, 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kOnlineState, jsonValueType::kString, reservedArgument, 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kStartUpTime, jsonValueType::kString, startupTsText.c_str(), 0, 0, false},
-      {iotCommon::mqtt::jsonKey::status::kFirmwareVersion, jsonValueType::kString, dummyFirmwareVersion, 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kFWVersion, jsonValueType::kString, currentFirmwareVersion, 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kFWWrittenAt, jsonValueType::kString, resolvedFirmwareWrittenAt.c_str(), 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kFirmwareVersion, jsonValueType::kString, currentFirmwareVersion, 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kFirmwareWrittenAt, jsonValueType::kString, resolvedFirmwareWrittenAt.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kWifiSignalLevel, jsonValueType::kLong, nullptr, 0, wifiSignalLevelValue, false},
       {iotCommon::mqtt::jsonKey::status::kIpAddress, jsonValueType::kString, ipAddressText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kWifiSsid, jsonValueType::kString, wifiSsidText.c_str(), 0, 0, false},

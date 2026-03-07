@@ -196,10 +196,13 @@ namespace mqtt {
             constexpr const char* kId = "id";//要求番号/返答時は同じNOを使用する。西暦年月日時分秒ミリ秒+通し番号5桁例00001を使用する。
             constexpr const char* kTimestamp = "ts";
             constexpr const char* kCommand = "status";
+            constexpr const char* kFWVersion = "fwVersion";
+            constexpr const char* kFWWrittenAt = "fwWrittenAt";
             constexpr const char* kSub = "sub";
             constexpr const char* kOnlineState = "onlineState";
             constexpr const char* kStartUpTime = "startUpTime";
             constexpr const char* kFirmwareVersion = "firmwareVersion";
+            constexpr const char* kFirmwareWrittenAt = "firmwareWrittenAt";
             constexpr const char* kWifiSignalLevel = "wifiSignalLevel";
             constexpr const char* kIpAddress = "ipAddress";
             constexpr const char* kWifiSsid = "wifiSsid";

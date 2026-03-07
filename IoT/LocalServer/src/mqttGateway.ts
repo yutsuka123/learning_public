@@ -12,13 +12,14 @@ import { EventEmitter } from "events";
 import mqtt, { MqttClient, IClientOptions } from "mqtt";
 import { appConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
-import { mqttCommandPayload, statusMessage } from "./types";
+import { mqttCommandPayload, otaProgressMessage, statusMessage } from "./types";
 
 /**
  * @description MQTTイベントの型。
  */
 interface mqttGatewayEvents {
   statusUpdated: [status: statusMessage];
+  otaProgressUpdated: [otaProgress: otaProgressMessage];
   connected: [];
   disconnected: [];
 }
@@ -63,6 +64,9 @@ export class mqttGateway {
    * @description MQTT接続を開始する。
    */
   public connect(): void {
+    if (this.client.connected) {
+      return;
+    }
     this.client.reconnect();
   }
 
@@ -97,6 +101,7 @@ export class mqttGateway {
       manifestUrl: string;
       firmwareUrl: string;
       firmwareVersion: string;
+      sha256: string;
       timeoutSeconds: number;
     }
   ): Promise<void> {
@@ -105,6 +110,7 @@ export class mqttGateway {
       manifestUrl: args.manifestUrl,
       firmwareUrl: args.firmwareUrl,
       firmwareVersion: args.firmwareVersion,
+      sha256: args.sha256,
       timeoutSeconds: args.timeoutSeconds
     });
   }
@@ -186,7 +192,8 @@ export class mqttGateway {
       password: this.config.mqttPassword,
       reconnectPeriod: 3000,
       connectTimeout: this.config.mqttConnectTimeoutMs,
-      clientId: `${this.config.sourceId}-${Math.floor(Date.now() / 1000)}`
+      clientId: `${this.config.sourceId}-${Math.floor(Date.now() / 1000)}`,
+      manualConnect: true
     };
 
     if (this.config.mqttProtocol === "mqtts") {
@@ -221,6 +228,12 @@ export class mqttGateway {
     this.client.on("message", (topic, payloadBuffer) => {
       try {
         const payloadText = payloadBuffer.toString("utf8");
+        if (topic.includes("/notice/otaProgress/")) {
+          const parsedOtaProgress = this.parseOtaProgressMessage(topic, payloadText);
+          this.registry.updateByOtaProgress(parsedOtaProgress);
+          this.emitter.emit("otaProgressUpdated", parsedOtaProgress);
+          return;
+        }
         const parsedStatus = this.parseStatusMessage(topic, payloadText);
         this.registry.updateByStatus(parsedStatus);
         this.emitter.emit("statusUpdated", parsedStatus);
@@ -259,6 +272,12 @@ export class mqttGateway {
     const messageId = this.getStringValue(parsedObject, "id", `${srcId}-${Date.now()}`);
     const onlineState = this.getStringValue(parsedObject, "onlineState", "unknown");
     const statusSub = this.getStringValue(parsedObject, "sub", "status");
+    const firmwareVersion =
+      this.getStringValue(parsedObject, "fwVersion", "") ||
+      this.getStringValue(parsedObject, "firmwareVersion", "");
+    const firmwareWrittenAt =
+      this.getStringValue(parsedObject, "fwWrittenAt", "") ||
+      this.getStringValue(parsedObject, "firmwareWrittenAt", "");
 
     return {
       topic,
@@ -268,11 +287,38 @@ export class mqttGateway {
       macAddr: this.getStringValue(parsedObject, "macAddr", ""),
       ipAddress: this.getStringValue(parsedObject, "ipAddress", ""),
       wifiSsid: this.getStringValue(parsedObject, "wifiSsid", ""),
-      firmwareVersion: this.getStringValue(parsedObject, "firmwareVersion", ""),
+      firmwareVersion,
+      firmwareWrittenAt,
       onlineState,
       statusSub,
       detail: this.getStringValue(parsedObject, "detail", ""),
       receivedAt: nowText
+    };
+  }
+
+  /**
+   * @description OTA進捗通知JSONを正規化する。
+   * @param topic MQTTトピック。
+   * @param payloadText JSON文字列。
+   * @returns 正規化OTA進捗。
+   */
+  private parseOtaProgressMessage(topic: string, payloadText: string): otaProgressMessage {
+    const parsedObject = JSON.parse(payloadText) as Record<string, unknown>;
+    const srcId = this.getStringValue(parsedObject, "SrcID", "unknown-source");
+    const dstId = this.getStringValue(parsedObject, "DstID", "");
+    const receivedAt = new Date().toISOString();
+    return {
+      topic,
+      srcId,
+      dstId,
+      messageId: this.getStringValue(parsedObject, "id", `${srcId}-${Date.now()}`),
+      firmwareVersion:
+        this.getStringValue(parsedObject, "fwVersion", "") ||
+        this.getStringValue(parsedObject, "firmwareVersion", ""),
+      progressPercent: this.getNumberValue(parsedObject, "progressPercent"),
+      phase: this.getStringValue(parsedObject, "phase", ""),
+      detail: this.getStringValue(parsedObject, "detail", ""),
+      receivedAt
     };
   }
 
@@ -286,6 +332,17 @@ export class mqttGateway {
   private getStringValue(sourceObject: Record<string, unknown>, keyName: string, fallbackValue: string): string {
     const rawValue = sourceObject[keyName];
     return typeof rawValue === "string" ? rawValue : fallbackValue;
+  }
+
+  /**
+   * @description 任意オブジェクトから数値キーを安全に取り出す。
+   * @param sourceObject 取得対象。
+   * @param keyName キー名。
+   * @returns 数値値。未定義時はnull。
+   */
+  private getNumberValue(sourceObject: Record<string, unknown>, keyName: string): number | null {
+    const rawValue = sourceObject[keyName];
+    return typeof rawValue === "number" && Number.isFinite(rawValue) ? rawValue : null;
   }
 
   /**

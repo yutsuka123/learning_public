@@ -1,0 +1,220 @@
+<!--
+  @file settings.html
+  @description LocalServer設定画面（時刻表示/OTAファームウェア）を提供する。
+  @important [重要] 設定は `/api/settings` を通じて保存し、再起動後も保持する。
+  @strict [厳守] 設定項目は将来追加を前提に、セクション分割で拡張しやすく構成する。
+  @future [将来対応] ネットワーク、通知、認証などの設定項目を追加予定。
+-->
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IoT LocalServer 設定</title>
+    <style>
+      body {
+        font-family: "Segoe UI", sans-serif;
+        margin: 16px;
+        color: #1f2937;
+      }
+      h1 {
+        margin-bottom: 8px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+      .card {
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .fieldRow {
+        display: grid;
+        grid-template-columns: 180px 1fr;
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: center;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 6px;
+        box-sizing: border-box;
+      }
+      #logArea {
+        margin-top: 12px;
+        border: 1px solid #d1d5db;
+        padding: 8px;
+        background: #fafafa;
+        min-height: 120px;
+        white-space: pre-wrap;
+      }
+      .muted {
+        color: #6b7280;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IoT LocalServer 設定</h1>
+    <div class="toolbar">
+      <button id="backButton">一覧へ戻る</button>
+      <button id="reloadButton">再読込</button>
+      <button id="saveButton">設定保存</button>
+    </div>
+
+    <div class="card">
+      <h2>時刻表示設定</h2>
+      <div class="fieldRow">
+        <label for="timeZoneInput">タイムゾーン</label>
+        <input id="timeZoneInput" type="text" placeholder="例: Asia/Tokyo" />
+      </div>
+      <div class="muted">例: Asia/Tokyo, UTC, America/Los_Angeles</div>
+    </div>
+
+    <div class="card">
+      <h2>OTAファームウェア設定</h2>
+      <div class="fieldRow">
+        <label for="otaVersionInput">OTAファームウェア版数</label>
+        <input id="otaVersionInput" type="text" placeholder="例: 1.1.0-beta.5" />
+      </div>
+      <div class="fieldRow">
+        <label>ファームウェア取得元</label>
+        <div>
+          <label><input type="radio" name="firmwareSource" value="localPath" /> ローカルパス</label>
+          <label style="margin-left: 14px"><input type="radio" name="firmwareSource" value="uploadedFile" /> アップロード済みファイル</label>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label for="firmwareLocalPathInput">ローカルファームウェアパス</label>
+        <input id="firmwareLocalPathInput" type="text" placeholder="例: ../ESP32/.pio/build/esp32s3_secure/firmware.bin" />
+      </div>
+      <div class="fieldRow">
+        <label for="firmwareUploadInput">ブラウザアップロード</label>
+        <div>
+          <input id="firmwareUploadInput" type="file" accept=".bin,application/octet-stream" />
+          <button id="uploadButton" type="button">アップロード実行</button>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label>有効ファームウェア</label>
+        <div id="activeFirmwarePathText"></div>
+      </div>
+      <div class="fieldRow">
+        <label>ファームウェア情報</label>
+        <div id="firmwareInfoText"></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>将来拡張</h2>
+      <div class="muted">設定項目は今後増える想定です。ネットワーク・通知・認証などを順次追加します。</div>
+    </div>
+
+    <div id="logArea"></div>
+
+    <script>
+      const timeZoneInput = document.getElementById("timeZoneInput");
+      const otaVersionInput = document.getElementById("otaVersionInput");
+      const firmwareLocalPathInput = document.getElementById("firmwareLocalPathInput");
+      const firmwareUploadInput = document.getElementById("firmwareUploadInput");
+      const activeFirmwarePathText = document.getElementById("activeFirmwarePathText");
+      const firmwareInfoText = document.getElementById("firmwareInfoText");
+
+      function appendLog(text) {
+        const nowText = new Date().toISOString();
+        const logArea = document.getElementById("logArea");
+        logArea.textContent += `[${nowText}] ${text}\n`;
+      }
+
+      function getSelectedFirmwareSource() {
+        const radio = document.querySelector('input[name="firmwareSource"]:checked');
+        return radio ? radio.value : "localPath";
+      }
+
+      function setSelectedFirmwareSource(source) {
+        const radio = document.querySelector(`input[name="firmwareSource"][value="${source}"]`);
+        if (radio) {
+          radio.checked = true;
+        }
+      }
+
+      function renderSettingsResponse(jsonObject) {
+        const settings = jsonObject.settings || {};
+        timeZoneInput.value = settings.timeZone || "";
+        otaVersionInput.value = settings.otaFirmwareVersion || "";
+        firmwareLocalPathInput.value = settings.firmwareLocalPath || "";
+        setSelectedFirmwareSource(settings.firmwareSource || "localPath");
+
+        activeFirmwarePathText.textContent = jsonObject.activeFirmwarePath || "(未設定)";
+        const info = jsonObject.firmwareInfo || {};
+        firmwareInfoText.textContent = `exists=${info.fileExists} file=${info.fileName || ""} size=${info.fileSize || 0} sha256=${info.sha256 || ""}`;
+      }
+
+      async function loadSettings() {
+        const response = await fetch("/api/settings");
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `loadSettings failed. status=${response.status}`);
+        }
+        renderSettingsResponse(jsonObject);
+        appendLog("設定を読み込みました。");
+      }
+
+      async function saveSettings() {
+        const body = {
+          timeZone: timeZoneInput.value.trim(),
+          otaFirmwareVersion: otaVersionInput.value.trim(),
+          firmwareSource: getSelectedFirmwareSource(),
+          firmwareLocalPath: firmwareLocalPathInput.value.trim()
+        };
+        const response = await fetch("/api/settings", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `saveSettings failed. status=${response.status}`);
+        }
+        appendLog("設定を保存しました。");
+        await loadSettings();
+      }
+
+      async function uploadFirmware() {
+        if (!firmwareUploadInput.files || firmwareUploadInput.files.length <= 0) {
+          throw new Error("uploadFirmware failed. ファイルを選択してください。");
+        }
+        const formData = new FormData();
+        formData.append("firmware", firmwareUploadInput.files[0]);
+        const response = await fetch("/api/settings/firmware-upload", {
+          method: "POST",
+          body: formData
+        });
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `uploadFirmware failed. status=${response.status}`);
+        }
+        appendLog("ファームウェアをアップロードしました。");
+        renderSettingsResponse(jsonObject);
+      }
+
+      document.getElementById("backButton").addEventListener("click", () => {
+        window.location.href = "/";
+      });
+      document.getElementById("reloadButton").addEventListener("click", () => {
+        loadSettings().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("saveButton").addEventListener("click", () => {
+        saveSettings().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("uploadButton").addEventListener("click", () => {
+        uploadFirmware().catch((error) => appendLog(error.message));
+      });
+
+      loadSettings().catch((error) => appendLog(error.message));
+    </script>
+  </body>
+</html>
