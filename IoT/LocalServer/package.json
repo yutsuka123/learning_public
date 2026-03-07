@@ -1,0 +1,36 @@
+{
+  "name": "iot-local-server",
+  "version": "0.1.0",
+  "description": "ESP32ローカル管理サーバー（Web UI/MQTT/OTA配布）",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "dev": "tsx watch src/server.ts",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "test:connect": "tsx src/tools/testConnection.ts"
+  },
+  "keywords": [
+    "iot",
+    "esp32",
+    "mqtt",
+    "ota",
+    "typescript"
+  ],
+  "author": "",
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "dependencies": {
+    "dotenv": "^16.6.1",
+    "express": "^4.21.2",
+    "mqtt": "^5.14.1",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.23",
+    "@types/node": "^22.13.14",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.8.2"
+  }
+}

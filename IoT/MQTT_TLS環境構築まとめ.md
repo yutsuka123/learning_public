@@ -131,20 +131,67 @@ extendedKeyUsage=serverAuth
 subjectAltName=@alt_names
 
 [alt_names]
+DNS.1=mqtt.esplab.home.arpa
+DNS.2=localhost
+DNS.3=CF-FV_1
 IP.1=172.16.1.59
-DNS.1=172.16.1.59
-DNS.2=CF-FV_1
-DNS.3=localhost
 EOF
 
 openssl genrsa -out server.key 2048
 
-MSYS_NO_PATHCONV=1 openssl req -new -key server.key -out server.csr -subj "/C=JP/ST=Tokyo/L=Higashiyamato/O=nyangai/OU=mqtt/CN=172.16.1.59"
+MSYS_NO_PATHCONV=1 openssl req -new -key server.key -out server.csr -subj "/C=JP/ST=Tokyo/L=Higashiyamato/O=esplab/OU=mqtt/CN=mqtt.esplab.home.arpa"
 
 openssl x509 -req -in server.csr -CA ca.crt -CAkey ca.key -CAcreateserial -out server.crt -days 365 -sha256 -extfile server.ext
 ```
 
 [厳守] 再発行後は `mosquitto-test.conf` / `mosquitto.conf` で参照している `server.crt` を差し替え、Mosquittoを再起動する。
+
+### 4.5 SAN再発行 実行コマンド（PowerShell例 / 2026-03-07）
+[重要] `openssl` がPATHに無いWindows環境では `C:\Program Files\Git\usr\bin\openssl.exe` を明示指定して実行する。  
+理由: 手順通りでも `openssl is not recognized` で作業が止まるため。
+
+```powershell
+Copy-Item "C:\mosquitto-data\server.crt" "C:\mosquitto-data\server.crt.pre_san_fix" -Force
+Copy-Item "C:\mosquitto-data\server.csr" "C:\mosquitto-data\server.csr.pre_san_fix" -Force
+
+@'
+authorityKeyIdentifier=keyid,issuer
+basicConstraints=CA:FALSE
+keyUsage=digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=@alt_names
+
+[alt_names]
+DNS.1=mqtt.esplab.home.arpa
+DNS.2=localhost
+DNS.3=CF-FV_1
+IP.1=172.16.1.59
+'@ | Set-Content -Path "C:\mosquitto-data\server.ext" -Encoding ascii
+
+& "C:\Program Files\Git\usr\bin\openssl.exe" req -new `
+  -key "C:\mosquitto-data\server.key" `
+  -out "C:\mosquitto-data\server.csr" `
+  -subj "/C=JP/ST=Tokyo/L=Higashiyamato/O=esplab/OU=mqtt/CN=mqtt.esplab.home.arpa"
+
+& "C:\Program Files\Git\usr\bin\openssl.exe" x509 -req `
+  -in "C:\mosquitto-data\server.csr" `
+  -CA "C:\mosquitto-data\ca.crt" `
+  -CAkey "C:\mosquitto-data\ca.key" `
+  -CAcreateserial `
+  -out "C:\mosquitto-data\server.crt" `
+  -days 3650 `
+  -sha256 `
+  -extfile "C:\mosquitto-data\server.ext"
+
+certutil -dump "C:\mosquitto-data\server.crt"
+```
+
+[厳守] `certutil -dump` の出力に `Subject Alternative Name` として  
+`DNS Name=mqtt.esplab.home.arpa` と `IP Address=172.16.1.59` が両方あることを確認する。  
+理由: DNS解決時・フォールバックIP時のどちらでもESP32のTLS検証を通すため。
+
+[重要] `mosquitto` サービス再起動（`sc stop/start mosquitto`）は管理者権限が必要。  
+理由: 標準権限では `OpenService FAILED 5 (Access is denied)` となり、再発行済み証明書が反映されないため。
 
 ## 5. Mosquitto TLS 接続テスト
 
@@ -307,6 +354,32 @@ client.on("message", (topic, msg) => {
 4. PCクライアント（mqtt.fx / mosquitto_pub）で疎通確認後、ESP32で再試行
 5. 方針確定: TLSだけでなく `K_device` によるpayload暗号化/復号を実装必須とした。
 
+### 11.2 `(-9984) X509` 解消の最終記録（2026-03-07）
+[重要] `server.crt` のSAN再発行（`DNS:mqtt.esplab.home.arpa` + `IP:172.16.1.59`）と、ESP32側のTLS検証文脈修正により、`(-9984) X509` は解消した。  
+理由: DNS失敗時にフォールバックIPで接続しても、証明書照合ホスト名を `mqtt.esplab.home.arpa` として検証できるようにしたため。
+
+- サーバ側確認:
+  - `openssl s_client -connect 172.16.1.59:8883 -servername mqtt.esplab.home.arpa` で提示証明書のSANに `DNS:mqtt.esplab.home.arpa` と `IP:172.16.1.59` を確認。
+  - `-CAfile` に `ESP32/src/MQTT/ca.crt` を指定した検証で `Verify return code: 0 (ok)` を確認。
+- ESP32側確認:
+  - `hostByName failed`（DNS未解決）は継続するが、フォールバックIP経由で `connectToMqttBroker success. state=0` を確認。
+  - `mqtt init done` を確認し、起動時のMQTT初期化フロー完了を確認。
+- [厳守] 暫定対応としての `SENSITIVE_MQTT_FALLBACK_IP` は新ルータ導入後に廃止する。  
+  理由: 本来はDNS名運用（FQDN）を第一経路とし、フォールバック依存を残さないため。
+
+### 11.3 新ルータ導入までの暫定運用ポリシー（1週間）
+[重要] 新ルータ導入予定日（目安: 2026-03-14）までは、現行LANでの暫定運用を継続する。  
+理由: 移行前に接続安定性を維持し、実装・試験を止めないため。
+
+- [厳守] MQTT接続失敗時の切り分け順序を固定する。  
+  1) Wi-Fi接続  
+  2) NTP同期  
+  3) DNS解決  
+  4) TLS検証  
+  5) MQTT認証
+- [推奨] 1日1回、`mosquitto_pub/sub` とESP32ログをセットで保存し、再発を早期検知する。
+- [将来対応] 新ルータ導入後は `mqtt.esplab.home.arpa -> 172.17.1.10` 固定運用へ移行し、フォールバックIPを停止する。
+
 [推奨] PC側CLI (`mosquitto_pub/sub`) とESP32ログをセットで確認する。  
 理由: ネットワーク/DNS/証明書/認証のどこで失敗しているかを早く特定できるため。
 
@@ -315,4 +388,6 @@ client.on("message", (topic, msg) => {
 - 2026-03-06: 検証用起動コマンド（`.\mosquitto.exe -c .\mosquitto-test.conf -v`）と、DNS失敗→IP運用→証明書調整の経緯を追記。
 - 2026-03-06: `K_device` によるpayload暗号化/復号を必須方針として通信条件と検証経緯へ追記。
 - 2026-03-06: CoreDNSの将来対応方針（外部DNSとの両立、公開ドメイン上書き禁止、ローカルゾーン設計）を追記。
+- 2026-03-07: SAN再発行手順を更新し、`DNS:mqtt.esplab.home.arpa` と `IP:172.16.1.59` を同時に含める具体コマンド（PowerShell/Git同梱OpenSSL）を追記。
+- 2026-03-07: `(-9984) X509` 解消の最終記録（サーバ証明書検証OK、ESP32接続成功ログ）と、新ルータ導入まで1週間の暫定運用ポリシーを追記。
 
