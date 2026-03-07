@@ -26,6 +26,57 @@
 #include "sensitiveData.h"
 
 namespace {
+/**
+ * @brief MQTT向けTLSクライアント。
+ * @details
+ * - [重要] IP直指定で接続する場合でも、証明書検証はDNSホスト名で実施する。
+ * - [重要] DNS障害時の暫定フォールバック（IP接続）でもTLS検証を維持する。
+ * - [禁止] 証明書検証の無効化（setInsecure）は使用しない。
+ */
+class MqttTlsClient : public WiFiClientSecure {
+ public:
+  /**
+   * @brief IP接続時に使うTLS検証コンテキストを設定する。
+   * @param tlsHostName 証明書検証に使うDNSホスト名。
+   * @param tlsCaCertificate ルートCA証明書PEM。
+   */
+  void setTlsValidationContext(const char* tlsHostName, const char* tlsCaCertificate) {
+    tlsHostName_ = tlsHostName;
+    tlsCaCertificate_ = tlsCaCertificate;
+  }
+
+  /**
+   * @brief IPアドレス向けconnectを上書きする。
+   * @details
+   * - [重要] PubSubClientはIP接続時にこの関数を呼ぶ。
+   * - [重要] TLS検証文脈（host + CA）が有効なら、その文脈でconnectする。
+   * @param ip 接続先IPアドレス。
+   * @param port 接続先ポート番号。
+   * @return 接続成功時1、失敗時0。
+   */
+  int connect(IPAddress ip, uint16_t port) override {
+    bool hostAvailable = (tlsHostName_ != nullptr && strlen(tlsHostName_) > 0);
+    bool caAvailable = (tlsCaCertificate_ != nullptr && strlen(tlsCaCertificate_) > 0);
+    if (!hostAvailable || !caAvailable) {
+      appLogWarn("MqttTlsClient::connect fallback to default verification path. ip=%s port=%ld hostAvailable=%d caAvailable=%d",
+                 ip.toString().c_str(),
+                 static_cast<long>(port),
+                 hostAvailable ? 1 : 0,
+                 caAvailable ? 1 : 0);
+      return WiFiClientSecure::connect(ip, port);
+    }
+
+    // [重要] DNS解決失敗時のIP接続でも、証明書照合はDNS名（tlsHostName_）で行う。
+    return WiFiClientSecure::connect(ip, port, tlsHostName_, tlsCaCertificate_, nullptr, nullptr);
+  }
+
+ private:
+  /** @brief IP接続時の証明書照合ホスト名。 */
+  const char* tlsHostName_ = nullptr;
+  /** @brief IP接続時のCA証明書。 */
+  const char* tlsCaCertificate_ = nullptr;
+};
+
 /** @brief mqttTask用スタック領域。PSRAM優先で確保し、失敗時は内部RAMへフォールバックする。 */
 StackType_t* mqttTaskStackBuffer = nullptr;
 /** @brief mqttTask用の静的タスク制御ブロック。 */
@@ -33,7 +84,7 @@ StaticTask_t mqttTaskControlBlock;
 /** @brief MQTT通信用の下位TCPクライアント。 */
 WiFiClient mqttNetworkClient;
 /** @brief MQTT(TLS)通信用の下位TCPクライアント。 */
-WiFiClientSecure mqttTlsNetworkClient;
+MqttTlsClient mqttTlsNetworkClient;
 /** @brief PubSubClient本体。mqttNetworkClientを介して通信する。 */
 PubSubClient mqttClient(mqttNetworkClient);
 
@@ -57,6 +108,10 @@ constexpr int64_t minimumValidUtcEpochMillis = 1609459200000LL;
 uint32_t mainTaskStartupCpuMillis = 0;
 /** @brief 送信者/受信者名として利用するデバイス識別子。 */
 String deviceNodeName = "";
+/** @brief pingBrokerHostで解決済みのMQTT接続先IP。 */
+IPAddress mqttResolvedBrokerIpAddress;
+/** @brief 解決済みMQTT接続先IPの有効フラグ。 */
+bool mqttResolvedBrokerIpValid = false;
 
 
 /**
@@ -228,8 +283,9 @@ bool configureMqttTransportClient(bool tlsEnabled) {
       return false;
     }
     mqttTlsNetworkClient.setCACert(SENSITIVE_MQTT_TLS_CA_CERT);
+    mqttTlsNetworkClient.setTlsValidationContext(mqttHost, SENSITIVE_MQTT_TLS_CA_CERT);
     mqttClient.setClient(mqttTlsNetworkClient);
-    appLogInfo("configureMqttTransportClient: TLS transport selected.");
+    appLogInfo("configureMqttTransportClient: TLS transport selected. tlsHost=%s", mqttHost);
     return true;
 #endif
   }
@@ -339,25 +395,46 @@ bool pingBrokerHost(const char* brokerHost) {
     return false;
   }
 
+  mqttResolvedBrokerIpValid = false;
   IPAddress brokerIpAddress;
   bool resolveResult = WiFi.hostByName(brokerHost, brokerIpAddress);
   if (!resolveResult) {
-    appLogError("pingBrokerHost failed. hostByName failed. brokerHost=%s", brokerHost);
-    return false;
+    // [重要] 新ルータ導入前の暫定運用: DNS失敗時のみフォールバックIPで到達確認する。
+    IPAddress fallbackIpAddress;
+    bool fallbackAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
+    bool fallbackParseResult = fallbackAvailable && fallbackIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
+    if (!fallbackParseResult) {
+      appLogError("pingBrokerHost failed. hostByName failed and fallback is unavailable. brokerHost=%s fallback=%s",
+                  brokerHost,
+                  SENSITIVE_MQTT_FALLBACK_IP);
+      return false;
+    }
+    brokerIpAddress = fallbackIpAddress;
+    appLogWarn("pingBrokerHost: hostByName failed. fallback IP will be used. brokerHost=%s fallbackIp=%s",
+               brokerHost,
+               brokerIpAddress.toString().c_str());
   }
+  mqttResolvedBrokerIpAddress = brokerIpAddress;
+  mqttResolvedBrokerIpValid = true;
   appLogInfo("pingBrokerHost start. brokerHost=%s resolvedIp=%s",
              brokerHost,
              brokerIpAddress.toString().c_str());
 
   // [重要] Arduino-ESP32 2.0.17ではICMP APIの利用が難しいため、TCP到達確認をping代替とする。
   WiFiClient probeClient;
-  bool probeResult = probeClient.connect(brokerHost, static_cast<uint16_t>(mqttPort));
+  bool probeResult = probeClient.connect(brokerIpAddress, static_cast<uint16_t>(mqttPort));
   if (!probeResult) {
-    appLogError("pingBrokerHost failed (tcp-probe). brokerHost=%s brokerPort=%ld", brokerHost, static_cast<long>(mqttPort));
+    appLogError("pingBrokerHost failed (tcp-probe). brokerHost=%s resolvedIp=%s brokerPort=%ld",
+                brokerHost,
+                brokerIpAddress.toString().c_str(),
+                static_cast<long>(mqttPort));
     return false;
   }
 
-  appLogInfo("pingBrokerHost success (tcp-probe). brokerHost=%s brokerPort=%ld", brokerHost, static_cast<long>(mqttPort));
+  appLogInfo("pingBrokerHost success (tcp-probe). brokerHost=%s resolvedIp=%s brokerPort=%ld",
+             brokerHost,
+             brokerIpAddress.toString().c_str(),
+             static_cast<long>(mqttPort));
   probeClient.stop();
   return true;
 }
@@ -419,7 +496,18 @@ bool connectToMqttBroker() {
     return false;
   }
 
-  mqttClient.setServer(mqttHost, static_cast<uint16_t>(mqttPort));
+  if (mqttResolvedBrokerIpValid) {
+    mqttClient.setServer(mqttResolvedBrokerIpAddress, static_cast<uint16_t>(mqttPort));
+    appLogWarn("connectToMqttBroker: mqttClient.setServer uses resolved IP. host=%s ip=%s port=%ld",
+               mqttHost,
+               mqttResolvedBrokerIpAddress.toString().c_str(),
+               static_cast<long>(mqttPort));
+  } else {
+    mqttClient.setServer(mqttHost, static_cast<uint16_t>(mqttPort));
+    appLogInfo("connectToMqttBroker: mqttClient.setServer uses host. host=%s port=%ld",
+               mqttHost,
+               static_cast<long>(mqttPort));
+  }
   mqttClient.setCallback(onMqttMessageReceived);
   bool bufferSizeResult = mqttClient.setBufferSize(1024);
   if (!bufferSizeResult) {

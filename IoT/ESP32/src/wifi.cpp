@@ -13,6 +13,7 @@
 #include <string.h>
 #include <WiFi.h>
 
+#include "../header/sensitiveData.h"
 #include "interTaskMessage.h"
 #include "led.h"
 #include "log.h"
@@ -22,6 +23,10 @@ namespace {
 StackType_t* wifiTaskStackBuffer = nullptr;
 /** @brief wifiTask用の静的タスク制御ブロック。 */
 StaticTask_t wifiTaskControlBlock;
+/** @brief Wi-Fi接続イベント登録済みフラグ。多重登録を防止する。 */
+bool wifiEventHandlerRegistered = false;
+/** @brief 現在の接続サイクルでDNS再適用済みかを示す。 */
+bool dnsReapplyCompletedForCurrentConnection = false;
 
 /**
  * @brief Wi-Fiステータス値を可読文字列へ変換する。
@@ -52,6 +57,76 @@ const char* wifiStatusToText(wl_status_t wifiStatus) {
 }
 
 /**
+ * @brief Wi-Fi DNS設定を反映する（方法①: ESP32側で明示指定）。
+ * @details
+ * - [重要] DHCP配布DNSに依存せず、`sensitiveData.h` の定義値を常に適用する。
+ * - [将来対応] DHCP/ルーター側で名前解決が安定したら固定DNS指定を廃止する。
+ * @return 適用成功時true、失敗時false。
+ */
+bool applyWifiDnsConfiguration() {
+  IPAddress primaryDnsAddress(
+      SENSITIVE_WIFI_DNS_PRIMARY_OCTET1,
+      SENSITIVE_WIFI_DNS_PRIMARY_OCTET2,
+      SENSITIVE_WIFI_DNS_PRIMARY_OCTET3,
+      SENSITIVE_WIFI_DNS_PRIMARY_OCTET4);
+  IPAddress secondaryDnsAddress(0, 0, 0, 0);
+
+  bool configResult = WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, primaryDnsAddress, secondaryDnsAddress);
+  if (!configResult) {
+    appLogError("applyWifiDnsConfiguration failed. WiFi.config failed. primary=%s",
+                primaryDnsAddress.toString().c_str());
+    return false;
+  }
+
+  appLogInfo("applyWifiDnsConfiguration success. primary=%s secondary=%s",
+             primaryDnsAddress.toString().c_str(),
+             secondaryDnsAddress.toString().c_str());
+  return true;
+}
+
+/**
+ * @brief Wi-FiイベントでGOT_IP直後にDNSを再適用するフックを登録する。
+ * @details
+ * - [重要] DHCP適用後にDNSが上書きされるケースへ対処する。
+ * - [厳守] 多重登録を避けるため、本関数は初回のみ登録する。
+ */
+void ensureWifiEventHandlerRegistered() {
+  if (wifiEventHandlerRegistered) {
+    return;
+  }
+
+  WiFi.onEvent([](arduino_event_id_t eventId, arduino_event_info_t) {
+    if (eventId == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+      dnsReapplyCompletedForCurrentConnection = false;
+      appLogInfo("wifi event handler: connection lost. reset dns re-apply state.");
+      return;
+    }
+    if (eventId != ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+      return;
+    }
+
+    if (dnsReapplyCompletedForCurrentConnection) {
+      return;
+    }
+
+    dnsReapplyCompletedForCurrentConnection = true;
+    bool dnsApplyResult = applyWifiDnsConfiguration();
+    if (!dnsApplyResult) {
+      appLogError("wifi event handler: applyWifiDnsConfiguration failed on GOT_IP.");
+      dnsReapplyCompletedForCurrentConnection = false;
+      return;
+    }
+
+    appLogInfo("wifi event handler: DNS re-applied after GOT_IP. dns1=%s dns2=%s",
+               WiFi.dnsIP(0).toString().c_str(),
+               WiFi.dnsIP(1).toString().c_str());
+  });
+
+  wifiEventHandlerRegistered = true;
+  appLogInfo("wifi event handler registered. targetEvent=ARDUINO_EVENT_WIFI_STA_GOT_IP");
+}
+
+/**
  * @brief Wi-Fi接続を同期的に実行する。
  * @param wifiSsid 接続先SSID。
  * @param wifiPass 接続先パスワード。
@@ -73,6 +148,8 @@ bool connectToWifiRouter(const char* wifiSsid, const char* wifiPass) {
   }
 
   appLogInfo("connectToWifiRouter start. ssid=%s pass=%s", wifiSsid, (wifiPass != nullptr && strlen(wifiPass) > 0) ? "******" : "(empty)");
+  ensureWifiEventHandlerRegistered();
+  dnsReapplyCompletedForCurrentConnection = false;
 
   wl_status_t finalStatus = WL_IDLE_STATUS;
   for (int32_t connectAttemptIndex = 0; connectAttemptIndex < connectAttemptCount; ++connectAttemptIndex) {
@@ -85,6 +162,13 @@ bool connectToWifiRouter(const char* wifiSsid, const char* wifiPass) {
     vTaskDelay(pdMS_TO_TICKS(120));
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);
+
+    bool dnsConfigResult = applyWifiDnsConfiguration();
+    if (!dnsConfigResult) {
+      appLogError("connectToWifiRouter failed. applyWifiDnsConfiguration failed.");
+      finalStatus = WL_CONNECT_FAILED;
+      break;
+    }
 
     appLogInfo("connectToWifiRouter attempt start. attempt=%ld/%ld ssid=%s",
                static_cast<long>(displayAttempt),
@@ -103,6 +187,9 @@ bool connectToWifiRouter(const char* wifiSsid, const char* wifiPass) {
                    static_cast<long>(displayAttempt),
                    WiFi.localIP().toString().c_str(),
                    WiFi.RSSI());
+        appLogInfo("connectToWifiRouter DNS resolved setting. dns1=%s dns2=%s",
+                   WiFi.dnsIP(0).toString().c_str(),
+                   WiFi.dnsIP(1).toString().c_str());
         return true;
       }
 

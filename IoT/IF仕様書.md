@@ -9,6 +9,10 @@
 詳細は `MQTTコマンド仕様書.md` を参照のこと。
 - [推奨] `cmd/esp32lab/{deviceId}/{commandName}` 等を採用する。
 - 定義: `shared/include/common.h` 参照。
+- [重要] LocalServer初期実装では以下を使用する。
+  - status要求: `esp32lab/call/status/<deviceName|all>`
+  - OTA要求: `esp32lab/call/otaStart/<deviceName|all>`
+  - status通知受信: `esp32lab/notice/status/<senderName>`
 
 ### 1.2 セキュリティ必須条件
 - [厳守] MQTTはTLS（通常 `8883`）で接続する。
@@ -35,8 +39,12 @@
 - 指令系: QoS1
 - 進捗通知: QoS0またはQoS1（運用選択）
 
-## 2. HTTPS OTA IF（ESP側）[旧仕様]
-- [廃止の方針] 第2段階を実施しないため、本IFは現行実装対象外とする。
+## 2. HTTPS OTA IF（ESP側）
+- [重要] OTA詳細仕様は `OTA仕様書.md` を参照する。
+- [厳守] OTA開始は MQTT `otaStart` 指令で実施し、ESP32はHTTPSで `manifest` と `firmware.bin` を取得する。
+- [厳守] ESP32は分割書込み時に進捗をLCD表示し、MQTTで `otaProgress` 通知する。
+- [厳守] リトライは「同一進捗率停止: 5秒間隔3回」「最初から再試行: 3回」を上限とする。
+- [厳守] サーバー提示SHA256とESP32計算SHA256を一致確認できた場合のみ更新確定する。
 
 ## 3. 認証情報の扱い
 - [禁止] MQTT/HTTPSの認証実値（ユーザー、パスワード、トークン、秘密鍵）を本書へ記載しない。
@@ -50,6 +58,8 @@
 - 認証フロー、デバイス証明書配布、更新承認フローは第4段階で確定する。
 
 ## 5. 変更履歴
+- 2026-03-07: OTA IFを現行仕様へ更新し、`OTA仕様書.md` 参照と進捗/リトライ/SHA256検証要件を追記。
+- 2026-03-07: LocalServer初期実装の topic（status/otaStart/status notice）を追記。
 - 2026-02-24: 新規作成。MQTT/HTTPS IFの基本仕様を定義。
 - 2026-02-24: 第3段階方針へ合わせ、MQTT TLS + ID/パスワード認証を必須化。第2段階OTA IFを現行対象外へ変更。
 - 2026-02-24: Wi-Fi設定更新IF（public_idトピック、AES-GCM payload、confirm）を追加。
