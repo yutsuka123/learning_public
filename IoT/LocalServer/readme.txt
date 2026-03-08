@@ -17,9 +17,10 @@ IoT/LocalServer readme
 
 [禁止]
 - 開発用の暫定設定を本番設定として固定化しない。
-- 機密情報を `.env.example` やドキュメントへ直書きしない。
+- 機密情報を `.env`、`env.example.sample.txt`、ドキュメントへ直書きしない。
 理由: 後戻り忘れと機密漏えいを防ぐため。
 
 [変更履歴]
+- 2026-03-08: `.env.example` 廃止方針に合わせ、サンプル設定ファイルを `env.example.sample.txt` 基準へ更新。
 - 2026-03-07: 初期実装追加（Web UI、REST API、MQTT status/OTA command、OTA HTTPSエンドポイント、Task Scheduler導入スクリプト）。
 - 2026-03-02: 新規作成。ローカルHTTPサーバー格納先として定義。
