@@ -332,6 +332,16 @@ bool resolveOtaTargetIp(const otaUrlInfo& urlInfo, IPAddress* resolvedIpAddressO
     return true;
   }
 
+  IPAddress fallbackIpAddress;
+  if (strlen(SENSITIVE_OTA_FALLBACK_IP) > 0 && fallbackIpAddress.fromString(SENSITIVE_OTA_FALLBACK_IP)) {
+    *resolvedIpAddressOut = fallbackIpAddress;
+    *fallbackUsedOut = true;
+    appLogWarn("resolveOtaTargetIp configured IP will be used before DNS. host=%s configuredIp=%s",
+               urlInfo.host.c_str(),
+               fallbackIpAddress.toString().c_str());
+    return true;
+  }
+
   IPAddress resolvedIpAddress;
   if (WiFi.hostByName(urlInfo.host.c_str(), resolvedIpAddress)) {
     *resolvedIpAddressOut = resolvedIpAddress;
@@ -339,19 +349,9 @@ bool resolveOtaTargetIp(const otaUrlInfo& urlInfo, IPAddress* resolvedIpAddressO
     return true;
   }
 
-  IPAddress fallbackIpAddress;
-  if (strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0 && fallbackIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP)) {
-    *resolvedIpAddressOut = fallbackIpAddress;
-    *fallbackUsedOut = true;
-    appLogWarn("resolveOtaTargetIp fallback will be used. host=%s fallbackIp=%s",
-               urlInfo.host.c_str(),
-               fallbackIpAddress.toString().c_str());
-    return true;
-  }
-
-  appLogError("resolveOtaTargetIp failed. host=%s fallback=%s",
+  appLogError("resolveOtaTargetIp failed. host=%s configuredIp=%s",
               urlInfo.host.c_str(),
-              SENSITIVE_MQTT_FALLBACK_IP);
+              SENSITIVE_OTA_FALLBACK_IP);
   return false;
 }
 

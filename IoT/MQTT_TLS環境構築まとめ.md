@@ -378,7 +378,7 @@ client.on("message", (topic, msg) => {
   4) TLS検証  
   5) MQTT認証
 - [推奨] 1日1回、`mosquitto_pub/sub` とESP32ログをセットで保存し、再発を早期検知する。
-- [将来対応] 新ルータ導入後は `mqtt.esplab.home.arpa -> 172.17.1.10` 固定運用へ移行し、フォールバックIPを停止する。
+- [将来対応] 新ルータ導入後は `mqtt.esplab.home.arpa -> 172.17.1.100` 固定運用へ移行し、フォールバックIPを停止する。
 
 [推奨] PC側CLI (`mosquitto_pub/sub`) とESP32ログをセットで確認する。  
 理由: ネットワーク/DNS/証明書/認証のどこで失敗しているかを早く特定できるため。

@@ -16,6 +16,8 @@ dotenv.config();
  * @description LocalServer設定オブジェクト。
  */
 export interface appConfig {
+  mqttHostName: string;
+  mqttHostIp: string;
   httpPort: number;
   wsPath: string;
   sourceId: string;
@@ -30,6 +32,8 @@ export interface appConfig {
   statusOfflineTimeoutSeconds: number;
   statusRequestOnBoot: boolean;
   statusRequestBootDelayMs: number;
+  otaPublicHostName: string;
+  otaPublicHostIp: string;
   otaPublicHost: string;
   otaHttpsPort: number;
   otaHttpsCertPath: string;
@@ -116,13 +120,19 @@ export function loadConfig(): appConfig {
   if (mqttProtocolRaw !== "mqtt" && mqttProtocolRaw !== "mqtts") {
     throw new Error(`loadConfig failed. MQTT_PROTOCOL must be mqtt or mqtts. value=${mqttProtocolRaw}`);
   }
+  const mqttHostName = getStringEnv("MQTT_HOST_NAME", getStringEnv("MQTT_HOST", "mqtt.esplab.home.arpa"));
+  const mqttHostIp = getStringEnv("MQTT_HOST_IP", getStringEnv("MQTT_FALLBACK_IP", ""));
+  const otaPublicHostName = getStringEnv("OTA_PUBLIC_HOST_NAME", getStringEnv("OTA_PUBLIC_HOST", "ota.esplab.home.arpa"));
+  const otaPublicHostIp = getStringEnv("OTA_PUBLIC_HOST_IP", "");
 
   const nextConfig: appConfig = {
+    mqttHostName,
+    mqttHostIp,
     httpPort,
     wsPath: getStringEnv("LOCAL_SERVER_WS_PATH", "/ws"),
     sourceId: getStringEnv("LOCAL_SERVER_SOURCE_ID", "local-server-001"),
-    mqttHost: getStringEnv("MQTT_HOST", "mqtt.esplab.home.arpa"),
-    mqttFallbackIp: getStringEnv("MQTT_FALLBACK_IP", ""),
+    mqttHost: mqttHostName,
+    mqttFallbackIp: mqttHostIp,
     mqttPort,
     mqttProtocol: mqttProtocolRaw,
     mqttUsername: getStringEnv("MQTT_USERNAME", "esp32lab_mqtt"),
@@ -132,7 +142,9 @@ export function loadConfig(): appConfig {
     statusOfflineTimeoutSeconds,
     statusRequestOnBoot: getBooleanEnv("STATUS_REQUEST_ON_BOOT", true),
     statusRequestBootDelayMs,
-    otaPublicHost: getStringEnv("OTA_PUBLIC_HOST", "ota.esplab.home.arpa"),
+    otaPublicHostName,
+    otaPublicHostIp,
+    otaPublicHost: otaPublicHostName,
     otaHttpsPort,
     otaHttpsCertPath: toAbsolutePath(getStringEnv("OTA_HTTPS_CERT_PATH", "./certs/server.crt")),
     otaHttpsKeyPath: toAbsolutePath(getStringEnv("OTA_HTTPS_KEY_PATH", "./certs/server.key")),
@@ -140,8 +152,11 @@ export function loadConfig(): appConfig {
     otaFirmwareVersion: getStringEnv("OTA_FIRMWARE_VERSION", "0.1.0")
   };
 
-  if (nextConfig.mqttHost.length === 0) {
-    throw new Error("loadConfig failed. MQTT_HOST is empty.");
+  if (nextConfig.mqttHostName.length === 0) {
+    throw new Error("loadConfig failed. MQTT_HOST_NAME is empty.");
+  }
+  if (nextConfig.otaPublicHostName.length === 0) {
+    throw new Error("loadConfig failed. OTA_PUBLIC_HOST_NAME is empty.");
   }
   if (nextConfig.sourceId.length === 0) {
     throw new Error("loadConfig failed. LOCAL_SERVER_SOURCE_ID is empty.");
