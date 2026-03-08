@@ -482,22 +482,30 @@ bool pingBrokerHost(const char* brokerHost) {
 
   mqttResolvedBrokerIpValid = false;
   IPAddress brokerIpAddress;
-  bool resolveResult = WiFi.hostByName(brokerHost, brokerIpAddress);
-  if (!resolveResult) {
-    // [重要] 新ルータ導入前の暫定運用: DNS失敗時のみフォールバックIPで到達確認する。
-    IPAddress fallbackIpAddress;
-    bool fallbackAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
-    bool fallbackParseResult = fallbackAvailable && fallbackIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
-    if (!fallbackParseResult) {
-      appLogError("pingBrokerHost failed. hostByName failed and fallback is unavailable. brokerHost=%s fallback=%s",
-                  brokerHost,
-                  SENSITIVE_MQTT_FALLBACK_IP);
-      return false;
+  if (brokerIpAddress.fromString(brokerHost)) {
+    appLogInfo("pingBrokerHost: direct IP host will be used. brokerHost=%s", brokerHost);
+  } else {
+    IPAddress configuredIpAddress;
+    const bool configuredIpAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
+    const bool configuredIpParseResult = configuredIpAvailable && configuredIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
+    if (configuredIpParseResult) {
+      // [重要] 現在仕様: IPが設定されている場合は、DNS試行より先にIP直指定で疎通を確認する。
+      brokerIpAddress = configuredIpAddress;
+      appLogWarn("pingBrokerHost: configured IP will be used before DNS. brokerHost=%s configuredIp=%s",
+                 brokerHost,
+                 brokerIpAddress.toString().c_str());
+    } else {
+      const bool resolveResult = WiFi.hostByName(brokerHost, brokerIpAddress);
+      if (!resolveResult) {
+        appLogError("pingBrokerHost failed. hostByName failed and configured IP is unavailable. brokerHost=%s configuredIp=%s",
+                    brokerHost,
+                    SENSITIVE_MQTT_FALLBACK_IP);
+        return false;
+      }
+      appLogInfo("pingBrokerHost: DNS resolved host. brokerHost=%s resolvedIp=%s",
+                 brokerHost,
+                 brokerIpAddress.toString().c_str());
     }
-    brokerIpAddress = fallbackIpAddress;
-    appLogWarn("pingBrokerHost: hostByName failed. fallback IP will be used. brokerHost=%s fallbackIp=%s",
-               brokerHost,
-               brokerIpAddress.toString().c_str());
   }
   mqttResolvedBrokerIpAddress = brokerIpAddress;
   mqttResolvedBrokerIpValid = true;

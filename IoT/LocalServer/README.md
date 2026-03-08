@@ -13,15 +13,18 @@
 ## 2. セットアップ
 1. `env.example.sample.txt` をコピーして `.env` を作成する。
 2. `.env` の値を環境に合わせて編集する。
-3. 依存導入: `npm install`
-4. 開発起動: `npm run dev`
-5. 本番ビルド: `npm run build`
-6. 本番起動: `npm run start`
+3. [重要] 通信先は `*_HOST_NAME` と `*_HOST_IP` の両方を設定する。
+4. [推奨] 通常運用では `*_HOST_NAME` を正規値とし、`*_HOST_IP` は障害切り分けやDNS不達時の代替値として保持する。
+5. 依存導入: `npm install`
+6. 開発起動: `npm run dev`
+7. 本番ビルド: `npm run build`
+8. 本番起動: `npm run start`
 
 ## 3. 疎通確認
 - MQTT接続試験: `npm run test:connect`
 - APIヘルス確認: `GET http://localhost:3100/api/health`
 - GUI: `http://localhost:3100/`
+- [推奨] MQTT接続試験時は `.env` の `MQTT_HOST_NAME` / `MQTT_HOST_IP` / `MQTT_FALLBACK_IP` の整合を確認する。
 
 ## 4. OTA HTTPS
 - [厳守] 証明書と秘密鍵を `certs/server.crt`, `certs/server.key` へ配置する。
