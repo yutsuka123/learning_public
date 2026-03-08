@@ -4,7 +4,7 @@
  * @remarks
  * - [重要] 起動失敗時は「不足項目」「無効値」を具体的に例外へ含める。
  * - [厳守] 機密値はログに平文出力しない。
- * - [推奨] `.env` と `.env.example` を同期維持する。
+ * - [推奨] `.env` は `env.example.sample.txt` を元に作成し、サンプル値との差分を明確に保つ。
  */
 
 import path from "path";

@@ -11,8 +11,8 @@
 - [重要] OTA配布用エンドポイントを提供（`/ota/manifest.json`, `/ota/firmware.bin`）。
 
 ## 2. セットアップ
-1. `cp .env.example .env`（Windowsは手動コピー）。
-2. `.env` の値を環境に合わせて編集。
+1. `env.example.sample.txt` をコピーして `.env` を作成する。
+2. `.env` の値を環境に合わせて編集する。
 3. 依存導入: `npm install`
 4. 開発起動: `npm run dev`
 5. 本番ビルド: `npm run build`

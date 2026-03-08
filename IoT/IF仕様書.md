@@ -50,14 +50,15 @@
 - [禁止] MQTT/HTTPSの認証実値（ユーザー、パスワード、トークン、秘密鍵）を本書へ記載しない。
 - [推奨] 変数名・参照先のみ記載（例: `${MQTT_USERNAME}`）。
 - [厳守] MQTTクライアント設定は `MQTT_HOST` `MQTT_PORT` `MQTT_USERNAME` `MQTT_PASSWORD` `MQTT_CA_CERT_PATH` 等の参照名で管理する。
-- [厳守] `K_master_user` はユーザー環境でのみ保持し、デバイスへ配布しない。
-- [厳守] `K_device` は `HMAC-SHA256(K_master_user, base_mac)` 方式で導出する。
+- [厳守] `wrapped_secret` はユーザー環境でのみ保持し、デバイスへ配布しない。
+- [厳守] `k-device` は `HKDF(ikm=k-user, salt=SHA256(base_mac), info="k-device-v1")` 方式で導出する。
 
 ## 4. Cloud IF [将来対応]
 - AWS IoT Core または Google Cloud IoT相当サービスを候補とする。
 - 認証フロー、デバイス証明書配布、更新承認フローは第4段階で確定する。
 
 ## 5. 変更履歴
+- 2026-03-08: 鍵導出方式を `TPM + wrapped_secret + HKDF` 方式へ更新。理由: IF前提となる鍵生成式と保存物を正式仕様へ合わせるため。
 - 2026-03-07: OTA IFを現行仕様へ更新し、`OTA仕様書.md` 参照と進捗/リトライ/SHA256検証要件を追記。
 - 2026-03-07: LocalServer初期実装の topic（status/otaStart/status notice）を追記。
 - 2026-02-24: 新規作成。MQTT/HTTPS IFの基本仕様を定義。

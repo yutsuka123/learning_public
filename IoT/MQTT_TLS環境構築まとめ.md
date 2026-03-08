@@ -217,7 +217,7 @@ hello
 - MQTT Port: `8883`
 - TLS: 有効
 - username/password: 使用（必須）
-- [厳守] payloadは `K_device` によるアプリ層暗号化/復号を必須とする
+- [厳守] payloadは `k-device` によるアプリ層暗号化/復号を必須とする
 - MQTT topic: `test`
 - Publish message: `hello from esp32 tls`
 - Serial baudrate: `115200`
@@ -352,7 +352,7 @@ client.on("message", (topic, msg) => {
    - 目的: ESP32のTLS検証条件（接続先IP/ホスト名一致）を満たす
    - 対策詳細: `IP:172.16.1.59` に加えて `DNS:172.16.1.59` も付与
 4. PCクライアント（mqtt.fx / mosquitto_pub）で疎通確認後、ESP32で再試行
-5. 方針確定: TLSだけでなく `K_device` によるpayload暗号化/復号を実装必須とした。
+5. 方針確定: TLSだけでなく `k-device` によるpayload暗号化/復号を実装必須とした。
 
 ### 11.2 `(-9984) X509` 解消の最終記録（2026-03-07）
 [重要] `server.crt` のSAN再発行（`DNS:mqtt.esplab.home.arpa` + `IP:172.16.1.59`）と、ESP32側のTLS検証文脈修正により、`(-9984) X509` は解消した。  
@@ -384,6 +384,7 @@ client.on("message", (topic, msg) => {
 理由: ネットワーク/DNS/証明書/認証のどこで失敗しているかを早く特定できるため。
 
 ## 12. 変更履歴
+- 2026-03-08: 鍵名称表記を `k-device` へ統一。理由: 鍵管理設計書の正式名称へ合わせるため。
 - 2026-03-06: 新規作成。理由: MQTT over TLS 構成の再現手順と運用上の注意点を一元化するため。
 - 2026-03-06: 検証用起動コマンド（`.\mosquitto.exe -c .\mosquitto-test.conf -v`）と、DNS失敗→IP運用→証明書調整の経緯を追記。
 - 2026-03-06: `K_device` によるpayload暗号化/復号を必須方針として通信条件と検証経緯へ追記。

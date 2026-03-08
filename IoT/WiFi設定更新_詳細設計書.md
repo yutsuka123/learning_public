@@ -26,15 +26,16 @@
 ### 4.1 暗号方式
 - [厳守] AES-256-GCM（認証付き暗号）を採用する。
 
-### 4.2 鍵設計（マスター鍵方式）
-- [厳守] `K_master_user` はユーザー単位で生成し、ユーザー環境のみで保持する（Git保存禁止）。
+### 4.2 鍵設計（TPM拘束方式）
+- [厳守] `S_random` はユーザー環境で生成し、`wrapped_secret = TPM_Encrypt(S_random)` のみ保存する。
+- [厳守] `k-user` は `S_random` から HKDF で起動時に再生成する。
 - [厳守] デバイス鍵は都度導出する。
-  - `K_device = HMAC-SHA256(K_master_user, base_mac)`
+  - `k-device = HKDF(ikm=k-user, salt=SHA256(base_mac), info="k-device-v1")`
 
 ### 4.3 設計特性
 - デバイスごとにユニーク鍵
 - サーバ側は固定対応表不要（導出計算で生成）
-- base_mac既知でも `K_master_user` が安全なら `K_device` は保護される
+- base_mac既知でも `k-user` が安全なら `k-device` は保護される
 - ユーザー間で鍵階層が分離される
 
 ## 5. device_id / public_id 設計
@@ -46,10 +47,22 @@
 
 ## 6. デバイス側鍵保存
 - 初期フェーズ:
-  - 製造時に `K_device` をNVSへ書き込み
+  - ペアリング時に必要な鍵登録処理を実施する
 - 強化フェーズ:
   - Flash Encryption有効
   - Secure Boot有効
+
+## 6.1 設定保存方針
+- [厳守] Wi-Fi、MQTT、HTTPS、時刻同期、その他運用設定の主保存先は NVS とする。
+- [厳守] 再起動後も設定が保持されることを前提に実装する。
+- [推奨] LittleFS は補助的なファイルシステム領域として利用してよいが、主要運用設定の主保存先にはしない。
+- [禁止] Wi-Fi / MQTT / HTTPS の主要接続設定を平文ファイルへ戻すこと。
+- 設定項目例:
+  - Wi-Fi SSID / Password
+  - MQTT broker host / port / username / password / TLS設定
+  - HTTPS OTA host / port / CA参照情報
+  - timeServerUrl / timeServerPort / timeServerTls
+  - メンテナンスモード関連設定
 
 ## 7. Wi-Fi設定変更フロー（ステートマシン）
 - MQTTで暗号化payload受信
@@ -76,7 +89,8 @@
   - Pass: `pass-esp32`
 - **機能**:
   - Webサーバーを起動し、設定画面を提供する。
-  - Wi-Fi SSID/Pass, MQTT接続情報の変更が可能。
+  - Wi-Fi SSID/Pass, MQTT接続情報, HTTPS接続先, 時刻同期設定, その他運用設定の変更が可能。
+  - 保存先は NVS を正とする。
 - **セキュリティ**:
   - 将来的にSSID/Passは機密化する。
 
@@ -91,8 +105,8 @@
   - 基本的にモード②と同様の設定機能を提供する。
 
 ## 10. MQTT経由の設定変更（モード①）
-- [厳守] `K_master_user` はユーザーPCのセキュアストレージで安全保管しGitへ保存しない
-- [厳守] `device_id` から `K_device` を都度導出
+- [厳守] `wrapped_secret` のみを保存し、`S_random` / `k-user` の平文保存を禁止する
+- [厳守] `device_id` から `k-device` を都度導出
 - [厳守] MQTT ACLで他デバイス購読を禁止
 - [厳守] 暗号化payload生成機能を提供
 
@@ -109,22 +123,24 @@
 ## 12. 今回確定した重要判断
 - 共通鍵は使わない
 - base MACをdevice_idとして使用
-- `K_master_user` 方式採用
+- `TPM + wrapped_secret + k-user / k-device` 方式採用
 - Wi-Fi設定はアプリ層暗号化
 - ロールバック必須
 - AP復旧機能を実装
 
 ## 13. 全体要約
-- `K_master_user` に基づくデバイス個別鍵でWi-Fi設定をAES-GCM暗号化し、MQTT(TLS)で配信する。  
+- `k-user` から導出した `k-device` でWi-Fi設定をAES-GCM暗号化し、MQTT(TLS)で配信する。  
 - 二段階確定とロールバックを備え、最終的にFlash Encryption + Secure Bootで物理耐性を確保する。
 
 ## 14. オンプレ独立前提の補足
 - [厳守] システムはユーザー単位で完全独立する（鍵・データ共有禁止）。
 - [推奨] 初回ペアリングはAPモード + 物理操作で実施する。
-- [推奨] `K_master_user` の暗号化バックアップ/復元手順を用意する。
+- [推奨] `wrapped_secret` と `device_db` のバックアップ/復元手順を用意する。
 - [将来対応] クラウド移行時もユーザー単位鍵階層を維持する。
 
 ## 15. 変更履歴
+- 2026-03-08: 設定保存方針を追加し、主要運用設定の主保存先を NVS と整理。理由: Wi-Fi / MQTT / HTTPS 等の設定を ESP32 内部へ保持し、メンテナンス AP モードから修正可能にするため。
+- 2026-03-08: 鍵方式を `TPM + wrapped_secret + HKDF` 方式へ更新。理由: Wi-Fi設定更新で利用するデバイス鍵の生成根拠を正式仕様へ合わせるため。
 - 2026-03-01: ネットワーク設定（MQTT/APモード/設定用外部AP）の仕様追加。
 - 2026-02-24: 新規作成。Wi-Fi設定更新設計（暗号化/ロールバック/AP復旧）を確定事項として記録。
 - 2026-02-24: オンプレ独立前提に合わせ `K_master_user` 方式へ更新し、独立運用補足を追加。
