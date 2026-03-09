@@ -20,11 +20,15 @@
 - [重要] 本設計の主眼は「別PCコピーによる不正利用防止」と「同一PC再インストール復旧」である。
 - [補足] 同一PC侵害は運用PC管理者責任の範囲として扱う。
 
+### 1.3 責任範囲の親定義
+- [厳守] `LocalServer` / `SecretCore` / `Production` / `ESP32` / `LocalSoft` の責任境界は `モジュール仕様書.md` を親定義とする。
+- [厳守] 本書はそのうち `LocalServer` と `SecretCore` の境界を詳細化する文書とし、`Production` の製造責務や `LocalSoft` の保存責務を取り込まない。
+
 ## 2. アーキテクチャ概要
 ```text
 ┌────────────────────────────────────────────────────────────┐
 │ LocalServer（TypeScript / Node.js）                        │
-│ Web UI / REST API / MQTT制御 / OTA配布 / 設定画面         │
+│ Web UI / REST API / 入力検証 / 進捗表示 / 通常監視        │
 │                                                            │
 │  ↕ 保護済みIPC（Named Pipe 優先。将来 Unix Socket 対応）  │
 │                                                            │
@@ -34,11 +38,12 @@
 │  │ wrapped_secret 読込/検証                              │  │
 │  │ k-user 生成                                           │  │
 │  │ k-device 導出                                         │  │
+│  │ 高リスクワークフロー実行                              │  │
 │  │ HMAC / 署名 / AES-GCM payload生成                     │  │
 │  │ 監査ログ記録                                          │  │
 │  └──────────────────────────────────────────────────────┘  │
 └────────────────────────────────────────────────────────────┘
-         ↕ MQTT(TLS) / HTTPS(OTA)
+         ↕ MQTT(TLS) / HTTPS(OTA) / APモード通信
    ESP32 デバイス群
 ```
 
@@ -74,10 +79,19 @@ TPM
 - Web UI（デバイス一覧、OTA操作、設定画面）
 - REST API
 - WebSocket 配信
-- MQTT 接続・購読・発行
-- OTA ファームウェア配布（HTTPS）
+- MQTT 通常監視
+- OTA 配布エンドポイント提供（HTTPS）
 - 公開設定管理
 - SecretCore への IPC 依頼送信と結果受信
+- AP 共通トップ画面、Production 追加認証前の通常画面制御
+- 高リスクワークフロー実行前の入力検証、進行状態管理、監査表示
+- `public_id`、`keyVersion`、再ペアリング状態などのメタ情報管理
+- `POST /api/workflows/pairing/start`
+- `POST /api/workflows/key-rotation/start`
+- `POST /api/workflows/production/start`
+- `POST /api/workflows/signed-ota/start`
+- `GET /api/workflows/{workflowId}`
+- [厳守] 上記 REST API は workflow 開始要求と状態取得のみを公開し、秘密処理の内部 helper を外部公開しない。
 
 ### 4.2 SecretCore（Rust）担当
 - `S_random` の生成
@@ -86,8 +100,25 @@ TPM
 - `k-device` 導出
 - HMAC / 署名生成
 - AES-GCM payload 生成/検証補助
+- workflow 内部での `createPairingBundle` 生成
+- AP モード ECDH セッション鍵生成
+- 高リスク処理の対ESP32通信開始、進捗管理、完了判定
+- `runPairingSession()`
+- `runKeyRotationSession()`
+- `runProductionSecureFlow()`
+- `runSignedOtaCommand()`
 - `wrapped_secret` / `device_db` バックアップ支援
 - 監査ログ記録
+
+### 4.3 境界ルール
+- [厳守] `LocalServer` は raw `k-user`、raw `k-device`、ECDH 共有秘密、`k-pairing-session` を保持しない。
+- [厳守] `LocalServer` は高リスク処理の逐次通信手順を保持せず、開始要求と進捗表示のみを行う。
+- [厳守] `SecretCore` は通常運用 UI、MQTT 状態表示、SQLite 保存、製造画面制御を担当しない。
+- [厳守] `Production` に属する eFuse 最終有効化、製造ログ主記録、工場内セキュア化主体は本書の対象外とする。
+
+### 4.4 ワークフロー進捗状態
+- [厳守] 高リスクワークフローの進捗状態は `queued` / `running` / `waiting_device` / `verifying` / `completed` / `failed` を正規値とする。
+- [厳守] `LocalServer` へ返す情報は上記進捗状態、workflowId、対象個体、エラー要約、最終結果に限定する。
 
 ## 5. TPM 管理設計
 ### 5.1 初回インストール
@@ -141,20 +172,46 @@ DACL:
 |--------|------|--------|
 | `initializeKeyHierarchy` | `S_random` 生成、TPMラップ、`wrapped_secret` 保存 | 成功/失敗 + schemaVersion |
 | `isInitialized` | `wrapped_secret` の有無と利用可否確認 | bool |
-| `signCommand` | 指定コマンドの HMAC / 署名を生成 | 署名済み結果 |
-| `deriveEncryptedPayload` | `k-device` を使った暗号 payload を生成 | AES-GCM 暗号済み payload |
+| `runPairingSession` | AP モード初回投入/再ペアリングを開始し、完了判定まで実行 | workflowId + 初期状態 |
+| `runKeyRotationSession` | `k-user` 再発行後の鍵切替ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
+| `runProductionSecureFlow` | Production 高リスク処理を開始し、完了判定まで実行 | workflowId + 初期状態 |
+| `runSignedOtaCommand` | 署名付き OTA 開始ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
+| `getWorkflowStatus` | workflow の進捗状態と結果を取得 | 状態、結果、エラー要約 |
 | `verifyInboundHmac` | 受信HMAC検証 | bool |
 | `exportWrappedSecretBackup` | `wrapped_secret` のバックアップ準備 | ファイル出力結果 |
 | `restoreWrappedSecretBackup` | `wrapped_secret` の復元 | 成功/失敗 |
 | `getAuditLog` | 監査ログ取得 | 秘密値を含まない配列 |
 
+### 7.1.1 LocalServer REST 公開経路
+- `POST /api/workflows/pairing/start` -> `runPairingSession`
+- `POST /api/workflows/key-rotation/start` -> `runKeyRotationSession`
+- `POST /api/workflows/production/start` -> `runProductionSecureFlow`
+- `POST /api/workflows/signed-ota/start` -> `runSignedOtaCommand`
+- `GET /api/workflows/{workflowId}` -> `getWorkflowStatus`
+- [厳守] REST 応答は `workflowId`、`state`、`result`、`errorSummary`、監査表示向け最小情報に限定する。
+- [厳守] `LocalServer` は `SecretCore` の内部 helper を REST 公開しない。
+
 ### 7.2 禁止 API
 - [禁止] `getUserKey()`
 - [禁止] `getDeviceKey()`
 - [禁止] `exportPlainSecret()`
+- [禁止] `getPairingSessionKey()`
 - [禁止] 任意バイト列を自由に署名させる汎用 API
+- [禁止] TS が `createPairingBundle`、署名、対ESP32送達、検証、完了判定を個別APIの組み合わせで逐次制御する構成
+- [禁止] `POST /api/pairing/bundle` 等の `createPairingBundle` 直公開 REST API
+- [禁止] `POST /api/crypto/sign` `POST /api/crypto/encrypt` など低レベル秘密処理を外部公開する REST API
 
-### 7.3 署名対象の固定
+### 7.3 ワークフロー共通制約
+- [厳守] `LocalServer` は必須入力を検証したうえで workflow を開始する。
+- [厳守] workflow 開始後の対ESP32通信、検証、再試行、完了判定は `SecretCore` が責任を持つ。
+- [厳守] workflow 経由の返却値に raw `k-device`、`k-pairing-session`、中間署名素材を含めない。
+
+### 7.4 `runPairingSession` 制約
+- [厳守] 入力は少なくとも `targetDeviceId` `sessionId` `keyVersion` `requestedSettings` を含む。
+- [厳守] `requestedSettings` の必須項目（Wi-Fi / MQTT / OTA / 認証情報）は `LocalServer` 側で事前検証し、不足時は workflow を開始しない。
+- [厳守] bundle は固定公開鍵検証と AP モード ECDH の都度セッション鍵で保護する。
+
+### 7.5 署名対象の固定
 ```json
 {
   "command": "<コマンド名>",
@@ -196,8 +253,10 @@ DACL:
 |------|---------|
 | `initializeKeyHierarchy` | 日時、schemaVersion、成否 |
 | `TPM unwrap` | 日時、operation、成否 |
-| `signCommand` | 日時、targetDevice、keyVersion |
-| `deriveEncryptedPayload` | 日時、targetDevice、operation |
+| `runSignedOtaCommand` | 日時、targetDevice、keyVersion、workflowId、成否 |
+| `runPairingSession` | 日時、targetDevice、keyVersion、workflowId、bundleId、成否 |
+| `runKeyRotationSession` | 日時、targetDevice、keyVersion、workflowId、成否 |
+| `runProductionSecureFlow` | 日時、targetDevice、workflowId、成否 |
 | `wrapped_secret` バックアップ | 日時、成否 |
 | `wrapped_secret` 復元 | 日時、成否 |
 | IPC 認証失敗 | 日時、詳細 |
@@ -230,9 +289,11 @@ DACL:
 5. `signCommand`
 
 ### Phase 2: 暗号通信連携
-1. `deriveEncryptedPayload`
+1. `runSignedOtaCommand`
 2. ESP32 側 HMAC / payload 検証
 3. `device_db` 連携
+4. `runPairingSession`
+5. AP モード ECDH セッション鍵保護
 
 ### Phase 3: 復旧運用
 1. `wrapped_secret` バックアップ/復元
@@ -240,17 +301,22 @@ DACL:
 3. 監査ログ UI
 
 ### Phase 4: 完全化
-1. 鍵再発行
-2. 障害時再登録フロー
-3. TPM初期化検知
-4. 将来 macOS 対応の整理
+1. `runKeyRotationSession`
+2. `runProductionSecureFlow`
+3. 障害時再登録フロー
+4. TPM初期化検知
+5. 将来 macOS 対応の整理
 
 ## 12. 関連文書
 - `鍵管理および初期セットアップ設計仕様書.md`
 - `鍵管理初期セットアップ_実装たたき台.md`
 - `セキュリティ方針_認証情報取扱い.md`
 - `使用技術仕様書.md`
+- `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-03-09: `LocalServer` の workflow 公開 REST 経路（`/api/workflows/...`）と、`createPairingBundle` 直公開禁止を追加。理由: 外部公開 API と `SecretCore` 内部 helper の境界を実装前に明確化するため。
+- 2026-03-09: `runPairingSession()` / `runKeyRotationSession()` / `runProductionSecureFlow()` / `runSignedOtaCommand()` と workflow 進捗状態を追加し、TS は開始要求と進捗表示中心へ更新。理由: 高リスク処理を Rust 側で通信開始から完了判定まで責任を持つ構成へ改めるため。
+- 2026-03-09: `LocalServer` / `SecretCore` の責任範囲を `モジュール仕様書.md` に従って明確化し、`createPairingBundle` と AP モード ECDH 前提を追加。理由: 通常運用層と秘密処理層の境界を現行設計へ揃えるため。
 - 2026-03-08: 鍵保護方式を `DPAPI/Keychain 直保存` から `TPM + wrapped_secret + HKDF` 方式へ全面改訂。理由: 別PCコピー防止と同一PC再インストール復旧の前提を SecretCore 設計へ統合するため。
 - 2026-03-07: 初版作成。TS + Rust 構成、IPC傍受対策（DH鍵交換 + AES-GCM + nonce）、戻り値保護（raw key 非返却）、Rust難読化・ゼロ化方針、DPAPI/Keychain端末拘束方針、監査ログ仕様を定義。理由: LocalServerの別PC複製・ロジック解読・IPC傍受に対する防御境界を具体設計に落とし込むため。
