@@ -229,22 +229,26 @@ DACL:
 ## 8. バックアップ/復元設計
 ### 8.1 バックアップ対象
 - `wrapped_secret`
+- `k-user-backup.enc`（`k-user` 復旧用の暗号化バックアップファイル）
 - `device_db`
 
 ### 8.2 バックアップ方針
 - [厳守] `k-user` / `k-device` / `S_random` 平文はバックアップしない。
-- [重要] `wrapped_secret` は別PCで復号できない。
+- [重要] `wrapped_secret` 単体は別PCで復号できない。
+- [重要] ただし `k-user-backup.enc` とパスワードによる復旧経路を許容する。
 - [推奨] `wrapped_secret` と `device_db` は別媒体へ退避する。
 
 ### 8.3 復元手順
 1. `wrapped_secret` を元の専用配置先へ復元する。
-2. `device_db` を復元する。
-3. SecretCore が TPM で `wrapped_secret` を復号する。
-4. `k-user` を再生成する。
-5. `k-device` を都度再生成する。
+2. 必要に応じて `k-user-backup.enc` を復元する。
+3. `device_db` を復元する。
+4. SecretCore が TPM で `wrapped_secret` を復号する、または `k-user-backup.enc` をパスワードで復号する。
+5. `k-user` を再生成または復旧する。
+6. `k-device` を都度再生成する。
 
 ### 8.4 復元制約
-- [厳守] 同一PC + 同一TPM でのみ復元可能とする。
+- [厳守] `wrapped_secret` 経路は同一PC + 同一TPM でのみ復元可能とする。
+- [重要] 暗号化バックアップファイル経路は、適切なパスワードと `SecretCore` 実装により別PC復旧を許容する。
 - [重要] TPM初期化 / TPM交換 / マザーボード交換時は再発行が必要である。
 
 ## 9. 監査ログ仕様
@@ -266,11 +270,11 @@ DACL:
 
 ## 10. 解析耐性と限界
 ### 10.1 基本方針
-- [重要] Kerckhoffs 原則に従い、ロジック秘匿ではなく `wrapped_secret` + TPM 拘束で守る。
+- [重要] Kerckhoffs 原則に従い、ロジック秘匿ではなく保護された秘密（`wrapped_secret` + TPM 拘束、または `k-user-backup.enc` + パスワード）で守る。
 - [推奨] Rust バイナリは Release + strip + LTO + zeroize を適用する。
 
 ### 10.2 AI/自動解析時の考え方
-- ロジックが読まれても `wrapped_secret` を別PCで使えなければ不正利用しにくい。
+- ロジックが読まれても保護された秘密を復号できなければ不正利用しにくい。
 - raw key を IPC 越しに返さないため、コード解析だけで実鍵取得はできない。
 - 同一PCでのメモリダンプや管理者侵害は完全には防げない。
 
@@ -278,7 +282,7 @@ DACL:
 - [厳守] IPC ハンドシェイクは子プロセス spawn + stdin/stdout 連携を優先する。
 - [厳守] TS 層で署名結果や暗号 payload を保持する時間を最短にする。
 - [厳守] 乱数は Node.js `crypto` と Rust `OsRng` を使用する。
-- [重要] `wrapped_secret` 破損時は復旧できないため、バックアップ運用を導入時に必須説明する。
+- [重要] `wrapped_secret` 破損時は `k-user-backup.enc` 経路で復旧するため、暗号化バックアップとパスワード管理を導入時に必須説明する。
 
 ## 11. 実装フェーズ（推奨順）
 ### Phase 1: 基盤
@@ -315,6 +319,7 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-03-10: `k-user-backup.enc` とパスワードによる別PC復旧経路を追加し、`wrapped_secret` 単独前提の復元制約を更新。理由: 冗長化・多重接続方針に合わせて復旧性を確保するため。
 - 2026-03-09: `LocalServer` の workflow 公開 REST 経路（`/api/workflows/...`）と、`createPairingBundle` 直公開禁止を追加。理由: 外部公開 API と `SecretCore` 内部 helper の境界を実装前に明確化するため。
 - 2026-03-09: `runPairingSession()` / `runKeyRotationSession()` / `runProductionSecureFlow()` / `runSignedOtaCommand()` と workflow 進捗状態を追加し、TS は開始要求と進捗表示中心へ更新。理由: 高リスク処理を Rust 側で通信開始から完了判定まで責任を持つ構成へ改めるため。
 - 2026-03-09: `LocalServer` / `SecretCore` の責任範囲を `モジュール仕様書.md` に従って明確化し、`createPairingBundle` と AP モード ECDH 前提を追加。理由: 通常運用層と秘密処理層の境界を現行設計へ揃えるため。

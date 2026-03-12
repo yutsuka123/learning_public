@@ -61,6 +61,7 @@
     <h1>IoT LocalServer 設定</h1>
     <div class="toolbar">
       <button id="backButton">一覧へ戻る</button>
+      <button id="openAdminButton">管理者画面</button>
       <button id="reloadButton">再読込</button>
       <button id="saveButton">設定保存</button>
     </div>
@@ -203,6 +204,9 @@
 
       document.getElementById("backButton").addEventListener("click", () => {
         window.location.href = "/";
+      });
+      document.getElementById("openAdminButton").addEventListener("click", () => {
+        window.location.href = "/admin.html";
       });
       document.getElementById("reloadButton").addEventListener("click", () => {
         loadSettings().catch((error) => appendLog(error.message));

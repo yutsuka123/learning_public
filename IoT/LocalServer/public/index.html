@@ -89,6 +89,7 @@
       <button id="otaSelectedButton">選択へOTA要求</button>
       <button id="otaAllButton">全体へOTA要求</button>
       <button id="openSettingsButton">設定</button>
+      <button id="openAdminButton">管理者画面</button>
     </div>
     <table>
       <thead>
@@ -118,6 +119,9 @@
        * @property {string} wifiSsid SSID
        * @property {string} firmwareVersion ファームウェアバージョン
        * @property {string} firmwareWrittenAt ファームウェア書換日時
+       * @property {string} runningPartition 現在実行中パーティション（試験用一時項目）
+       * @property {string} bootPartition 次回起動対象パーティション（試験用一時項目）
+       * @property {string} nextUpdatePartition 次回書込み対象パーティション（試験用一時項目）
        * @property {number|null} otaProgressPercent OTA進捗率
        * @property {string} otaPhase OTAフェーズ
        * @property {string} otaDetail OTA詳細
@@ -161,6 +165,7 @@
           const row = document.createElement("tr");
           const checkedValue = selectedDeviceSet.has(deviceItem.deviceName) ? "checked" : "";
           const otaProgressText = formatOtaProgress(deviceItem);
+          const partitionSummaryText = formatPartitionSummary(deviceItem);
           const firmwareWrittenAtText = formatDateTimeByTimeZone(deviceItem.firmwareWrittenAt);
           const lastSeenAtText = formatDateTimeByTimeZone(deviceItem.lastSeenAt);
           row.innerHTML = `
@@ -172,7 +177,7 @@
             <td>${deviceItem.firmwareVersion || ""}</td>
             <td>${firmwareWrittenAtText}</td>
             <td>${otaProgressText}</td>
-            <td>${deviceItem.detail || ""}</td>
+            <td>${buildDetailCellText(deviceItem.detail || "", partitionSummaryText)}</td>
             <td>${lastSeenAtText}</td>
             <td>
               <div class="rowActionGroup">
@@ -206,6 +211,37 @@
           partList.push(`(done Time=${formatDateTimeByTimeZone(deviceItem.otaUpdatedAt)})`);
         }
         return partList.join(" ").trim();
+      }
+
+      /**
+       * @description 7015/7025用パーティション確認文字列を組み立てる。
+       * @param {DeviceState} deviceItem 表示対象デバイス。
+       * @returns {string} 表示用文字列。
+       */
+      function formatPartitionSummary(deviceItem) {
+        const runningPartition = (deviceItem.runningPartition || "").trim();
+        const bootPartition = (deviceItem.bootPartition || "").trim();
+        const nextUpdatePartition = (deviceItem.nextUpdatePartition || "").trim();
+        if (!runningPartition && !bootPartition && !nextUpdatePartition) {
+          return "";
+        }
+        return `partitions(run=${runningPartition || "-"}, boot=${bootPartition || "-"}, next=${nextUpdatePartition || "-"})`;
+      }
+
+      /**
+       * @description 既存詳細とパーティション概要を結合して表示する。
+       * @param {string} detailText 既存詳細。
+       * @param {string} partitionSummaryText パーティション概要。
+       * @returns {string} 結合後文字列。
+       */
+      function buildDetailCellText(detailText, partitionSummaryText) {
+        if (partitionSummaryText.length === 0) {
+          return detailText;
+        }
+        if (detailText.length === 0) {
+          return partitionSummaryText;
+        }
+        return `${detailText} / ${partitionSummaryText}`;
       }
 
       /**
@@ -374,6 +410,9 @@
       document.getElementById("otaAllButton").addEventListener("click", () => sendOtaCommand("all").catch((error) => appendLog(error.message)));
       document.getElementById("openSettingsButton").addEventListener("click", () => {
         window.location.href = "/settings.html";
+      });
+      document.getElementById("openAdminButton").addEventListener("click", () => {
+        window.location.href = "/admin.html";
       });
 
       loadSettings()

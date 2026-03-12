@@ -24,6 +24,9 @@ export interface deviceState {
   wifiSsid: string;
   firmwareVersion: string;
   firmwareWrittenAt: string;
+  runningPartition: string;
+  bootPartition: string;
+  nextUpdatePartition: string;
   otaProgressPercent: number | null;
   otaPhase: string;
   otaDetail: string;
@@ -49,6 +52,9 @@ export interface statusMessage {
   wifiSsid: string;
   firmwareVersion: string;
   firmwareWrittenAt: string;
+  runningPartition: string;
+  bootPartition: string;
+  nextUpdatePartition: string;
   onlineState: string;
   statusSub: string;
   detail: string;
@@ -79,6 +85,14 @@ export interface commandRequestBody {
 }
 
 /**
+ * @description 汎用set/get/networkコマンドAPIの要求パラメータ。
+ */
+export interface genericCommandRequestBody extends commandRequestBody {
+  subCommand: string;
+  args?: Record<string, unknown>;
+}
+
+/**
  * @description OTAコマンドAPIの要求パラメータ。
  */
 export interface otaCommandRequestBody extends commandRequestBody {
@@ -86,6 +100,13 @@ export interface otaCommandRequestBody extends commandRequestBody {
   firmwareUrl?: string;
   firmwareVersion?: string;
   sha256?: string;
+}
+
+/**
+ * @description rollback試験モード切替APIの要求パラメータ。
+ */
+export interface rollbackTestCommandRequestBody extends commandRequestBody {
+  mode: "enable" | "disable";
 }
 
 /**

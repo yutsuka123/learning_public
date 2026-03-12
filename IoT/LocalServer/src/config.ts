@@ -40,6 +40,9 @@ export interface appConfig {
   otaHttpsKeyPath: string;
   otaFirmwarePath: string;
   otaFirmwareVersion: string;
+  kUserAppIdentifier: string;
+  adminUsername: string;
+  adminPassword: string;
 }
 
 /**
@@ -149,7 +152,10 @@ export function loadConfig(): appConfig {
     otaHttpsCertPath: toAbsolutePath(getStringEnv("OTA_HTTPS_CERT_PATH", "./certs/server.crt")),
     otaHttpsKeyPath: toAbsolutePath(getStringEnv("OTA_HTTPS_KEY_PATH", "./certs/server.key")),
     otaFirmwarePath: toAbsolutePath(getStringEnv("OTA_FIRMWARE_PATH", "./ota/firmware.bin")),
-    otaFirmwareVersion: getStringEnv("OTA_FIRMWARE_VERSION", "0.1.0")
+    otaFirmwareVersion: getStringEnv("OTA_FIRMWARE_VERSION", "0.1.0"),
+    kUserAppIdentifier: getStringEnv("K_USER_APP_IDENTIFIER", "esp32lab-default"),
+    adminUsername: getStringEnv("LOCAL_ADMIN_USERNAME", "admin"),
+    adminPassword: getStringEnv("LOCAL_ADMIN_PASSWORD", "change-this-password")
   };
 
   if (nextConfig.mqttHostName.length === 0) {
@@ -163,6 +169,12 @@ export function loadConfig(): appConfig {
   }
   if (nextConfig.mqttUsername.length === 0 || nextConfig.mqttPassword.length === 0) {
     throw new Error("loadConfig failed. MQTT_USERNAME or MQTT_PASSWORD is empty.");
+  }
+  if (nextConfig.kUserAppIdentifier.length === 0) {
+    throw new Error("loadConfig failed. K_USER_APP_IDENTIFIER is empty.");
+  }
+  if (nextConfig.adminUsername.length === 0 || nextConfig.adminPassword.length === 0) {
+    throw new Error("loadConfig failed. LOCAL_ADMIN_USERNAME or LOCAL_ADMIN_PASSWORD is empty.");
   }
 
   return nextConfig;

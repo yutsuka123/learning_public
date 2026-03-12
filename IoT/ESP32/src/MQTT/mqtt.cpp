@@ -11,12 +11,16 @@
 #include "mqtt.h"
 
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <string.h>
 #include <sys/time.h>
 #include <time.h>
+#include <vector>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <PubSubClient.h>
+#include <mbedtls/base64.h>
+#include <mbedtls/gcm.h>
 
 #include "common.h"
 #include "firmwareInfo.h"
@@ -25,8 +29,11 @@
 #include "mqttMessages.h"
 #include "led.h"
 #include "log.h"
+#include "maintenanceMode.h"
 #include "ota.h"
+#include "otaRollback.h"
 #include "sensitiveData.h"
+#include "sensitiveDataService.h"
 #include "util.h"
 #include "version.h"
 
@@ -131,6 +138,210 @@ String deviceNodeName = "";
 IPAddress mqttResolvedBrokerIpAddress;
 /** @brief 解決済みMQTT接続先IPの有効フラグ。 */
 bool mqttResolvedBrokerIpValid = false;
+sensitiveDataService mqttSensitiveDataService;
+bool mqttSensitiveDataInitialized = false;
+
+/**
+ * @brief MQTT経由のk-device保存/読込に必要なsensitiveDataService初期化を保証する。
+ * @return 初期化成功時true。
+ */
+bool ensureMqttSensitiveDataReady() {
+  if (mqttSensitiveDataInitialized) {
+    return true;
+  }
+  mqttSensitiveDataInitialized = mqttSensitiveDataService.initialize();
+  if (!mqttSensitiveDataInitialized) {
+    appLogError("ensureMqttSensitiveDataReady failed. sensitiveDataService::initialize returned false.");
+  }
+  return mqttSensitiveDataInitialized;
+}
+
+/**
+ * @brief Base64文字列をバイト列へ復号する。
+ * @param inputBase64 入力文字列。
+ * @param outputBufferOut 出力先。
+ * @return 成功時true。
+ */
+bool decodeBase64Text(const String& inputBase64, std::vector<uint8_t>* outputBufferOut) {
+  if (outputBufferOut == nullptr) {
+    appLogError("decodeBase64Text failed. outputBufferOut is null.");
+    return false;
+  }
+  outputBufferOut->clear();
+  size_t outputLength = 0;
+  int32_t firstResult = mbedtls_base64_decode(nullptr,
+                                              0,
+                                              &outputLength,
+                                              reinterpret_cast<const unsigned char*>(inputBase64.c_str()),
+                                              inputBase64.length());
+  if (firstResult != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL && firstResult != 0) {
+    appLogError("decodeBase64Text failed. probe decode result=%ld inputLength=%ld",
+                static_cast<long>(firstResult),
+                static_cast<long>(inputBase64.length()));
+    return false;
+  }
+  outputBufferOut->resize(outputLength);
+  if (outputLength == 0) {
+    return true;
+  }
+  int32_t decodeResult = mbedtls_base64_decode(outputBufferOut->data(),
+                                               outputBufferOut->size(),
+                                               &outputLength,
+                                               reinterpret_cast<const unsigned char*>(inputBase64.c_str()),
+                                               inputBase64.length());
+  if (decodeResult != 0) {
+    appLogError("decodeBase64Text failed. decode result=%ld inputLength=%ld", static_cast<long>(decodeResult), static_cast<long>(inputBase64.length()));
+    return false;
+  }
+  outputBufferOut->resize(outputLength);
+  return true;
+}
+
+/**
+ * @brief バイト列をBase64文字列へ変換する。
+ * @param inputBuffer 入力バッファ。
+ * @param outputBase64Out 出力先。
+ * @return 成功時true。
+ */
+bool encodeBase64Text(const std::vector<uint8_t>& inputBuffer, String* outputBase64Out) {
+  if (outputBase64Out == nullptr) {
+    appLogError("encodeBase64Text failed. outputBase64Out is null.");
+    return false;
+  }
+  size_t requiredLength = 0;
+  int32_t probeResult = mbedtls_base64_encode(nullptr, 0, &requiredLength, inputBuffer.data(), inputBuffer.size());
+  if (probeResult != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL && probeResult != 0) {
+    appLogError("encodeBase64Text failed. probe result=%ld inputLength=%ld",
+                static_cast<long>(probeResult),
+                static_cast<long>(inputBuffer.size()));
+    return false;
+  }
+  std::vector<uint8_t> encodedBuffer(requiredLength + 1, 0);
+  size_t writtenLength = 0;
+  int32_t encodeResult = mbedtls_base64_encode(encodedBuffer.data(),
+                                               encodedBuffer.size(),
+                                               &writtenLength,
+                                               inputBuffer.data(),
+                                               inputBuffer.size());
+  if (encodeResult != 0) {
+    appLogError("encodeBase64Text failed. encode result=%ld inputLength=%ld", static_cast<long>(encodeResult), static_cast<long>(inputBuffer.size()));
+    return false;
+  }
+  *outputBase64Out = String(reinterpret_cast<const char*>(encodedBuffer.data()), writtenLength);
+  return true;
+}
+
+/**
+ * @brief 保存済みk-deviceを読込み、暗号化鍵(32byte)へ変換する。
+ * @param keyBytesOut 出力先。
+ * @return 成功時true。
+ */
+bool loadKDeviceBytes(std::vector<uint8_t>* keyBytesOut) {
+  if (keyBytesOut == nullptr) {
+    appLogError("loadKDeviceBytes failed. keyBytesOut is null.");
+    return false;
+  }
+  if (!ensureMqttSensitiveDataReady()) {
+    return false;
+  }
+  String keyDeviceBase64;
+  if (!mqttSensitiveDataService.loadKeyDevice(&keyDeviceBase64)) {
+    appLogError("loadKDeviceBytes failed. loadKeyDevice returned false.");
+    return false;
+  }
+  if (!decodeBase64Text(keyDeviceBase64, keyBytesOut)) {
+    appLogError("loadKDeviceBytes failed. invalid base64.");
+    return false;
+  }
+  if (keyBytesOut->size() != 32) {
+    appLogError("loadKDeviceBytes failed. key size must be 32. actual=%ld", static_cast<long>(keyBytesOut->size()));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief AES-256-GCMで復号する。
+ */
+bool decryptAesGcm(const std::vector<uint8_t>& keyBytes,
+                   const std::vector<uint8_t>& ivBytes,
+                   const std::vector<uint8_t>& cipherBytes,
+                   const std::vector<uint8_t>& tagBytes,
+                   String* plainTextOut) {
+  if (plainTextOut == nullptr) {
+    appLogError("decryptAesGcm failed. plainTextOut is null.");
+    return false;
+  }
+  std::vector<uint8_t> plainBuffer(cipherBytes.size(), 0);
+  mbedtls_gcm_context gcmContext;
+  mbedtls_gcm_init(&gcmContext);
+  int32_t keyResult = mbedtls_gcm_setkey(&gcmContext, MBEDTLS_CIPHER_ID_AES, keyBytes.data(), 256);
+  if (keyResult != 0) {
+    appLogError("decryptAesGcm failed. setkey result=%ld", static_cast<long>(keyResult));
+    mbedtls_gcm_free(&gcmContext);
+    return false;
+  }
+  int32_t decryptResult = mbedtls_gcm_auth_decrypt(&gcmContext,
+                                                   cipherBytes.size(),
+                                                   ivBytes.data(),
+                                                   ivBytes.size(),
+                                                   nullptr,
+                                                   0,
+                                                   tagBytes.data(),
+                                                   tagBytes.size(),
+                                                   cipherBytes.data(),
+                                                   plainBuffer.data());
+  mbedtls_gcm_free(&gcmContext);
+  if (decryptResult != 0) {
+    appLogError("decryptAesGcm failed. auth_decrypt result=%ld", static_cast<long>(decryptResult));
+    return false;
+  }
+  *plainTextOut = String(reinterpret_cast<const char*>(plainBuffer.data()), plainBuffer.size());
+  return true;
+}
+
+/**
+ * @brief AES-256-GCMで暗号化する。
+ */
+bool encryptAesGcm(const std::vector<uint8_t>& keyBytes,
+                   const String& plainText,
+                   std::vector<uint8_t>* ivBytesOut,
+                   std::vector<uint8_t>* cipherBytesOut,
+                   std::vector<uint8_t>* tagBytesOut) {
+  if (ivBytesOut == nullptr || cipherBytesOut == nullptr || tagBytesOut == nullptr) {
+    appLogError("encryptAesGcm failed. output parameter is null.");
+    return false;
+  }
+  ivBytesOut->assign(12, 0);
+  esp_fill_random(ivBytesOut->data(), ivBytesOut->size());
+  cipherBytesOut->assign(plainText.length(), 0);
+  tagBytesOut->assign(16, 0);
+  mbedtls_gcm_context gcmContext;
+  mbedtls_gcm_init(&gcmContext);
+  int32_t keyResult = mbedtls_gcm_setkey(&gcmContext, MBEDTLS_CIPHER_ID_AES, keyBytes.data(), 256);
+  if (keyResult != 0) {
+    appLogError("encryptAesGcm failed. setkey result=%ld", static_cast<long>(keyResult));
+    mbedtls_gcm_free(&gcmContext);
+    return false;
+  }
+  int32_t encryptResult = mbedtls_gcm_crypt_and_tag(&gcmContext,
+                                                    MBEDTLS_GCM_ENCRYPT,
+                                                    plainText.length(),
+                                                    ivBytesOut->data(),
+                                                    ivBytesOut->size(),
+                                                    nullptr,
+                                                    0,
+                                                    reinterpret_cast<const unsigned char*>(plainText.c_str()),
+                                                    cipherBytesOut->data(),
+                                                    tagBytesOut->size(),
+                                                    tagBytesOut->data());
+  mbedtls_gcm_free(&gcmContext);
+  if (encryptResult != 0) {
+    appLogError("encryptAesGcm failed. crypt_and_tag result=%ld", static_cast<long>(encryptResult));
+    return false;
+  }
+  return true;
+}
 
 
 /**
@@ -371,6 +582,208 @@ bool createTopicText(const char* kind, const char* sub, const char* endpointName
 }
 
 /**
+ * @brief 旧仕様サブコマンドを現行名称へ正規化する。
+ * @param rawSubName 受信サブコマンド。
+ * @return 正規化後サブコマンド。
+ */
+String normalizeSubCommand(const String& rawSubName) {
+  if (rawSubName.equalsIgnoreCase(iotCommon::mqtt::subCommand::call::kMaintenanceLegacy)) {
+    return String(iotCommon::mqtt::subCommand::call::kMaintenance);
+  }
+  if (rawSubName.equalsIgnoreCase(iotCommon::mqtt::subCommand::get::kButtonLegacy)) {
+    return String(iotCommon::mqtt::subCommand::get::kButton);
+  }
+  if (rawSubName.equalsIgnoreCase(iotCommon::mqtt::subCommand::get::kGpioLegacy)) {
+    return String(iotCommon::mqtt::subCommand::get::kGpio);
+  }
+  if (rawSubName.equalsIgnoreCase(iotCommon::mqtt::subCommand::set::kGpioHighLegacy)) {
+    return String(iotCommon::mqtt::subCommand::set::kGpioHigh);
+  }
+  if (rawSubName.equalsIgnoreCase(iotCommon::mqtt::subCommand::set::kGpioLowLegacy)) {
+    return String(iotCommon::mqtt::subCommand::set::kGpioLow);
+  }
+  return rawSubName;
+}
+
+/**
+ * @brief set/get系の受信を暫定処理する。
+ * @param commandName コマンド名（set/get）。
+ * @param normalizedSubName 正規化済みサブコマンド。
+ * @param parsedMessage 解析済みメッセージ。
+ * @return 処理済みならtrue。
+ * @details
+ * - [重要] 現時点は受信口を固定し、詳細制御実装は後続タスクへ委譲する。
+ */
+bool handleSetOrGetSubCommand(const char* commandName,
+                              const String& normalizedSubName,
+                              const mqtt::mqttIncomingMessage& parsedMessage) {
+  if (commandName == nullptr || strlen(commandName) == 0) {
+    return false;
+  }
+
+  if (normalizedSubName.length() == 0) {
+    return false;
+  }
+
+  if (strcmp(commandName, "set") == 0 && normalizedSubName.equalsIgnoreCase("keyDeviceSet")) {
+    jsonService payloadJsonService;
+    String keyDeviceBase64;
+    payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.keyDevice", &keyDeviceBase64);
+    if (keyDeviceBase64.length() == 0) {
+      appLogError("handleSetOrGetSubCommand failed. keyDeviceSet requires args.keyDevice.");
+      return true;
+    }
+    if (!ensureMqttSensitiveDataReady()) {
+      appLogError("handleSetOrGetSubCommand failed. sensitiveDataService is not ready.");
+      return true;
+    }
+    if (!mqttSensitiveDataService.saveKeyDevice(keyDeviceBase64)) {
+      appLogError("handleSetOrGetSubCommand failed. saveKeyDevice returned false.");
+      return true;
+    }
+    appLogWarn("handleSetOrGetSubCommand: keyDeviceSet saved successfully. keyLength=%ld", static_cast<long>(keyDeviceBase64.length()));
+    return true;
+  }
+
+  appLogInfo("handleSetOrGetSubCommand accepted. command=%s sub=%s dstId=%s srcId=%s",
+             commandName,
+             normalizedSubName.c_str(),
+             parsedMessage.dstId.c_str(),
+             parsedMessage.srcId.c_str());
+  return true;
+}
+
+/**
+ * @brief call系サブコマンドを処理する。
+ * @param normalizedSubName 正規化済みサブコマンド。
+ * @param payloadText 受信payload。
+ * @return 処理済みならtrue。
+ */
+bool handleCallSubCommand(const String& normalizedSubName,
+                          const String& payloadText,
+                          const mqtt::mqttIncomingMessage& parsedMessage) {
+  if (normalizedSubName == iotCommon::mqtt::subCommand::call::kRestart) {
+    long delayMs = 0;
+    jsonService payloadJsonService;
+    payloadJsonService.getValueByPath(payloadText, "args.delayMs", &delayMs);
+    if (delayMs < 0) {
+      delayMs = 0;
+    }
+    appLogWarn("handleCallSubCommand: restart requested. delayMs=%ld", delayMs);
+    if (delayMs > 0) {
+      delay(static_cast<uint32_t>(delayMs));
+    }
+    ESP.restart();
+    return true;
+  }
+
+  if (normalizedSubName == iotCommon::mqtt::subCommand::call::kMaintenance) {
+    const bool saveResult = maintenanceMode::requestMaintenanceModeOnNextBoot();
+    if (!saveResult) {
+      appLogError("handleCallSubCommand failed. could not persist maintenance request. action=restart_without_flag");
+    } else {
+      appLogWarn("handleCallSubCommand: maintenance request persisted. reboot to AP maintenance mode.");
+    }
+    delay(100);
+    ESP.restart();
+    return true;
+  }
+
+  if (normalizedSubName.equalsIgnoreCase("securePing")) {
+    jsonService payloadJsonService;
+    String requestIdText;
+    String ivBase64;
+    String cipherBase64;
+    String tagBase64;
+    payloadJsonService.getValueByPath(payloadText, "args.requestId", &requestIdText);
+    payloadJsonService.getValueByPath(payloadText, "args.enc.iv", &ivBase64);
+    payloadJsonService.getValueByPath(payloadText, "args.enc.ct", &cipherBase64);
+    payloadJsonService.getValueByPath(payloadText, "args.enc.tag", &tagBase64);
+    if (requestIdText.length() == 0 || ivBase64.length() == 0 || cipherBase64.length() == 0 || tagBase64.length() == 0) {
+      appLogError("handleCallSubCommand securePing failed. required args are missing. requestIdLength=%ld ivLength=%ld ctLength=%ld tagLength=%ld",
+                  static_cast<long>(requestIdText.length()),
+                  static_cast<long>(ivBase64.length()),
+                  static_cast<long>(cipherBase64.length()),
+                  static_cast<long>(tagBase64.length()));
+      return true;
+    }
+
+    std::vector<uint8_t> keyBytes;
+    if (!loadKDeviceBytes(&keyBytes)) {
+      appLogError("handleCallSubCommand securePing failed. no valid keyDevice found.");
+      return true;
+    }
+    std::vector<uint8_t> ivBytes;
+    std::vector<uint8_t> cipherBytes;
+    std::vector<uint8_t> tagBytes;
+    if (!decodeBase64Text(ivBase64, &ivBytes) || !decodeBase64Text(cipherBase64, &cipherBytes) || !decodeBase64Text(tagBase64, &tagBytes)) {
+      appLogError("handleCallSubCommand securePing failed. base64 decode failed.");
+      return true;
+    }
+    String plainText;
+    if (!decryptAesGcm(keyBytes, ivBytes, cipherBytes, tagBytes, &plainText)) {
+      appLogError("handleCallSubCommand securePing failed. decrypt failed.");
+      return true;
+    }
+
+    String responsePlainText;
+    responsePlainText = "{\"result\":\"OK\",\"requestId\":\"" + requestIdText + "\",\"echo\":" + payloadText + ",\"decrypted\":\"" + plainText + "\"}";
+    std::vector<uint8_t> responseIvBytes;
+    std::vector<uint8_t> responseCipherBytes;
+    std::vector<uint8_t> responseTagBytes;
+    if (!encryptAesGcm(keyBytes, responsePlainText, &responseIvBytes, &responseCipherBytes, &responseTagBytes)) {
+      appLogError("handleCallSubCommand securePing failed. encrypt failed.");
+      return true;
+    }
+    String responseIvBase64;
+    String responseCipherBase64;
+    String responseTagBase64;
+    if (!encodeBase64Text(responseIvBytes, &responseIvBase64) ||
+        !encodeBase64Text(responseCipherBytes, &responseCipherBase64) ||
+        !encodeBase64Text(responseTagBytes, &responseTagBase64)) {
+      appLogError("handleCallSubCommand securePing failed. base64 encode failed.");
+      return true;
+    }
+    if (deviceNodeName.length() <= 0 && !resolveDeviceNodeName(&deviceNodeName)) {
+      appLogError("handleCallSubCommand securePing failed. resolveDeviceNodeName failed.");
+      return true;
+    }
+    String topicText;
+    if (!createTopicText("notice", "secureEcho", deviceNodeName.c_str(), &topicText)) {
+      appLogError("handleCallSubCommand securePing failed. createTopicText failed.");
+      return true;
+    }
+    String payloadOut = "{}";
+    jsonKeyValueItem responseItems[] = {
+        {"v", jsonValueType::kString, iotCommon::kProtocolVersion, 0, 0, false},
+        {"DstID", jsonValueType::kString, parsedMessage.srcId.c_str(), 0, 0, false},
+        {"SrcID", jsonValueType::kString, deviceNodeName.c_str(), 0, 0, false},
+        {"Request", jsonValueType::kString, "Notice", 0, 0, false},
+        {"id", jsonValueType::kString, requestIdText.c_str(), 0, 0, false},
+        {"sub", jsonValueType::kString, "secureEcho", 0, 0, false},
+        {"requestId", jsonValueType::kString, requestIdText.c_str(), 0, 0, false},
+        {"enc.alg", jsonValueType::kString, "A256GCM", 0, 0, false},
+        {"enc.iv", jsonValueType::kString, responseIvBase64.c_str(), 0, 0, false},
+        {"enc.ct", jsonValueType::kString, responseCipherBase64.c_str(), 0, 0, false},
+        {"enc.tag", jsonValueType::kString, responseTagBase64.c_str(), 0, 0, false},
+    };
+    if (!payloadJsonService.setValuesByPath(&payloadOut, responseItems, sizeof(responseItems) / sizeof(responseItems[0]))) {
+      appLogError("handleCallSubCommand securePing failed. payloadJsonService.setValuesByPath returned false.");
+      return true;
+    }
+    bool publishResult = mqttClient.publish(topicText.c_str(), payloadOut.c_str(), false);
+    if (!publishResult) {
+      appLogError("handleCallSubCommand securePing failed. publish failed. topic=%s", topicText.c_str());
+      return true;
+    }
+    appLogInfo("handleCallSubCommand securePing success. requestId=%s", requestIdText.c_str());
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * @brief サーバーから受信したMQTTペイロードを解析してログ出力する。
  * @param topicName 受信トピック。
  * @param payloadBuffer 受信ペイロード。
@@ -401,10 +814,11 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
              parsedMessage.subName.c_str(),
              parsedMessage.dstId.c_str(),
              parsedMessage.srcId.c_str());
+  const String normalizedSubName = normalizeSubCommand(parsedMessage.subName);
 
   bool isStatusCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/status/") != nullptr);
   if (isStatusCallTopic &&
-      parsedMessage.subName == iotCommon::mqtt::jsonKey::status::kCommand) {
+      normalizedSubName == iotCommon::mqtt::jsonKey::status::kCommand) {
     appUtil::appTaskMessageDetail statusReplyDetail = appUtil::createEmptyMessageDetail();
     statusReplyDetail.hasIntValue = true;
     statusReplyDetail.intValue = static_cast<int32_t>(mainTaskStartupCpuMillis);
@@ -431,7 +845,7 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
 
   bool isOtaStartCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/otaStart/") != nullptr);
   if (isOtaStartCallTopic &&
-      parsedMessage.subName == iotCommon::mqtt::subCommand::call::kOtaStart) {
+      normalizedSubName == iotCommon::mqtt::subCommand::call::kOtaStart) {
     jsonService payloadJsonService;
     otaStartRequestContext otaRequestContext;
     payloadJsonService.getValueByPath(parsedMessage.rawPayload, "id", &otaRequestContext.transactionId);
@@ -466,6 +880,35 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
                  otaRequestContext.firmwareVersion.c_str(),
                  otaRequestContext.firmwareUrl.c_str());
     }
+  }
+
+  const bool isRollbackTestCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/") != nullptr);
+  if (isRollbackTestCallTopic &&
+      normalizedSubName == iotCommon::mqtt::subCommand::call::kRollbackTestEnable) {
+    const bool enableResult = otaRollback::enableRollbackFailureTestMode();
+    appLogWarn("onMqttMessageReceived: rollback test mode enable requested. result=%d", enableResult ? 1 : 0);
+    return;
+  }
+  if (isRollbackTestCallTopic &&
+      normalizedSubName == iotCommon::mqtt::subCommand::call::kRollbackTestDisable) {
+    const bool disableResult = otaRollback::disableRollbackFailureTestMode();
+    appLogInfo("onMqttMessageReceived: rollback test mode disable requested. result=%d", disableResult ? 1 : 0);
+    return;
+  }
+
+  const bool isCallTopic = (topicName != nullptr && strstr(topicName, "esp32lab/call/") != nullptr);
+  if (isCallTopic && handleCallSubCommand(normalizedSubName, payloadText, parsedMessage)) {
+    return;
+  }
+
+  const bool isSetTopic = (topicName != nullptr && strstr(topicName, "esp32lab/set/") != nullptr);
+  if (isSetTopic && handleSetOrGetSubCommand("set", normalizedSubName, parsedMessage)) {
+    return;
+  }
+
+  const bool isGetTopic = (topicName != nullptr && strstr(topicName, "esp32lab/get/") != nullptr);
+  if (isGetTopic && handleSetOrGetSubCommand("get", normalizedSubName, parsedMessage)) {
+    return;
   }
 }
 

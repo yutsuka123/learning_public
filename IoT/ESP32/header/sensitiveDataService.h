@@ -81,6 +81,20 @@ class sensitiveDataService {
                             int32_t* timeServerPortOut,
                             bool* timeServerTlsOut);
 
+  /**
+   * @brief k-device（Base64）を保存する。
+   * @param keyDeviceBase64 Base64文字列のk-device。
+   * @return 保存成功時true、失敗時false。
+   */
+  bool saveKeyDevice(const String& keyDeviceBase64);
+
+  /**
+   * @brief k-device（Base64）を読み込む。
+   * @param keyDeviceBase64Out 読込先ポインタ（null不可）。
+   * @return 読込成功時true、失敗時false。
+   */
+  bool loadKeyDevice(String* keyDeviceBase64Out);
+
  private:
   /**
    * @brief 設定ファイルが存在しない場合にデフォルトJSONを生成する。

@@ -11,6 +11,7 @@
 
 #include <sys/time.h>
 #include <WiFi.h>
+#include <esp_ota_ops.h>
 
 #include "common.h"
 #include "firmwareInfo.h"
@@ -210,6 +211,33 @@ bool createNetworkMacAddressText(String* networkMacAddressTextOut, const String&
   }
   *networkMacAddressTextOut = wifiMacAddressText;
   return true;
+}
+
+/**
+ * @brief パーティション情報を試験用表記（"0" / "1"）へ変換する。
+ * @param partitionOut 参照するパーティション情報。
+ * @return 変換後文字列。判定不能時は `"unknown"`。
+ * @details
+ * - [重要] 7015 / 7025 で必要な A/B 面確認を最短で行えるよう、`ota_0` を `"0"`、`ota_1` を `"1"` へ正規化する。
+ * - [将来対応] 試験完了後は本項目自体を status 通知から削除する。
+ */
+String resolvePartitionIndexText(const esp_partition_t* partitionOut) {
+  if (partitionOut == nullptr) {
+    return "unknown";
+  }
+  if (partitionOut->type != ESP_PARTITION_TYPE_APP) {
+    return "unknown";
+  }
+  if (partitionOut->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
+      partitionOut->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX) {
+    const int32_t partitionIndex = static_cast<int32_t>(partitionOut->subtype) -
+                                   static_cast<int32_t>(ESP_PARTITION_SUBTYPE_APP_OTA_0);
+    return String(partitionIndex);
+  }
+  if (partitionOut->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    return "factory";
+  }
+  return "unknown";
 }
 
 /**
@@ -422,6 +450,9 @@ bool buildMqttStatusPayload(const char* subName,
   }
   String payloadText = "{}";
   jsonService payloadJsonService;
+  const String runningPartitionText = resolvePartitionIndexText(esp_ota_get_running_partition());
+  const String bootPartitionText = resolvePartitionIndexText(esp_ota_get_boot_partition());
+  const String nextUpdatePartitionText = resolvePartitionIndexText(esp_ota_get_next_update_partition(nullptr));
 
   jsonKeyValueItem itemList[] = {
       {iotCommon::mqtt::jsonKey::status::kVersion, jsonValueType::kString, "1", 0, 0, false},
@@ -443,6 +474,10 @@ bool buildMqttStatusPayload(const char* subName,
       {iotCommon::mqtt::jsonKey::status::kWifiSignalLevel, jsonValueType::kLong, nullptr, 0, wifiSignalLevelValue, false},
       {iotCommon::mqtt::jsonKey::status::kIpAddress, jsonValueType::kString, ipAddressText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kWifiSsid, jsonValueType::kString, wifiSsidText.c_str(), 0, 0, false},
+      // [重要] 7015 / 7025 試験用の一時項目。A/B 切替確認で使用する。
+      {iotCommon::mqtt::jsonKey::status::kRunningPartition, jsonValueType::kString, runningPartitionText.c_str(), 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kBootPartition, jsonValueType::kString, bootPartitionText.c_str(), 0, 0, false},
+      {iotCommon::mqtt::jsonKey::status::kNextUpdatePartition, jsonValueType::kString, nextUpdatePartitionText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::kDetail, jsonValueType::kString, statusDetailText.c_str(), 0, 0, false},
   };
 

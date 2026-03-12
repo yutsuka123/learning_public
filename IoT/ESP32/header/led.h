@@ -78,6 +78,13 @@ class ledController {
    * @brief メンテナンスモード表示（赤LED点灯維持）。
    */
   static void indicateMaintenanceModeRedOn();
+
+  /**
+   * @brief APメンテナンスモード表示（青LEDパターン）を1サイクル実行する。
+   * @details
+   * - 0.3s ON -> 0.3s OFF -> 0.3s ON -> 0.3s OFF -> 1.0s ON -> 0.3s OFF
+   */
+  static void indicateMaintenanceModeBluePatternCycle();
 };
 
 class ledTask {

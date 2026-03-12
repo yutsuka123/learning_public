@@ -14,15 +14,29 @@ import { appConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
 import { mqttCommandPayload, otaProgressMessage, statusMessage } from "./types";
 
+export interface secureEchoMessage {
+  topic: string;
+  srcId: string;
+  requestId: string;
+  ivBase64: string;
+  cipherBase64: string;
+  tagBase64: string;
+  receivedAt: string;
+}
+
 /**
  * @description MQTTイベントの型。
  */
 interface mqttGatewayEvents {
   statusUpdated: [status: statusMessage];
   otaProgressUpdated: [otaProgress: otaProgressMessage];
+  secureEchoUpdated: [secureEcho: secureEchoMessage];
   connected: [];
   disconnected: [];
 }
+
+type mqttCommandKind = "call" | "set" | "get" | "network";
+const commandPublishQos: 1 = 1;
 
 /**
  * @description 型付きEventEmitterヘルパー。
@@ -46,6 +60,14 @@ export class mqttGateway {
   private readonly emitter = new typedEmitter();
   private readonly client: MqttClient;
   private readonly sourceId: string;
+  private readonly pendingSecureEchoMap = new Map<
+    string,
+    {
+      resolve: (secureEcho: secureEchoMessage) => void;
+      reject: (error: Error) => void;
+      timeoutHandle: NodeJS.Timeout;
+    }
+  >();
 
   /**
    * @description コンストラクタ。
@@ -84,7 +106,7 @@ export class mqttGateway {
    * @param targetNames 送信先デバイス名。`all`で全体要求。
    */
   public async requestStatus(targetNames: string[] | "all"): Promise<void> {
-    await this.publishCommand("status", targetNames, {
+    await this.publishCommand("call", "status", targetNames, {
       requestType: "statusRequest",
       reason: "manualOrStartup"
     });
@@ -105,7 +127,7 @@ export class mqttGateway {
       timeoutSeconds: number;
     }
   ): Promise<void> {
-    await this.publishCommand("otaStart", targetNames, {
+    await this.publishCommand("call", "otaStart", targetNames, {
       requestType: "otaStart",
       manifestUrl: args.manifestUrl,
       firmwareUrl: args.firmwareUrl,
@@ -116,15 +138,95 @@ export class mqttGateway {
   }
 
   /**
+   * @description 任意callコマンドを送信する。
+   * @param targetNames 送信先デバイス名。
+   * @param subCommand callサブコマンド。
+   * @param args 追加引数。
+   */
+  public async requestCall(targetNames: string[] | "all", subCommand: string, args: Record<string, unknown>): Promise<void> {
+    await this.publishCommand("call", subCommand, targetNames, args);
+  }
+
+  /**
+   * @description 任意setコマンドを送信する。
+   * @param targetNames 送信先デバイス名。
+   * @param subCommand setサブコマンド。
+   * @param args 追加引数。
+   */
+  public async requestSet(targetNames: string[] | "all", subCommand: string, args: Record<string, unknown>): Promise<void> {
+    await this.publishCommand("set", subCommand, targetNames, args);
+  }
+
+  /**
+   * @description 任意getコマンドを送信する。
+   * @param targetNames 送信先デバイス名。
+   * @param subCommand getサブコマンド。
+   * @param args 追加引数。
+   */
+  public async requestGet(targetNames: string[] | "all", subCommand: string, args: Record<string, unknown>): Promise<void> {
+    await this.publishCommand("get", subCommand, targetNames, args);
+  }
+
+  /**
+   * @description 任意networkコマンドを送信する。
+   * @param targetNames 送信先デバイス名。
+   * @param subCommand networkサブコマンド。
+   * @param args 追加引数。
+   */
+  public async requestNetwork(targetNames: string[] | "all", subCommand: string, args: Record<string, unknown>): Promise<void> {
+    await this.publishCommand("network", subCommand, targetNames, args);
+  }
+
+  /**
+   * @description 暗号化 securePing を送信し、対応する secureEcho を待機する。
+   * @param targetName 宛先デバイス名。
+   * @param requestId 要求ID。
+   * @param encryptedArgs 暗号化引数。
+   * @param timeoutMs 応答待機タイムアウト。
+   * @returns 受信したsecureEcho。
+   */
+  public async requestSecurePing(
+    targetName: string,
+    requestId: string,
+    encryptedArgs: { ivBase64: string; cipherBase64: string; tagBase64: string },
+    timeoutMs: number
+  ): Promise<secureEchoMessage> {
+    if (requestId.trim().length === 0) {
+      throw new Error("requestSecurePing failed. requestId is empty.");
+    }
+    if (timeoutMs <= 0) {
+      throw new Error(`requestSecurePing failed. timeoutMs must be greater than 0. timeoutMs=${timeoutMs}`);
+    }
+    const waitPromise = this.waitForSecureEcho(requestId, timeoutMs);
+    await this.publishCommand("call", "securePing", [targetName], {
+      requestType: "securePing",
+      requestId,
+      enc: {
+        alg: "A256GCM",
+        iv: encryptedArgs.ivBase64,
+        ct: encryptedArgs.cipherBase64,
+        tag: encryptedArgs.tagBase64
+      }
+    });
+    return await waitPromise;
+  }
+
+  /**
    * @description MQTT publish共通処理。
+   * @param commandKind コマンド種別。
    * @param subCommand サブコマンド名。
    * @param targetNames 送信先。
    * @param args 追加引数。
    */
-  private async publishCommand(subCommand: string, targetNames: string[] | "all", args: Record<string, unknown>): Promise<void> {
+  private async publishCommand(
+    commandKind: mqttCommandKind,
+    subCommand: string,
+    targetNames: string[] | "all",
+    args: Record<string, unknown>
+  ): Promise<void> {
     const destinationList = this.resolveDestinationList(targetNames);
     if (destinationList.length === 0) {
-      throw new Error(`publishCommand failed. no destination found. subCommand=${subCommand}`);
+      throw new Error(`publishCommand failed. no destination found. commandKind=${commandKind} subCommand=${subCommand}`);
     }
 
     const publishTasks = destinationList.map(async (destinationName) => {
@@ -134,12 +236,12 @@ export class mqttGateway {
         SrcID: this.sourceId,
         id: this.createMessageId(),
         ts: new Date().toISOString(),
-        op: "call",
+        op: commandKind,
         sub: subCommand,
         args
       };
-      const nextTopic = `esp32lab/call/${subCommand}/${destinationName}`;
-      await this.publish(nextTopic, JSON.stringify(nextPayload), 1);
+      const nextTopic = `esp32lab/${commandKind}/${subCommand}/${destinationName}`;
+      await this.publish(nextTopic, JSON.stringify(nextPayload));
     });
 
     await Promise.all(publishTasks);
@@ -162,15 +264,15 @@ export class mqttGateway {
    * @description MQTT publishをPromise化する。
    * @param topic 送信トピック。
    * @param payload JSON文字列。
-   * @param qos QoS値。
    */
-  private async publish(topic: string, payload: string, qos: 0 | 1): Promise<void> {
+  private async publish(topic: string, payload: string): Promise<void> {
     await new Promise<void>((resolve, reject) => {
-      this.client.publish(topic, payload, { qos }, (publishError) => {
+      // [厳守] コマンド publish は QoS1 固定で送信する。
+      this.client.publish(topic, payload, { qos: commandPublishQos }, (publishError) => {
         if (publishError !== undefined && publishError !== null) {
           reject(
             new Error(
-              `publish failed. topic=${topic} qos=${qos} payloadLength=${payload.length} reason=${publishError.message}`
+              `publish failed. topic=${topic} qos=${commandPublishQos} payloadLength=${payload.length} reason=${publishError.message}`
             )
           );
           return;
@@ -234,6 +336,12 @@ export class mqttGateway {
           this.emitter.emit("otaProgressUpdated", parsedOtaProgress);
           return;
         }
+        if (topic.includes("/notice/secureEcho/")) {
+          const parsedSecureEcho = this.parseSecureEchoMessage(topic, payloadText);
+          this.resolvePendingSecureEcho(parsedSecureEcho);
+          this.emitter.emit("secureEchoUpdated", parsedSecureEcho);
+          return;
+        }
         const parsedStatus = this.parseStatusMessage(topic, payloadText);
         this.registry.updateByStatus(parsedStatus);
         this.emitter.emit("statusUpdated", parsedStatus);
@@ -289,6 +397,9 @@ export class mqttGateway {
       wifiSsid: this.getStringValue(parsedObject, "wifiSsid", ""),
       firmwareVersion,
       firmwareWrittenAt,
+      runningPartition: this.getStringValue(parsedObject, "runningPartition", ""),
+      bootPartition: this.getStringValue(parsedObject, "bootPartition", ""),
+      nextUpdatePartition: this.getStringValue(parsedObject, "nextUpdatePartition", ""),
       onlineState,
       statusSub,
       detail: this.getStringValue(parsedObject, "detail", ""),
@@ -320,6 +431,75 @@ export class mqttGateway {
       detail: this.getStringValue(parsedObject, "detail", ""),
       receivedAt
     };
+  }
+
+  /**
+   * @description secureEcho通知JSONを正規化する。
+   * @param topic MQTTトピック。
+   * @param payloadText JSON文字列。
+   * @returns 正規化secureEcho。
+   */
+  private parseSecureEchoMessage(topic: string, payloadText: string): secureEchoMessage {
+    const parsedObject = JSON.parse(payloadText) as Record<string, unknown>;
+    const srcId = this.getStringValue(parsedObject, "SrcID", "unknown-source");
+    const requestId = this.getStringValue(parsedObject, "requestId", "");
+    const encObject = (parsedObject.enc as Record<string, unknown> | undefined) ?? {};
+    const ivBase64 = this.getStringValue(encObject, "iv", "");
+    const cipherBase64 = this.getStringValue(encObject, "ct", "");
+    const tagBase64 = this.getStringValue(encObject, "tag", "");
+    if (requestId.length === 0) {
+      throw new Error("parseSecureEchoMessage failed. requestId is empty.");
+    }
+    if (ivBase64.length === 0 || cipherBase64.length === 0 || tagBase64.length === 0) {
+      throw new Error("parseSecureEchoMessage failed. encrypted field is missing.");
+    }
+    return {
+      topic,
+      srcId,
+      requestId,
+      ivBase64,
+      cipherBase64,
+      tagBase64,
+      receivedAt: new Date().toISOString()
+    };
+  }
+
+  /**
+   * @description requestId待ちのsecureEcho Promiseを解決する。
+   * @param secureEcho 受信メッセージ。
+   */
+  private resolvePendingSecureEcho(secureEcho: secureEchoMessage): void {
+    const pending = this.pendingSecureEchoMap.get(secureEcho.requestId);
+    if (pending === undefined) {
+      return;
+    }
+    clearTimeout(pending.timeoutHandle);
+    this.pendingSecureEchoMap.delete(secureEcho.requestId);
+    pending.resolve(secureEcho);
+  }
+
+  /**
+   * @description requestId指定で secureEcho を待機する。
+   * @param requestId 要求ID。
+   * @param timeoutMs タイムアウト。
+   * @returns Promise。
+   */
+  private waitForSecureEcho(requestId: string, timeoutMs: number): Promise<secureEchoMessage> {
+    return new Promise<secureEchoMessage>((resolve, reject) => {
+      if (this.pendingSecureEchoMap.has(requestId)) {
+        reject(new Error(`waitForSecureEcho failed. duplicate requestId=${requestId}`));
+        return;
+      }
+      const timeoutHandle = setTimeout(() => {
+        this.pendingSecureEchoMap.delete(requestId);
+        reject(new Error(`waitForSecureEcho timeout. requestId=${requestId} timeoutMs=${timeoutMs}`));
+      }, timeoutMs);
+      this.pendingSecureEchoMap.set(requestId, {
+        resolve,
+        reject,
+        timeoutHandle
+      });
+    });
   }
 
   /**
