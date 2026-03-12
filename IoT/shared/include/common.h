@@ -73,22 +73,43 @@ namespace mqtt {
      */
     namespace subCommand {
         namespace set {
-            constexpr const char* kGpioSet = "gpioSet";
-            constexpr const char* kRelaySet = "relaySet";
+            constexpr const char* kRelay = "relay";
+            constexpr const char* kLedOn = "led_ON";
+            constexpr const char* kLedOff = "led_OFF";
+            constexpr const char* kLedBlink = "led_Blink";
+            constexpr const char* kGpioHigh = "gpio_H";
+            constexpr const char* kGpioLow = "gpio_L";
+            // [旧仕様] 互換のため受信許容。新規送信は禁止。
+            constexpr const char* kGpioHighLegacy = "giio_H";
+            constexpr const char* kGpioLowLegacy = "giio_L";
         }
         namespace get {
-            constexpr const char* kGpioGet = "gpioGet";
-            constexpr const char* kRelayGet = "relayGet";
-            constexpr const char* kTempGet = "tempGet";
-            constexpr const char* kHumidityGet = "humidityGet";
-            constexpr const char* kLightGet = "lightGet";
+            constexpr const char* kTrh = "trh";
+            constexpr const char* kRelay = "relay";
+            constexpr const char* kLed = "led";
+            constexpr const char* kButton = "button";
+            constexpr const char* kGpio = "gpio";
+            constexpr const char* kLog = "log";
+            // [旧仕様] 互換のため受信許容。新規送信は禁止。
+            constexpr const char* kButtonLegacy = "Botton";
+            constexpr const char* kGpioLegacy = "giio";
         }
         namespace call {
-            constexpr const char* kLedOn = "ledON";
-            constexpr const char* kLedOff = "ledOFF";
-            constexpr const char* kBuzzOn = "buzzON";
-            constexpr const char* kBuzzOff = "buzzOFF";
+            constexpr const char* kStatus = "status";
+            constexpr const char* kRestart = "restart";
+            constexpr const char* kMaintenance = "maintenance";
             constexpr const char* kOtaStart = "otaStart";
+            // [重要] 7025 未確定起動失敗再現用の試験コマンド。
+            constexpr const char* kRollbackTestEnable = "rollbackTestEnable";
+            constexpr const char* kRollbackTestDisable = "rollbackTestDisable";
+            // [旧仕様] 互換のため受信許容。新規送信は禁止。
+            constexpr const char* kMaintenanceLegacy = "mentenance";
+        }
+        namespace notice {
+            constexpr const char* kStatus = "status";
+            constexpr const char* kOtaProgress = "otaProgress";
+            constexpr const char* kTrh = "trh";
+            constexpr const char* kFileSyncStatus = "fileSyncStatus";
         }
         namespace status {
             constexpr const char* kStartUp = "start-up";
@@ -115,28 +136,34 @@ namespace mqtt {
             constexpr const char* kWifiSsid = "wifiSSID";
             constexpr const char* kWifiPass = "wifiPass";
             constexpr const char* kMqttUrl = "mqttUrl";
+            constexpr const char* kMqttUrlName = "mqttUrlName";//Ipではなく名前がある場合記載する
             constexpr const char* kMqttUser = "mqttUser";
             constexpr const char* kMqttPass = "mqttPass";
             constexpr const char* kMqttTls = "mqttTls";
             constexpr const char* kMqttPort = "mqttPort";
             constexpr const char* kServer = "server";
             constexpr const char* kServerUrl = "serverUrl";
+            constexpr const char* kServerUrlName = "serverUrlName";//Ipではなく名前がある場合記載する
             constexpr const char* kServerUser = "serverUser";
             constexpr const char* kServerPass = "serverPass";
             constexpr const char* kServerPort = "serverPort";
             constexpr const char* kServerTls = "serverTls";
             constexpr const char* kOta = "ota";
             constexpr const char* kOtaUrl = "otaUrl";
+            constexpr const char* kOtaUrlName = "otaUrlName";//Ipではなく名前がある場合記載する
             constexpr const char* kOtaUser = "otaUser";
             constexpr const char* kOtaPass = "otaPass";
             constexpr const char* kOtaPort = "otaPort";
             constexpr const char* kOtaTls = "otaTls";
             constexpr const char* kTimeServer = "timeServer";
             constexpr const char* kTimeServerUrl = "timeServerUrl";
+            constexpr const char* kTimeServerUrlName = "timeServerUrlName";//Ipではなく名前がある場合記載する
             constexpr const char* kTimeServerPort = "timeServerPort";
             constexpr const char* kTimeServerTls = "timeServerTls";
             constexpr const char* kApply = "apply";
             constexpr const char* kReboot = "reboot";
+            constexpr const char* kKeyDevice = "keyDevice";//Base64エンコードされたk-deviceの値
+
         }
 
         /** @brief setコマンド専用キー。 */
@@ -206,6 +233,10 @@ namespace mqtt {
             constexpr const char* kWifiSignalLevel = "wifiSignalLevel";
             constexpr const char* kIpAddress = "ipAddress";
             constexpr const char* kWifiSsid = "wifiSsid";
+            // [重要] 7015/7025 試験で A/B 切替を確認するための一時項目。
+            constexpr const char* kRunningPartition = "runningPartition";
+            constexpr const char* kBootPartition = "bootPartition";
+            constexpr const char* kNextUpdatePartition = "nextUpdatePartition";
             constexpr const char* kDetail = "detail";
         }
         /**

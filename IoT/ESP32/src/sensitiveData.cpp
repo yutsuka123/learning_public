@@ -25,6 +25,7 @@ constexpr const char* mqttRootKey = "mqtt";
 constexpr const char* serverRootKey = "server";
 constexpr const char* otaRootKey = "ota";
 constexpr const char* timeServerRootKey = "timeServer";
+constexpr const char* credentialsRootKey = "credentials";
 constexpr const char* legacyTimeServerUserKey = "timeServerUser";
 constexpr const char* legacyTimeServerPassKey = "timeServerPass";
 constexpr int32_t defaultMqttPort = 8883;
@@ -157,12 +158,18 @@ bool sensitiveDataService::initialize() {
     cJSON_DeleteItemFromObjectCaseSensitive(rootObject, timeServerRootKey);
     timeServerObject = cJSON_AddObjectToObject(rootObject, timeServerRootKey);
   }
-  if (serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr) {
-    appLogError("%s failed. create missing object failed. server=%p ota=%p timeServer=%p",
+  cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(rootObject, credentialsRootKey);
+  if (credentialsObject == nullptr || !cJSON_IsObject(credentialsObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, credentialsRootKey);
+    credentialsObject = cJSON_AddObjectToObject(rootObject, credentialsRootKey);
+  }
+  if (serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr || credentialsObject == nullptr) {
+    appLogError("%s failed. create missing object failed. server=%p ota=%p timeServer=%p credentials=%p",
                 functionName,
                 serverObject,
                 otaObject,
-                timeServerObject);
+                timeServerObject,
+                credentialsObject);
     cJSON_Delete(rootObject);
     return false;
   }
@@ -183,7 +190,8 @@ bool sensitiveDataService::initialize() {
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) : defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl))), functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)->valuedouble) : defaultTimeServerPort, functionName) &&
-      setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) : defaultTimeServerTls, functionName);
+      setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) : defaultTimeServerTls, functionName) &&
+      setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice))), functionName);
   if (!migrationResult) {
     appLogError("%s failed. migration update failed.", functionName);
     cJSON_Delete(rootObject);
@@ -471,6 +479,88 @@ bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
   return true;
 }
 
+bool sensitiveDataService::saveKeyDevice(const String& keyDeviceBase64) {
+  constexpr const char* functionName = "sensitiveDataService::saveKeyDevice";
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(rootObject, credentialsRootKey);
+  if (credentialsObject == nullptr || !cJSON_IsObject(credentialsObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, credentialsRootKey);
+    credentialsObject = cJSON_AddObjectToObject(rootObject, credentialsRootKey);
+    if (credentialsObject == nullptr) {
+      appLogError("%s failed. create credentials object key=%s", functionName, credentialsRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+
+  if (!setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, keyDeviceBase64, functionName)) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadKeyDevice(String* keyDeviceBase64Out) {
+  constexpr const char* functionName = "sensitiveDataService::loadKeyDevice";
+  if (keyDeviceBase64Out == nullptr) {
+    appLogError("%s failed. keyDeviceBase64Out is null.", functionName);
+    return false;
+  }
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(rootObject, credentialsRootKey);
+  if (credentialsObject == nullptr || !cJSON_IsObject(credentialsObject)) {
+    appLogError("%s failed. credentials object is missing. key=%s", functionName, credentialsRootKey);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* keyDeviceItem = cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice);
+  if (!cJSON_IsString(keyDeviceItem)) {
+    appLogError("%s failed. keyDevice item type mismatch. isString=%d", functionName, cJSON_IsString(keyDeviceItem));
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  *keyDeviceBase64Out = keyDeviceItem->valuestring;
+  cJSON_Delete(rootObject);
+  return true;
+}
+
 bool sensitiveDataService::ensureDefaultFileExists() {
   constexpr const char* functionName = "sensitiveDataService::ensureDefaultFileExists";
 
@@ -484,22 +574,25 @@ bool sensitiveDataService::ensureDefaultFileExists() {
   cJSON* serverObject = cJSON_CreateObject();
   cJSON* otaObject = cJSON_CreateObject();
   cJSON* timeServerObject = cJSON_CreateObject();
+  cJSON* credentialsObject = cJSON_CreateObject();
   if (rootObject == nullptr || wifiObject == nullptr || mqttObject == nullptr ||
-      serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr) {
-    appLogError("%s failed. create object returned null. root=%p wifi=%p mqtt=%p server=%p ota=%p timeServer=%p",
+      serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr || credentialsObject == nullptr) {
+    appLogError("%s failed. create object returned null. root=%p wifi=%p mqtt=%p server=%p ota=%p timeServer=%p credentials=%p",
                 functionName,
                 rootObject,
                 wifiObject,
                 mqttObject,
                 serverObject,
                 otaObject,
-                timeServerObject);
+                timeServerObject,
+                credentialsObject);
     cJSON_Delete(rootObject);
     cJSON_Delete(wifiObject);
     cJSON_Delete(mqttObject);
     cJSON_Delete(serverObject);
     cJSON_Delete(otaObject);
     cJSON_Delete(timeServerObject);
+    cJSON_Delete(credentialsObject);
     return false;
   }
 
@@ -508,6 +601,7 @@ bool sensitiveDataService::ensureDefaultFileExists() {
   cJSON_AddItemToObject(rootObject, serverRootKey, serverObject);
   cJSON_AddItemToObject(rootObject, otaRootKey, otaObject);
   cJSON_AddItemToObject(rootObject, timeServerRootKey, timeServerObject);
+  cJSON_AddItemToObject(rootObject, credentialsRootKey, credentialsObject);
 
   bool defaultResult =
       setStringItem(wifiObject, iotCommon::mqtt::jsonKey::network::kWifiSsid, "", functionName) &&
@@ -529,7 +623,8 @@ bool sensitiveDataService::ensureDefaultFileExists() {
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, "", functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, defaultTimeServerPort, functionName) &&
-      setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, defaultTimeServerTls, functionName);
+      setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, defaultTimeServerTls, functionName) &&
+      setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, "", functionName);
   if (!defaultResult) {
     cJSON_Delete(rootObject);
     return false;

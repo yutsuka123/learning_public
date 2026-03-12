@@ -16,6 +16,9 @@
 - [重要] 起動時に `status` call を自動送信（初期同期）。
 - [重要] OTA配布用エンドポイントを提供（`/ota/manifest.json`, `/ota/firmware.bin`）。
 - [重要] AP 共通トップ画面の入力検証、`runPairingSession()` 要求前の前段チェック、進行状態表示を担当する。
+- [厳守] 設定 -> 管理者画面遷移時は `username` / `password` 認証を必須とする。
+- [重要] 管理者画面では `k-user` / `k-device` 発行、AP一括設定、統合一覧表示、MQTTメンテナンス再起動を提供する。
+- [厳守] eFuse 実行機能は `Production` 専用とし、LocalServer では提供しない。
 
 ## 2. セットアップ
 1. `env.example.sample.txt` をコピーして `.env` を作成する。
@@ -51,6 +54,14 @@
 - `POST /api/workflows/key-rotation/start`
 - `POST /api/workflows/signed-ota/start`
 - `GET /api/workflows/{workflowId}`
+- `POST /api/admin/auth/login`
+- `POST /api/admin/auth/logout`
+- `POST /api/admin/keys/k-user/issue`
+- `POST /api/admin/keys/k-device/issue`
+- `POST /api/admin/ap/batch/start`
+- `GET /api/admin/ap/batch/{batchId}`
+- `GET /api/admin/devices`
+- `POST /api/admin/commands/maintenance-reboot`
 
 ## 7. セキュリティ境界
 - [厳守] `LocalServer` は `SecretCore` の用途固定 API を呼び出すのみとし、汎用署名APIや raw key 取得APIを持たない。
@@ -59,5 +70,6 @@
 - [厳守] `Production` 専用の eFuse 最終有効化機能は、本READMEの通常運用スコープへ含めない。
 
 ## 8. 変更履歴
+- 2026-03-11: 管理者画面認証、鍵発行、AP一括設定、統合一覧、メンテナンス再起動、eFuse分離方針を追記。理由: LocalServer 管理画面要件を README で即参照可能にするため。
 - 2026-03-09: workflow 公開 API（`/api/workflows/...`）と `createPairingBundle` 直公開禁止を追記。理由: 公開 API と内部 helper の境界を README でも明確化するため。
 - 2026-03-09: `LocalServer` の責任範囲、`SecretCore` との境界、`Production` 非混在、`createPairingBundle` 前段検証責務を追記。理由: 通常運用サーバーとしての役割を現在設計へ合わせるため。

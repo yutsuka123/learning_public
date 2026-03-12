@@ -18,13 +18,17 @@ import { loadConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
 import { mqttGateway } from "./mqttGateway";
 import { SettingsStore } from "./settingsStore";
-import { commandRequestBody, otaCommandRequestBody, localServerSettings } from "./types";
+import { keyService } from "./keyService";
+import { commandRequestBody, otaCommandRequestBody, rollbackTestCommandRequestBody, localServerSettings, genericCommandRequestBody } from "./types";
 
 const config = loadConfig();
 const app = express();
 const registry = new DeviceRegistry(config.statusOfflineTimeoutSeconds);
 const gateway = new mqttGateway(config, registry);
 const settingsStore = new SettingsStore(config);
+const localKeyService = new keyService(config);
+const adminSessionMap = new Map<string, number>();
+const adminSessionTtlMs = 3 * 60 * 60 * 1000;
 const uploadDirectoryPath = path.resolve(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDirectoryPath)) {
   fs.mkdirSync(uploadDirectoryPath, { recursive: true });
@@ -47,6 +51,22 @@ const firmwareUploadMiddleware = multer({
 
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.resolve(process.cwd(), "public")));
+
+interface adminLoginRequestBody {
+  username: string;
+  password: string;
+}
+
+interface issueKDeviceRequestBody {
+  targetDeviceName: string;
+  pushToDevice?: boolean;
+}
+
+interface securePingRequestBody {
+  targetDeviceName: string;
+  plainText?: string;
+  timeoutMs?: number;
+}
 
 /**
  * @description APIヘルスチェック。
@@ -99,6 +119,205 @@ app.put("/api/settings", (request: Request, response: Response) => {
     response.json({
       result: "OK",
       settings: updatedSettings
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 管理者ログインAPI。
+ */
+app.post("/api/admin/auth/login", (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as adminLoginRequestBody;
+    if (requestBody === undefined || requestBody === null) {
+      throw new Error("admin login failed. request body is required.");
+    }
+    const username = (requestBody.username ?? "").trim();
+    const password = requestBody.password ?? "";
+    if (username.length === 0 || password.length === 0) {
+      throw new Error("admin login failed. username/password is required.");
+    }
+    if (username !== config.adminUsername || password !== config.adminPassword) {
+      response.status(401).json({
+        result: "NG",
+        detail: "authentication failed"
+      });
+      return;
+    }
+    const nextToken = crypto.randomUUID();
+    adminSessionMap.set(nextToken, Date.now() + adminSessionTtlMs);
+    response.json({
+      result: "OK",
+      token: nextToken,
+      expiresInSeconds: Math.floor(adminSessionTtlMs / 1000)
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 管理者ログアウトAPI。
+ */
+app.post("/api/admin/auth/logout", (request: Request, response: Response) => {
+  const token = extractAdminToken(request);
+  if (token.length > 0) {
+    adminSessionMap.delete(token);
+  }
+  response.json({ result: "OK" });
+});
+
+/**
+ * @description 管理者向けデバイス統合一覧API。
+ */
+app.get("/api/admin/devices", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const devices = registry.listDevices().map((device) => {
+      const isApMode = device.wifiSsid.startsWith("AP-esp32lab-");
+      return {
+        ...device,
+        connectionMode: isApMode ? "ap" : "mqtt",
+        apWebUrl: isApMode ? "http://192.168.4.1/" : ""
+      };
+    });
+    response.json({
+      result: "OK",
+      devices
+    });
+  } catch (apiError) {
+    response.status(401).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description k-user発行API。
+ */
+app.post("/api/admin/keys/k-user/issue", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const issuedResult = localKeyService.issueKUser();
+    response.json({
+      result: "OK",
+      keyType: "k-user",
+      issuedAt: issuedResult.issuedAt,
+      keyFingerprint: issuedResult.keyFingerprint
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description k-device発行API。
+ */
+app.post("/api/admin/keys/k-device/issue", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as issueKDeviceRequestBody;
+    const targetDeviceName = (requestBody?.targetDeviceName ?? "").trim();
+    if (targetDeviceName.length === 0) {
+      throw new Error("k-device issue failed. targetDeviceName is required.");
+    }
+    const issueResult = localKeyService.issueKDevice(targetDeviceName);
+    const pushToDevice = requestBody?.pushToDevice !== false;
+    if (pushToDevice) {
+      await gateway.requestSet([targetDeviceName], "keyDeviceSet", {
+        keyDevice: issueResult.keyDeviceBase64
+      });
+    }
+    response.json({
+      result: "OK",
+      keyType: "k-device",
+      targetDeviceName: issueResult.targetDeviceName,
+      issuedAt: issueResult.issuedAt,
+      keyFingerprint: issueResult.keyFingerprint,
+      pushedToDevice: pushToDevice
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description MQTT接続中ESP32へメンテナンス再起動指令を送信するAPI。
+ */
+app.post("/api/admin/commands/maintenance-reboot", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as commandRequestBody;
+    validateCommandBody("maintenance-reboot", requestBody);
+    await gateway.requestCall(requestBody.targetNames, "maintenance", {
+      requestType: "maintenance"
+    });
+    response.json({
+      result: "OK",
+      command: "maintenance",
+      targetNames: requestBody.targetNames
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description k-device暗号化で securePing 相互通信確認を行うAPI。
+ */
+app.post("/api/admin/commands/secure-ping", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as securePingRequestBody;
+    const targetDeviceName = (requestBody?.targetDeviceName ?? "").trim();
+    if (targetDeviceName.length === 0) {
+      throw new Error("secure-ping failed. targetDeviceName is required.");
+    }
+    const requestId = `secure-ping-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+    const plainPayloadText = JSON.stringify({
+      requestId,
+      pingText: requestBody?.plainText ?? "secure ping from localserver",
+      sentAt: new Date().toISOString()
+    });
+    const encryptedRequest = localKeyService.encryptByKDevice(targetDeviceName, plainPayloadText);
+    const secureEcho = await gateway.requestSecurePing(
+      targetDeviceName,
+      requestId,
+      {
+        ivBase64: encryptedRequest.ivBase64,
+        cipherBase64: encryptedRequest.cipherBase64,
+        tagBase64: encryptedRequest.tagBase64
+      },
+      requestBody?.timeoutMs ?? 15000
+    );
+    const decryptedResponseText = localKeyService.decryptByKDevice(targetDeviceName, {
+      ivBase64: secureEcho.ivBase64,
+      cipherBase64: secureEcho.cipherBase64,
+      tagBase64: secureEcho.tagBase64
+    });
+    response.json({
+      result: "OK",
+      requestId,
+      targetDeviceName,
+      decryptedResponse: JSON.parse(decryptedResponseText)
     });
   } catch (apiError) {
     response.status(400).json({
@@ -194,6 +413,104 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
     response.status(400).json({
       result: "NG",
       command: "otaStart",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description rollback試験モードを切替えるコマンド発行API。
+ */
+app.post("/api/commands/rollback-test", async (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as rollbackTestCommandRequestBody;
+    validateCommandBody("rollback-test", requestBody);
+    if (requestBody.mode !== "enable" && requestBody.mode !== "disable") {
+      throw new Error(`rollback-test mode is invalid. mode=${String(requestBody.mode)}`);
+    }
+    const subCommandName = requestBody.mode === "enable" ? "rollbackTestEnable" : "rollbackTestDisable";
+    await gateway.requestCall(requestBody.targetNames, subCommandName, {
+      requestType: "rollbackTest",
+      mode: requestBody.mode
+    });
+    response.json({
+      result: "OK",
+      command: subCommandName,
+      targetNames: requestBody.targetNames
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      command: "rollback-test",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 汎用setコマンド発行API。
+ */
+app.post("/api/commands/set", async (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as genericCommandRequestBody;
+    validateGenericCommandBody("set", requestBody);
+    await gateway.requestSet(requestBody.targetNames, requestBody.subCommand, requestBody.args ?? {});
+    response.json({
+      result: "OK",
+      command: "set",
+      subCommand: requestBody.subCommand,
+      targetNames: requestBody.targetNames
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      command: "set",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 汎用getコマンド発行API。
+ */
+app.post("/api/commands/get", async (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as genericCommandRequestBody;
+    validateGenericCommandBody("get", requestBody);
+    await gateway.requestGet(requestBody.targetNames, requestBody.subCommand, requestBody.args ?? {});
+    response.json({
+      result: "OK",
+      command: "get",
+      subCommand: requestBody.subCommand,
+      targetNames: requestBody.targetNames
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      command: "get",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description networkコマンド発行API。
+ */
+app.post("/api/commands/network", async (request: Request, response: Response) => {
+  try {
+    const requestBody = request.body as genericCommandRequestBody;
+    validateGenericCommandBody("network", requestBody);
+    await gateway.requestNetwork(requestBody.targetNames, requestBody.subCommand, requestBody.args ?? {});
+    response.json({
+      result: "OK",
+      command: "network",
+      subCommand: requestBody.subCommand,
+      targetNames: requestBody.targetNames
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      command: "network",
       detail: getErrorMessage(apiError)
     });
   }
@@ -365,6 +682,51 @@ function validateCommandBody(commandName: string, requestBody: commandRequestBod
   }
   if (requestBody.targetNames !== "all" && (!Array.isArray(requestBody.targetNames) || requestBody.targetNames.length === 0)) {
     throw new Error(`validateCommandBody failed. commandName=${commandName} targetNames must be non-empty array or "all"`);
+  }
+}
+
+/**
+ * @description set/get/network向けの入力検証を行う。
+ * @param commandName コマンド名。
+ * @param requestBody API本文。
+ */
+function validateGenericCommandBody(commandName: string, requestBody: genericCommandRequestBody): void {
+  validateCommandBody(commandName, requestBody);
+  if (requestBody.subCommand === undefined || requestBody.subCommand === null || requestBody.subCommand.trim().length === 0) {
+    throw new Error(`validateGenericCommandBody failed. commandName=${commandName} subCommand is required`);
+  }
+}
+
+/**
+ * @description 管理者セッショントークン文字列をHTTPヘッダから抽出する。
+ * @param request Expressリクエスト。
+ * @returns 抽出トークン。未設定時は空文字。
+ */
+function extractAdminToken(request: Request): string {
+  const bearerValue = request.header("authorization");
+  if (bearerValue !== undefined && bearerValue.toLowerCase().startsWith("bearer ")) {
+    return bearerValue.slice("bearer ".length).trim();
+  }
+  const customHeaderToken = request.header("x-admin-token");
+  return customHeaderToken === undefined ? "" : customHeaderToken.trim();
+}
+
+/**
+ * @description 管理者セッションの有効性を検証する。
+ * @param request Expressリクエスト。
+ */
+function requireAdminSession(request: Request): void {
+  const token = extractAdminToken(request);
+  if (token.length === 0) {
+    throw new Error("requireAdminSession failed. admin token is required.");
+  }
+  const expireAtEpochMs = adminSessionMap.get(token);
+  if (expireAtEpochMs === undefined) {
+    throw new Error("requireAdminSession failed. admin token is not found.");
+  }
+  if (Date.now() > expireAtEpochMs) {
+    adminSessionMap.delete(token);
+    throw new Error("requireAdminSession failed. admin token expired.");
   }
 }
 

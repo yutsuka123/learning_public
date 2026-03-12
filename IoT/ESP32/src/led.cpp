@@ -286,6 +286,30 @@ void ledController::indicateMaintenanceModeRedOn() {
   unlockLedControl();
 }
 
+void ledController::indicateMaintenanceModeBluePatternCycle() {
+  if (!lockLedControl(portMAX_DELAY)) {
+    return;
+  }
+  // [重要] APモード中は要件どおり青LEDの専用点滅を繰り返して状態を示す。
+  setRedLed(false);
+  setGreenLed(false);
+
+  setBlueLed(true);
+  vTaskDelay(pdMS_TO_TICKS(300));
+  setBlueLed(false);
+  vTaskDelay(pdMS_TO_TICKS(300));
+  setBlueLed(true);
+  vTaskDelay(pdMS_TO_TICKS(300));
+  setBlueLed(false);
+  vTaskDelay(pdMS_TO_TICKS(300));
+  setBlueLed(true);
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  setBlueLed(false);
+  vTaskDelay(pdMS_TO_TICKS(300));
+
+  unlockLedControl();
+}
+
 /**
  * @brief LEDタスクを生成し、受信用キューを登録する。
  * @return 生成成功時true、失敗時false。

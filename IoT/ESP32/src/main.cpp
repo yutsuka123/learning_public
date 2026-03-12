@@ -25,8 +25,10 @@
 #include "interTaskMessage.h"
 #include "led.h"
 #include "log.h"
+#include "maintenanceMode.h"
 #include "mqtt.h"
 #include "ota.h"
+#include "otaRollback.h"
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
 #include "tcpip.h"
@@ -75,6 +77,12 @@ constexpr uint32_t reconnectRetryIntervalMs = 5000;
 constexpr uint32_t ntpCheckIntervalMs = 12UL * 60UL * 60UL * 1000UL;
 /** @brief NTP未同期時の再試行間隔(ms)。@type uint32_t */
 constexpr uint32_t ntpUnsyncedRetryIntervalMs = 30000;
+/** @brief 起動時AP遷移判定のボタンGPIO。@type uint8_t */
+constexpr uint8_t startupButtonGpio = 4;
+/** @brief ボタン押下レベル。@type uint8_t */
+constexpr uint8_t startupButtonPressedLevel = LOW;
+/** @brief 起動時AP遷移判定の長押し時間(ms)。@type uint32_t */
+constexpr uint32_t startupMaintenanceLongPressMs = 3000;
 
 /** @brief Wi-Fi制御タスクサービスインスタンス。 */
 wifiTask wifiService;
@@ -121,6 +129,9 @@ bool executeMqttConnectAndConfirm(const String& mqttUrl,
                                   bool mqttTls);
 bool executeMqttStatusPublishAndConfirm(uint32_t startupCpuMillis, const char* publishSubName, const char* publishReasonText);
 bool executeNtpSyncAndConfirm(const String& timeServerUrl, int32_t timeServerPort, bool timeServerTls);
+bool createMaintenanceApSsidText(String* apSsidTextOut);
+bool startMaintenanceApModeAndHold(i2cService* i2cModuleOut);
+bool detectStartupMaintenanceLongPress();
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -413,6 +424,92 @@ bool executeNtpSyncAndConfirm(const String& timeServerUrl, int32_t timeServerPor
 }
 
 /**
+ * @brief メンテナンスAP名を生成する。
+ * @param apSsidTextOut 出力先。
+ * @return 生成成功時true、失敗時false。
+ */
+bool createMaintenanceApSsidText(String* apSsidTextOut) {
+  if (apSsidTextOut == nullptr) {
+    appLogError("createMaintenanceApSsidText failed. apSsidTextOut is null.");
+    return false;
+  }
+  const uint64_t efuseMac = ESP.getEfuseMac();
+  char compactMacBuffer[13] = {};
+  const int writtenLength = snprintf(compactMacBuffer,
+                                     sizeof(compactMacBuffer),
+                                     "%02X%02X%02X%02X%02X%02X",
+                                     static_cast<unsigned>((efuseMac >> 40) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 32) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 24) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 16) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 8) & 0xFF),
+                                     static_cast<unsigned>(efuseMac & 0xFF));
+  if (writtenLength <= 0 || writtenLength >= static_cast<int>(sizeof(compactMacBuffer))) {
+    appLogError("createMaintenanceApSsidText failed. snprintf overflow. writtenLength=%d", writtenLength);
+    return false;
+  }
+  *apSsidTextOut = String(iotCommon::apConfig::kMaintApPrefix) + String(compactMacBuffer);
+  return true;
+}
+
+/**
+ * @brief メンテナンスAPを起動し、そのまま待機ループへ入る。
+ * @param i2cModuleOut 表示モジュール。
+ * @return AP起動成功時true、失敗時false。
+ */
+bool startMaintenanceApModeAndHold(i2cService* i2cModuleOut) {
+  String maintenanceApSsid;
+  if (!createMaintenanceApSsidText(&maintenanceApSsid)) {
+    return false;
+  }
+  WiFi.disconnect(true, true);
+  delay(100);
+  WiFi.mode(WIFI_AP);
+  const bool apStartResult = WiFi.softAP(maintenanceApSsid.c_str(), iotCommon::apConfig::kMaintApPass);
+  if (!apStartResult) {
+    appLogError("startMaintenanceApModeAndHold failed. WiFi.softAP returned false. ssid=%s", maintenanceApSsid.c_str());
+    return false;
+  }
+  const IPAddress apIpAddress = WiFi.softAPIP();
+  appLogWarn("startMaintenanceApModeAndHold success. ssid=%s pass=%s apIp=%s",
+             maintenanceApSsid.c_str(),
+             iotCommon::apConfig::kMaintApPass,
+             apIpAddress.toString().c_str());
+
+  if (i2cModuleOut != nullptr) {
+    i2cModuleOut->requestLcdText("MaintenanceMode", maintenanceApSsid.substring(0, 16).c_str(), 0);
+  }
+
+  // [重要] APモード専用処理。通常のWi-Fi/MQTT初期化には進ませない。
+  for (;;) {
+    ledController::indicateMaintenanceModeBluePatternCycle();
+  }
+}
+
+/**
+ * @brief 起動時3秒長押しでメンテナンスモード要求を判定する。
+ * @return 長押し成立時true。
+ */
+bool detectStartupMaintenanceLongPress() {
+  pinMode(startupButtonGpio, INPUT_PULLUP);
+  if (digitalRead(startupButtonGpio) != startupButtonPressedLevel) {
+    return false;
+  }
+  const uint32_t pressedStartMs = millis();
+  appLogInfo("detectStartupMaintenanceLongPress: button pressed on boot. wait for %lu ms.",
+             static_cast<unsigned long>(startupMaintenanceLongPressMs));
+  while (millis() - pressedStartMs < startupMaintenanceLongPressMs) {
+    if (digitalRead(startupButtonGpio) != startupButtonPressedLevel) {
+      appLogInfo("detectStartupMaintenanceLongPress: released before threshold.");
+      return false;
+    }
+    vTaskDelay(pdMS_TO_TICKS(30));
+  }
+  appLogWarn("detectStartupMaintenanceLongPress: 3s long press detected.");
+  return true;
+}
+
+/**
  * @brief メインタスク本体。将来ここから各機能タスクを起動する。
  * @param taskParameter タスク引数（未使用）。
  * @return なし（無限ループ）。
@@ -457,6 +554,19 @@ void mainTaskEntry(void* taskParameter) {
       vTaskDelay(pdMS_TO_TICKS(1000));
     }
     appLogInfo("mainTaskEntry: I2C LCD diagnostic completed. resume normal startup.");
+  }
+
+  bool shouldEnterMaintenanceAp = maintenanceMode::consumeMaintenanceModeRequest();
+  if (!shouldEnterMaintenanceAp && detectStartupMaintenanceLongPress()) {
+    shouldEnterMaintenanceAp = true;
+    appLogWarn("mainTaskEntry: startup long press requested maintenance mode.");
+  }
+  if (shouldEnterMaintenanceAp) {
+    appLogWarn("mainTaskEntry: maintenance mode request consumed. start AP maintenance mode.");
+    const bool apModeResult = startMaintenanceApModeAndHold(&i2cModule);
+    if (!apModeResult) {
+      appLogError("mainTaskEntry: failed to start maintenance AP mode. fallback to normal startup.");
+    }
   }
 
 
@@ -531,6 +641,18 @@ void mainTaskEntry(void* taskParameter) {
              static_cast<long>(timeServerPort),
              static_cast<int>(timeServerTls));
 
+  const bool missingWifiConfig = (wifiSsid.length() == 0);
+  const bool missingMqttConfig = (mqttUrl.length() == 0 || mqttUser.length() == 0 || mqttPass.length() == 0);
+  if (missingWifiConfig || missingMqttConfig) {
+    appLogWarn("mainTaskEntry: required wifi/mqtt config is missing. enter maintenance AP mode. missingWifi=%d missingMqtt=%d",
+               missingWifiConfig ? 1 : 0,
+               missingMqttConfig ? 1 : 0);
+    const bool apModeResult = startMaintenanceApModeAndHold(&i2cModule);
+    if (!apModeResult) {
+      appLogError("mainTaskEntry: failed to start maintenance AP mode for missing config. continue normal startup.");
+    }
+  }
+
   // [重要] FreeRTOS Queueによる一般的なメッセージ連携を開始する。
   // [補足] mainTaskは指令側として各機能タスクを起動し、応答のみを待機する。
   wifiService.startTask();
@@ -563,6 +685,7 @@ void mainTaskEntry(void* taskParameter) {
   bool isWifiReady = false;
   bool isMqttReady = false;
   bool isStartupStatusPublished = false;
+  bool isCurrentAppConfirmed = false;
   bool shouldPublishReconnectStatus = false;
   bool shouldRunNtpReconnectAfterPublish = false;
   uint32_t lastWifiRetryAtMs = 0;
@@ -679,6 +802,15 @@ void mainTaskEntry(void* taskParameter) {
           isStartupStatusPublished = true;
           shouldPublishReconnectStatus = false;
           startDisplayResult = i2cModule.requestLcdText("MQTT PUBLISH OK", "", 0);
+          if (!isCurrentAppConfirmed) {
+            // [重要] rollback 有効環境では起動安定後に現在アプリを確定する。
+            const bool confirmResult = otaRollback::confirmCurrentAppIfNeeded();
+            if (!confirmResult) {
+              appLogError("mainTaskEntry: otaRollback::confirmCurrentAppIfNeeded failed.");
+            } else {
+              isCurrentAppConfirmed = true;
+            }
+          }
         } else {
           startDisplayResult = i2cModule.requestLcdText("MQTT PUBLISH NG", "", 0);
         }
@@ -751,6 +883,12 @@ void setup() {
   sensitiveDataModule.initialize();
   messageService.initialize();
   messageService.registerTaskQueue(appTaskId::kMain, 16);
+
+  // [重要] rollback 試験モード有効時は、起動直後に意図的再起動して未確定失敗を再現する。
+  const bool rollbackInitializeResult = otaRollback::initializeOnBoot();
+  if (!rollbackInitializeResult) {
+    appLogError("setup: otaRollback::initializeOnBoot failed.");
+  }
 
   BaseType_t createTaskResult = xTaskCreatePinnedToCore(
       mainTaskEntry,
