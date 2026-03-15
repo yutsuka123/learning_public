@@ -1,17 +1,21 @@
 /**
  * @file sensitiveData.cpp
- * @brief 機密データ（Wi-Fi/MQTT/サーバー設定）をJSONで保存・読込する実装。
+ * @brief 機密データ（Wi-Fi/MQTT/サーバー設定）をNVSで保存・読込する実装。
  * @details
- * - [重要] 保存先は LittleFS の `/sensitiveData.json` 固定。
+ * - [重要] 主保存先は NVS（Preferences）。
+ * - [重要] 旧 `LittleFS:/sensitiveData.json` は初回初期化時にNVSへ移行する。
  * - [厳守] デフォルト値は MQTT TLS=true / MQTT Port=8883。
  * - [禁止] パスワード値をログへ直接出力しない。
- * - [将来対応] 暗号化保存やNVS移行は別タスクで対応する。
+ * - [将来対応] NVS格納データの暗号化・署名保護は別タスクで対応する。
  */
 
 #include "sensitiveDataService.h"
 
 #include <FS.h>
 #include <LittleFS.h>
+#include <Preferences.h>
+#include <mbedtls/sha256.h>
+#include <stdlib.h>
 #include <cJSON.h>
 
 #include "common.h"
@@ -20,6 +24,8 @@
 namespace {
 
 constexpr const char* sensitiveDataFilePath = "/sensitiveData.json";
+constexpr const char* sensitiveDataNvsNamespace = "sensitive";
+constexpr const char* sensitiveDataNvsBlobKey = "json_blob";
 constexpr const char* wifiRootKey = "wifi";
 constexpr const char* mqttRootKey = "mqtt";
 constexpr const char* serverRootKey = "server";
@@ -28,6 +34,14 @@ constexpr const char* timeServerRootKey = "timeServer";
 constexpr const char* credentialsRootKey = "credentials";
 constexpr const char* legacyTimeServerUserKey = "timeServerUser";
 constexpr const char* legacyTimeServerPassKey = "timeServerPass";
+constexpr const char* mqttTlsCaCertKey = "mqttTlsCaCertPem";
+constexpr const char* mqttTlsCertIssueNoKey = "mqttTlsCertIssueNo";
+constexpr const char* mqttTlsCertSetAtKey = "mqttTlsCertSetAt";
+constexpr const char* mqttTlsCertSha256Key = "mqttTlsCertSha256";
+constexpr const char* mqttTlsCertActiveKey = "mqttTlsCertActive";
+constexpr const char* certsDirectoryPath = "/certs";
+constexpr const char* mqttTlsCertFilePath = "/certs/mqtt-ca.pem";
+constexpr const char* mqttTlsCertTempFilePath = "/certs/mqtt-ca.pem.tmp";
 constexpr int32_t defaultMqttPort = 8883;
 constexpr bool defaultMqttTls = true;
 constexpr int32_t defaultServerPort = 443;
@@ -36,6 +50,191 @@ constexpr int32_t defaultOtaPort = 443;
 constexpr bool defaultOtaTls = true;
 constexpr int32_t defaultTimeServerPort = 123;
 constexpr bool defaultTimeServerTls = false;
+
+/**
+ * @brief 機密設定用NVS名前空間を開く。
+ * @param preferencesOut 利用するPreferencesインスタンス。
+ * @param readOnly 読込専用で開く場合true。
+ * @param functionName 呼び出し元関数名。
+ * @return 成功時true、失敗時false。
+ */
+bool openSensitivePreferences(Preferences* preferencesOut, bool readOnly, const char* functionName) {
+  if (preferencesOut == nullptr || functionName == nullptr) {
+    appLogError("openSensitivePreferences failed. invalid parameter. preferencesOut=%p functionName=%p",
+                preferencesOut,
+                functionName);
+    return false;
+  }
+  if (!preferencesOut->begin(sensitiveDataNvsNamespace, readOnly)) {
+    appLogError("%s failed. Preferences.begin returned false. namespace=%s readOnly=%d",
+                functionName,
+                sensitiveDataNvsNamespace,
+                static_cast<int>(readOnly));
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief LittleFSを必要時に初期化する。
+ * @param functionName 呼び出し元関数名。
+ * @return 初期化成功時true。
+ */
+bool ensureLittleFsReady(const char* functionName) {
+  if (functionName == nullptr) {
+    appLogError("ensureLittleFsReady failed. functionName is null.");
+    return false;
+  }
+  static bool littleFsReady = false;
+  if (littleFsReady) {
+    return true;
+  }
+  if (!LittleFS.begin(false)) {
+    appLogError("%s failed. LittleFS.begin(formatOnFail=false) returned false.", functionName);
+    return false;
+  }
+  littleFsReady = true;
+  return true;
+}
+
+/**
+ * @brief 証明書格納用ディレクトリを作成する。
+ * @param functionName 呼び出し元関数名。
+ * @return ディレクトリ利用可能時true。
+ */
+bool ensureCertDirectoryExists(const char* functionName) {
+  if (!ensureLittleFsReady(functionName)) {
+    return false;
+  }
+  if (LittleFS.exists(certsDirectoryPath)) {
+    return true;
+  }
+  if (!LittleFS.mkdir(certsDirectoryPath)) {
+    appLogError("%s failed. LittleFS.mkdir failed. path=%s", functionName, certsDirectoryPath);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief PEM文字列のSHA-256を16進文字列で計算する。
+ * @param textInput 入力文字列。
+ * @param sha256HexOut 出力先（null不可）。
+ * @param functionName 呼び出し元関数名。
+ * @return 計算成功時true。
+ */
+bool computeSha256Hex(const String& textInput, String* sha256HexOut, const char* functionName) {
+  if (sha256HexOut == nullptr || functionName == nullptr) {
+    appLogError("computeSha256Hex failed. invalid parameter. sha256HexOut=%p functionName=%p",
+                sha256HexOut,
+                functionName);
+    return false;
+  }
+  uint8_t hashBytes[32] = {0};
+  mbedtls_sha256_context sha256Context;
+  mbedtls_sha256_init(&sha256Context);
+  int startResult = mbedtls_sha256_starts_ret(&sha256Context, 0);
+  int updateResult = mbedtls_sha256_update_ret(&sha256Context,
+                                               reinterpret_cast<const unsigned char*>(textInput.c_str()),
+                                               textInput.length());
+  int finishResult = mbedtls_sha256_finish_ret(&sha256Context, hashBytes);
+  mbedtls_sha256_free(&sha256Context);
+  if (startResult != 0 || updateResult != 0 || finishResult != 0) {
+    appLogError("%s failed. sha256 calculation error. start=%d update=%d finish=%d inputLength=%d",
+                functionName,
+                startResult,
+                updateResult,
+                finishResult,
+                textInput.length());
+    return false;
+  }
+
+  char hashText[65] = {0};
+  for (size_t index = 0; index < 32; ++index) {
+    snprintf(&hashText[index * 2], 3, "%02x", hashBytes[index]);
+  }
+  hashText[64] = '\0';
+  *sha256HexOut = String(hashText);
+  return true;
+}
+
+/**
+ * @brief 証明書文字列を tmp->rename でLittleFSへ安全保存する。
+ * @param pemText 保存対象PEM文字列。
+ * @param functionName 呼び出し元関数名。
+ * @return 保存成功時true。
+ */
+bool writeMqttCertFileAtomically(const String& pemText, const char* functionName) {
+  if (functionName == nullptr) {
+    appLogError("writeMqttCertFileAtomically failed. functionName is null.");
+    return false;
+  }
+  if (!ensureCertDirectoryExists(functionName)) {
+    return false;
+  }
+  File tempFile = LittleFS.open(mqttTlsCertTempFilePath, "w");
+  if (!tempFile) {
+    appLogError("%s failed. temp file open failed. path=%s", functionName, mqttTlsCertTempFilePath);
+    return false;
+  }
+  size_t writtenSize = tempFile.print(pemText);
+  tempFile.close();
+  if (writtenSize != static_cast<size_t>(pemText.length())) {
+    appLogError("%s failed. temp write size mismatch. expected=%d actual=%u path=%s",
+                functionName,
+                pemText.length(),
+                static_cast<unsigned>(writtenSize),
+                mqttTlsCertTempFilePath);
+    LittleFS.remove(mqttTlsCertTempFilePath);
+    return false;
+  }
+  if (LittleFS.exists(mqttTlsCertFilePath)) {
+    LittleFS.remove(mqttTlsCertFilePath);
+  }
+  if (!LittleFS.rename(mqttTlsCertTempFilePath, mqttTlsCertFilePath)) {
+    appLogError("%s failed. rename temp->active failed. temp=%s active=%s",
+                functionName,
+                mqttTlsCertTempFilePath,
+                mqttTlsCertFilePath);
+    LittleFS.remove(mqttTlsCertTempFilePath);
+    return false;
+  }
+  return true;
+}
+
+/**
+ * @brief 証明書ファイルを読み込む。
+ * @param pemTextOut 出力先（null不可）。
+ * @param functionName 呼び出し元関数名。
+ * @return 読込成功時true。
+ */
+bool readMqttCertFile(String* pemTextOut, const char* functionName) {
+  if (pemTextOut == nullptr || functionName == nullptr) {
+    appLogError("readMqttCertFile failed. invalid parameter. pemTextOut=%p functionName=%p",
+                pemTextOut,
+                functionName);
+    return false;
+  }
+  if (!ensureLittleFsReady(functionName)) {
+    return false;
+  }
+  if (!LittleFS.exists(mqttTlsCertFilePath)) {
+    appLogError("%s failed. cert file does not exist. path=%s", functionName, mqttTlsCertFilePath);
+    return false;
+  }
+  File certFile = LittleFS.open(mqttTlsCertFilePath, "r");
+  if (!certFile) {
+    appLogError("%s failed. cert file open failed. path=%s", functionName, mqttTlsCertFilePath);
+    return false;
+  }
+  *pemTextOut = certFile.readString();
+  certFile.close();
+  if (pemTextOut->length() <= 0) {
+    appLogError("%s failed. cert file is empty. path=%s", functionName, mqttTlsCertFilePath);
+    return false;
+  }
+  return true;
+}
 
 /**
  * @brief オブジェクトに文字列項目を上書き設定する。
@@ -120,12 +319,6 @@ bool setBoolItem(cJSON* targetObject,
 bool sensitiveDataService::initialize() {
   constexpr const char* functionName = "sensitiveDataService::initialize";
 
-  if (!LittleFS.begin(false)) {
-    appLogError("%s failed. LittleFS.begin(formatOnFail=false) returned false.", functionName);
-    appLogError("%s hint. filesystem image may be missing. run uploadfs before boot.", functionName);
-    return false;
-  }
-
   if (!ensureDefaultFileExists()) {
     appLogError("%s failed. ensureDefaultFileExists returned false.", functionName);
     return false;
@@ -143,6 +336,11 @@ bool sensitiveDataService::initialize() {
     return false;
   }
 
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, mqttRootKey);
+    mqttObject = cJSON_AddObjectToObject(rootObject, mqttRootKey);
+  }
   cJSON* serverObject = cJSON_GetObjectItemCaseSensitive(rootObject, serverRootKey);
   if (serverObject == nullptr || !cJSON_IsObject(serverObject)) {
     cJSON_DeleteItemFromObjectCaseSensitive(rootObject, serverRootKey);
@@ -163,9 +361,10 @@ bool sensitiveDataService::initialize() {
     cJSON_DeleteItemFromObjectCaseSensitive(rootObject, credentialsRootKey);
     credentialsObject = cJSON_AddObjectToObject(rootObject, credentialsRootKey);
   }
-  if (serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr || credentialsObject == nullptr) {
-    appLogError("%s failed. create missing object failed. server=%p ota=%p timeServer=%p credentials=%p",
+  if (mqttObject == nullptr || serverObject == nullptr || otaObject == nullptr || timeServerObject == nullptr || credentialsObject == nullptr) {
+    appLogError("%s failed. create missing object failed. mqtt=%p server=%p ota=%p timeServer=%p credentials=%p",
                 functionName,
+                mqttObject,
                 serverObject,
                 otaObject,
                 timeServerObject,
@@ -177,18 +376,54 @@ bool sensitiveDataService::initialize() {
   cJSON_DeleteItemFromObjectCaseSensitive(timeServerObject, legacyTimeServerUserKey);
   cJSON_DeleteItemFromObjectCaseSensitive(timeServerObject, legacyTimeServerPassKey);
 
+  // [旧仕様] 旧NVS/JSONに残っている証明書本文は LittleFS(`/certs`) へ移行し、NVSにはメタ情報のみ残す。
+  String migratedMqttTlsCertSha256 = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSha256Key)) == nullptr
+                                         ? ""
+                                         : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSha256Key)));
+  bool migratedMqttTlsCertActive = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertActiveKey));
+  String legacyMqttTlsCaCert = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCaCertKey)) == nullptr
+                                   ? ""
+                                   : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCaCertKey)));
+  if (legacyMqttTlsCaCert.length() > 0) {
+    if (!writeMqttCertFileAtomically(legacyMqttTlsCaCert, functionName)) {
+      appLogError("%s failed. migrate legacy mqtt cert body to /certs returned false.", functionName);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+    if (!computeSha256Hex(legacyMqttTlsCaCert, &migratedMqttTlsCertSha256, functionName)) {
+      appLogError("%s failed. computeSha256Hex for migrated mqtt cert returned false.", functionName);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+    migratedMqttTlsCertActive = true;
+  }
+
   bool migrationResult =
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl))), functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName))), functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser))), functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass))), functionName) &&
+      setNumberItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort)->valuedouble) : defaultMqttPort, functionName) &&
+      setBoolItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls)) : defaultMqttTls, functionName) &&
+      setStringItem(mqttObject, mqttTlsCaCertKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertIssueNoKey, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertIssueNoKey)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertIssueNoKey))), functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSetAtKey, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSetAtKey)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSetAtKey))), functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSha256Key, migratedMqttTlsCertSha256, functionName) &&
+      setBoolItem(mqttObject, mqttTlsCertActiveKey, migratedMqttTlsCertActive, functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl))), functionName) &&
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName))), functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser))), functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass))), functionName) &&
       setNumberItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort)->valuedouble) : defaultServerPort, functionName) &&
       setBoolItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls)) : defaultServerTls, functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl))), functionName) &&
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName))), functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser))), functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass))), functionName) &&
       setNumberItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort)->valuedouble) : defaultOtaPort, functionName) &&
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls)) : defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl))), functionName) &&
+      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName))), functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, cJSON_IsNumber(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)) ? static_cast<int32_t>(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort)->valuedouble) : defaultTimeServerPort, functionName) &&
       setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, cJSON_IsBool(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) ? cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls)) : defaultTimeServerTls, functionName) &&
       setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice)) == nullptr ? "" : String(cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice))), functionName);
@@ -306,6 +541,7 @@ bool sensitiveDataService::loadWifiCredentials(String* wifiSsidOut, String* wifi
 }
 
 bool sensitiveDataService::saveMqttConfig(const String& mqttUrl,
+                                          const String& mqttUrlName,
                                           const String& mqttUser,
                                           const String& mqttPass,
                                           int32_t mqttPort,
@@ -342,6 +578,7 @@ bool sensitiveDataService::saveMqttConfig(const String& mqttUrl,
 
   bool updateResult =
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl, mqttUrl, functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName, mqttUrlName, functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser, mqttUser, functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass, mqttPass, functionName) &&
       setNumberItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort, mqttPort, functionName) &&
@@ -365,15 +602,17 @@ bool sensitiveDataService::saveMqttConfig(const String& mqttUrl,
 }
 
 bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
+                                          String* mqttUrlNameOut,
                                           String* mqttUserOut,
                                           String* mqttPassOut,
                                           int32_t* mqttPortOut,
                                           bool* mqttTlsOut) {
   constexpr const char* functionName = "sensitiveDataService::loadMqttConfig";
-  if (mqttUrlOut == nullptr || mqttUserOut == nullptr || mqttPassOut == nullptr || mqttPortOut == nullptr || mqttTlsOut == nullptr) {
-    appLogError("%s failed. output parameter is null. mqttUrlOut=%p, mqttUserOut=%p, mqttPassOut=%p, mqttPortOut=%p, mqttTlsOut=%p",
+  if (mqttUrlOut == nullptr || mqttUrlNameOut == nullptr || mqttUserOut == nullptr || mqttPassOut == nullptr || mqttPortOut == nullptr || mqttTlsOut == nullptr) {
+    appLogError("%s failed. output parameter is null. mqttUrlOut=%p, mqttUrlNameOut=%p, mqttUserOut=%p, mqttPassOut=%p, mqttPortOut=%p, mqttTlsOut=%p",
                 functionName,
                 mqttUrlOut,
+                mqttUrlNameOut,
                 mqttUserOut,
                 mqttPassOut,
                 mqttPortOut,
@@ -401,6 +640,7 @@ bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
   }
 
   cJSON* mqttUrlItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl);
+  cJSON* mqttUrlNameItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName);
   cJSON* mqttUserItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser);
   cJSON* mqttPassItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass);
   cJSON* mqttPortItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort);
@@ -419,6 +659,7 @@ bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
   }
 
   *mqttUrlOut = mqttUrlItem->valuestring;
+  *mqttUrlNameOut = cJSON_IsString(mqttUrlNameItem) ? String(mqttUrlNameItem->valuestring) : String("");
   *mqttUserOut = mqttUserItem->valuestring;
   *mqttPassOut = mqttPassItem->valuestring;
   *mqttPortOut = static_cast<int32_t>(mqttPortItem->valuedouble);
@@ -427,52 +668,501 @@ bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
   return true;
 }
 
-bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
-                                                int32_t* timeServerPortOut,
-                                                bool* timeServerTlsOut) {
-  constexpr const char* functionName = "sensitiveDataService::loadTimeServerConfig";
-  if (timeServerUrlOut == nullptr || timeServerPortOut == nullptr || timeServerTlsOut == nullptr) {
-    appLogError("%s failed. output parameter is null. timeServerUrlOut=%p, timeServerPortOut=%p, timeServerTlsOut=%p",
-                functionName,
-                timeServerUrlOut,
-                timeServerPortOut,
-                timeServerTlsOut);
-    return false;
+bool sensitiveDataService::saveMqttTlsCertificate(const String& mqttTlsCaCertPem,
+                                                  const String& certIssueNo,
+                                                  const String& certSetAt) {
+  constexpr const char* functionName = "sensitiveDataService::saveMqttTlsCertificate";
+  String certSha256Hex;
+  bool certActive = false;
+  if (mqttTlsCaCertPem.length() > 0) {
+    if (!writeMqttCertFileAtomically(mqttTlsCaCertPem, functionName)) {
+      appLogError("%s failed. writeMqttCertFileAtomically returned false.", functionName);
+      return false;
+    }
+    if (!computeSha256Hex(mqttTlsCaCertPem, &certSha256Hex, functionName)) {
+      appLogError("%s failed. computeSha256Hex returned false.", functionName);
+      return false;
+    }
+    certActive = true;
   }
 
   String jsonText;
   if (!readJsonText(&jsonText, functionName)) {
     return false;
   }
-
   cJSON* rootObject = cJSON_Parse(jsonText.c_str());
   if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
     appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
     cJSON_Delete(rootObject);
     return false;
   }
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, mqttRootKey);
+    mqttObject = cJSON_AddObjectToObject(rootObject, mqttRootKey);
+    if (mqttObject == nullptr) {
+      appLogError("%s failed. create mqtt object key=%s", functionName, mqttRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+  if (mqttTlsCaCertPem.length() == 0) {
+    cJSON* existingSha256Item = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSha256Key);
+    cJSON* existingActiveItem = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertActiveKey);
+    certSha256Hex = cJSON_IsString(existingSha256Item) ? String(existingSha256Item->valuestring) : String("");
+    certActive = cJSON_IsTrue(existingActiveItem);
+  }
+  const bool updateResult =
+      setStringItem(mqttObject, mqttTlsCaCertKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertIssueNoKey, certIssueNo, functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSetAtKey, certSetAt, functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSha256Key, certSha256Hex, functionName) &&
+      setBoolItem(mqttObject, mqttTlsCertActiveKey, certActive, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
 
+bool sensitiveDataService::loadMqttTlsCertificate(String* mqttTlsCaCertPemOut,
+                                                  String* certIssueNoOut,
+                                                  String* certSetAtOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadMqttTlsCertificate";
+  if (mqttTlsCaCertPemOut == nullptr || certIssueNoOut == nullptr || certSetAtOut == nullptr) {
+    appLogError("%s failed. output parameter is null.", functionName);
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    appLogError("%s failed. mqtt object is missing. key=%s", functionName, mqttRootKey);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* certItem = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCaCertKey);
+  cJSON* certSha256Item = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSha256Key);
+  cJSON* certActiveItem = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertActiveKey);
+  cJSON* issueNoItem = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertIssueNoKey);
+  cJSON* setAtItem = cJSON_GetObjectItemCaseSensitive(mqttObject, mqttTlsCertSetAtKey);
+  String certBodyText = cJSON_IsString(certItem) ? String(certItem->valuestring) : String("");
+  if (certBodyText.length() == 0 && cJSON_IsTrue(certActiveItem)) {
+    if (!readMqttCertFile(&certBodyText, functionName)) {
+      appLogError("%s failed. certificate is active but file read failed. certPath=%s",
+                  functionName,
+                  mqttTlsCertFilePath);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+    if (cJSON_IsString(certSha256Item)) {
+      String actualSha256Hex;
+      if (!computeSha256Hex(certBodyText, &actualSha256Hex, functionName)) {
+        appLogError("%s failed. computeSha256Hex for loaded cert returned false.", functionName);
+        cJSON_Delete(rootObject);
+        return false;
+      }
+      if (!actualSha256Hex.equalsIgnoreCase(String(certSha256Item->valuestring))) {
+        // [重要] 運用中に `/certs/mqtt-ca.pem` を更新した直後でも接続不能に陥らないよう、
+        // SHA不一致は警告扱いにして証明書本体の読み込みを継続する。
+        appLogWarn("%s warning. cert sha256 mismatch. expected=%s actual=%s (continue with cert body)",
+                   functionName,
+                   certSha256Item->valuestring,
+                   actualSha256Hex.c_str());
+      }
+    }
+  }
+  *mqttTlsCaCertPemOut = certBodyText;
+  *certIssueNoOut = cJSON_IsString(issueNoItem) ? String(issueNoItem->valuestring) : String("");
+  *certSetAtOut = cJSON_IsString(setAtItem) ? String(setAtItem->valuestring) : String("");
+  cJSON_Delete(rootObject);
+  return true;
+}
+
+bool sensitiveDataService::syncMqttTlsCertificateMetadataFromLittleFs(const String& certIssueNo,
+                                                                      const String& certSetAt) {
+  constexpr const char* functionName = "sensitiveDataService::syncMqttTlsCertificateMetadataFromLittleFs";
+  String certSha256Hex = "";
+  bool certActive = false;
+  if (LittleFS.exists(mqttTlsCertFilePath)) {
+    String certBodyText;
+    if (!readMqttCertFile(&certBodyText, functionName)) {
+      appLogError("%s failed. readMqttCertFile returned false. certPath=%s",
+                  functionName,
+                  mqttTlsCertFilePath);
+      return false;
+    }
+    if (!computeSha256Hex(certBodyText, &certSha256Hex, functionName)) {
+      appLogError("%s failed. computeSha256Hex returned false. certPath=%s",
+                  functionName,
+                  mqttTlsCertFilePath);
+      return false;
+    }
+    certActive = true;
+  }
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, mqttRootKey);
+    mqttObject = cJSON_AddObjectToObject(rootObject, mqttRootKey);
+    if (mqttObject == nullptr) {
+      appLogError("%s failed. create mqtt object key=%s", functionName, mqttRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+
+  const bool updateResult =
+      setStringItem(mqttObject, mqttTlsCaCertKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertIssueNoKey, certIssueNo, functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSetAtKey, certSetAt, functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSha256Key, certSha256Hex, functionName) &&
+      setBoolItem(mqttObject, mqttTlsCertActiveKey, certActive, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::saveServerConfig(const String& serverUrl,
+                                            const String& serverUrlName,
+                                            const String& serverUser,
+                                            const String& serverPass,
+                                            int32_t serverPort,
+                                            bool serverTls) {
+  constexpr const char* functionName = "sensitiveDataService::saveServerConfig";
+  if (serverPort <= 0 || serverPort > 65535) {
+    appLogError("%s failed. invalid serverPort=%ld", functionName, static_cast<long>(serverPort));
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* serverObject = cJSON_GetObjectItemCaseSensitive(rootObject, serverRootKey);
+  if (serverObject == nullptr || !cJSON_IsObject(serverObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, serverRootKey);
+    serverObject = cJSON_AddObjectToObject(rootObject, serverRootKey);
+    if (serverObject == nullptr) {
+      appLogError("%s failed. create server object key=%s", functionName, serverRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+  const bool updateResult =
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl, serverUrl, functionName) &&
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName, serverUrlName, functionName) &&
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser, serverUser, functionName) &&
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass, serverPass, functionName) &&
+      setNumberItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort, serverPort, functionName) &&
+      setBoolItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls, serverTls, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadServerConfig(String* serverUrlOut,
+                                            String* serverUrlNameOut,
+                                            String* serverUserOut,
+                                            String* serverPassOut,
+                                            int32_t* serverPortOut,
+                                            bool* serverTlsOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadServerConfig";
+  if (serverUrlOut == nullptr || serverUrlNameOut == nullptr || serverUserOut == nullptr || serverPassOut == nullptr ||
+      serverPortOut == nullptr || serverTlsOut == nullptr) {
+    appLogError("%s failed. output parameter is null.", functionName);
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* serverObject = cJSON_GetObjectItemCaseSensitive(rootObject, serverRootKey);
+  if (serverObject == nullptr || !cJSON_IsObject(serverObject)) {
+    appLogError("%s failed. server object is missing. key=%s", functionName, serverRootKey);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* serverUrlItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl);
+  cJSON* serverUrlNameItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName);
+  cJSON* serverUserItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser);
+  cJSON* serverPassItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass);
+  cJSON* serverPortItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort);
+  cJSON* serverTlsItem = cJSON_GetObjectItemCaseSensitive(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls);
+  if (!cJSON_IsString(serverUrlItem) || !cJSON_IsString(serverUserItem) || !cJSON_IsString(serverPassItem) ||
+      !cJSON_IsNumber(serverPortItem) || !cJSON_IsBool(serverTlsItem)) {
+    appLogError("%s failed. server item type mismatch.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  *serverUrlOut = serverUrlItem->valuestring;
+  *serverUrlNameOut = cJSON_IsString(serverUrlNameItem) ? String(serverUrlNameItem->valuestring) : String("");
+  *serverUserOut = serverUserItem->valuestring;
+  *serverPassOut = serverPassItem->valuestring;
+  *serverPortOut = static_cast<int32_t>(serverPortItem->valuedouble);
+  *serverTlsOut = cJSON_IsTrue(serverTlsItem);
+  cJSON_Delete(rootObject);
+  return true;
+}
+
+bool sensitiveDataService::saveOtaConfig(const String& otaUrl,
+                                         const String& otaUrlName,
+                                         const String& otaUser,
+                                         const String& otaPass,
+                                         int32_t otaPort,
+                                         bool otaTls) {
+  constexpr const char* functionName = "sensitiveDataService::saveOtaConfig";
+  if (otaPort <= 0 || otaPort > 65535) {
+    appLogError("%s failed. invalid otaPort=%ld", functionName, static_cast<long>(otaPort));
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* otaObject = cJSON_GetObjectItemCaseSensitive(rootObject, otaRootKey);
+  if (otaObject == nullptr || !cJSON_IsObject(otaObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, otaRootKey);
+    otaObject = cJSON_AddObjectToObject(rootObject, otaRootKey);
+    if (otaObject == nullptr) {
+      appLogError("%s failed. create ota object key=%s", functionName, otaRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+  const bool updateResult =
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl, otaUrl, functionName) &&
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName, otaUrlName, functionName) &&
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser, otaUser, functionName) &&
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass, otaPass, functionName) &&
+      setNumberItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort, otaPort, functionName) &&
+      setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, otaTls, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadOtaConfig(String* otaUrlOut,
+                                         String* otaUrlNameOut,
+                                         String* otaUserOut,
+                                         String* otaPassOut,
+                                         int32_t* otaPortOut,
+                                         bool* otaTlsOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadOtaConfig";
+  if (otaUrlOut == nullptr || otaUrlNameOut == nullptr || otaUserOut == nullptr || otaPassOut == nullptr ||
+      otaPortOut == nullptr || otaTlsOut == nullptr) {
+    appLogError("%s failed. output parameter is null.", functionName);
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* otaObject = cJSON_GetObjectItemCaseSensitive(rootObject, otaRootKey);
+  if (otaObject == nullptr || !cJSON_IsObject(otaObject)) {
+    appLogError("%s failed. ota object is missing. key=%s", functionName, otaRootKey);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* otaUrlItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl);
+  cJSON* otaUrlNameItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName);
+  cJSON* otaUserItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser);
+  cJSON* otaPassItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass);
+  cJSON* otaPortItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort);
+  cJSON* otaTlsItem = cJSON_GetObjectItemCaseSensitive(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls);
+  if (!cJSON_IsString(otaUrlItem) || !cJSON_IsString(otaUserItem) || !cJSON_IsString(otaPassItem) ||
+      !cJSON_IsNumber(otaPortItem) || !cJSON_IsBool(otaTlsItem)) {
+    appLogError("%s failed. ota item type mismatch.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  *otaUrlOut = otaUrlItem->valuestring;
+  *otaUrlNameOut = cJSON_IsString(otaUrlNameItem) ? String(otaUrlNameItem->valuestring) : String("");
+  *otaUserOut = otaUserItem->valuestring;
+  *otaPassOut = otaPassItem->valuestring;
+  *otaPortOut = static_cast<int32_t>(otaPortItem->valuedouble);
+  *otaTlsOut = cJSON_IsTrue(otaTlsItem);
+  cJSON_Delete(rootObject);
+  return true;
+}
+
+bool sensitiveDataService::saveTimeServerConfig(const String& timeServerUrl,
+                                                const String& timeServerUrlName,
+                                                int32_t timeServerPort,
+                                                bool timeServerTls) {
+  constexpr const char* functionName = "sensitiveDataService::saveTimeServerConfig";
+  if (timeServerPort <= 0 || timeServerPort > 65535) {
+    appLogError("%s failed. invalid timeServerPort=%ld", functionName, static_cast<long>(timeServerPort));
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  cJSON* timeServerObject = cJSON_GetObjectItemCaseSensitive(rootObject, timeServerRootKey);
+  if (timeServerObject == nullptr || !cJSON_IsObject(timeServerObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, timeServerRootKey);
+    timeServerObject = cJSON_AddObjectToObject(rootObject, timeServerRootKey);
+    if (timeServerObject == nullptr) {
+      appLogError("%s failed. create timeServer object key=%s", functionName, timeServerRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+  const bool updateResult =
+      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, timeServerUrl, functionName) &&
+      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName, timeServerUrlName, functionName) &&
+      setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, timeServerPort, functionName) &&
+      setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, timeServerTls, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
+                                                int32_t* timeServerPortOut,
+                                                bool* timeServerTlsOut) {
+  String timeServerUrlNameDummy;
+  return loadTimeServerConfig(timeServerUrlOut, &timeServerUrlNameDummy, timeServerPortOut, timeServerTlsOut);
+}
+
+bool sensitiveDataService::loadTimeServerConfig(String* timeServerUrlOut,
+                                                String* timeServerUrlNameOut,
+                                                int32_t* timeServerPortOut,
+                                                bool* timeServerTlsOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadTimeServerConfig";
+  if (timeServerUrlOut == nullptr || timeServerUrlNameOut == nullptr || timeServerPortOut == nullptr || timeServerTlsOut == nullptr) {
+    appLogError("%s failed. output parameter is null.", functionName);
+    return false;
+  }
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
   cJSON* timeServerObject = cJSON_GetObjectItemCaseSensitive(rootObject, timeServerRootKey);
   if (timeServerObject == nullptr || !cJSON_IsObject(timeServerObject)) {
     appLogError("%s failed. timeServer object is missing. key=%s", functionName, timeServerRootKey);
     cJSON_Delete(rootObject);
     return false;
   }
-
   cJSON* timeServerUrlItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl);
+  cJSON* timeServerUrlNameItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName);
   cJSON* timeServerPortItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort);
   cJSON* timeServerTlsItem = cJSON_GetObjectItemCaseSensitive(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls);
   if (!cJSON_IsString(timeServerUrlItem) || !cJSON_IsNumber(timeServerPortItem) || !cJSON_IsBool(timeServerTlsItem)) {
-    appLogError("%s failed. timeServer item type mismatch. url=%d port=%d tls=%d",
-                functionName,
-                cJSON_IsString(timeServerUrlItem),
-                cJSON_IsNumber(timeServerPortItem),
-                cJSON_IsBool(timeServerTlsItem));
+    appLogError("%s failed. timeServer item type mismatch.", functionName);
     cJSON_Delete(rootObject);
     return false;
   }
-
   *timeServerUrlOut = timeServerUrlItem->valuestring;
+  *timeServerUrlNameOut = cJSON_IsString(timeServerUrlNameItem) ? String(timeServerUrlNameItem->valuestring) : String("");
   *timeServerPortOut = static_cast<int32_t>(timeServerPortItem->valuedouble);
   *timeServerTlsOut = cJSON_IsTrue(timeServerTlsItem);
   cJSON_Delete(rootObject);
@@ -564,7 +1254,19 @@ bool sensitiveDataService::loadKeyDevice(String* keyDeviceBase64Out) {
 bool sensitiveDataService::ensureDefaultFileExists() {
   constexpr const char* functionName = "sensitiveDataService::ensureDefaultFileExists";
 
-  if (LittleFS.exists(sensitiveDataFilePath)) {
+  String existingJsonText;
+  if (readJsonText(&existingJsonText, functionName)) {
+    return true;
+  }
+
+  // [重要] 旧仕様の LittleFS 保存が残っている場合は、NVSへ移行する。
+  String legacyJsonText;
+  if (readLegacyJsonText(&legacyJsonText, functionName)) {
+    if (!writeJsonText(legacyJsonText, functionName)) {
+      appLogError("%s failed. writeJsonText for legacy migration returned false.", functionName);
+      return false;
+    }
+    appLogWarn("%s migrated legacy LittleFS sensitive data to NVS.", functionName);
     return true;
   }
 
@@ -607,21 +1309,30 @@ bool sensitiveDataService::ensureDefaultFileExists() {
       setStringItem(wifiObject, iotCommon::mqtt::jsonKey::network::kWifiSsid, "", functionName) &&
       setStringItem(wifiObject, iotCommon::mqtt::jsonKey::network::kWifiPass, "", functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrl, "", functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUrlName, "", functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser, "", functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCaCertKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertIssueNoKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSetAtKey, "", functionName) &&
+      setStringItem(mqttObject, mqttTlsCertSha256Key, "", functionName) &&
+      setBoolItem(mqttObject, mqttTlsCertActiveKey, false, functionName) &&
       setNumberItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort, defaultMqttPort, functionName) &&
       setBoolItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls, defaultMqttTls, functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrl, "", functionName) &&
+      setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUrlName, "", functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerUser, "", functionName) &&
       setStringItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPass, "", functionName) &&
       setNumberItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerPort, defaultServerPort, functionName) &&
       setBoolItem(serverObject, iotCommon::mqtt::jsonKey::network::kServerTls, defaultServerTls, functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrl, "", functionName) &&
+      setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUrlName, "", functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaUser, "", functionName) &&
       setStringItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPass, "", functionName) &&
       setNumberItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaPort, defaultOtaPort, functionName) &&
       setBoolItem(otaObject, iotCommon::mqtt::jsonKey::network::kOtaTls, defaultOtaTls, functionName) &&
       setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrl, "", functionName) &&
+      setStringItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerUrlName, "", functionName) &&
       setNumberItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerPort, defaultTimeServerPort, functionName) &&
       setBoolItem(timeServerObject, iotCommon::mqtt::jsonKey::network::kTimeServerTls, defaultTimeServerTls, functionName) &&
       setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, "", functionName);
@@ -649,17 +1360,41 @@ bool sensitiveDataService::readJsonText(String* jsonTextOut, const char* functio
     return false;
   }
 
-  File file = LittleFS.open(sensitiveDataFilePath, "r");
-  if (!file) {
-    appLogError("%s failed. open read file failed. path=%s", functionName, sensitiveDataFilePath);
+  Preferences preferences;
+  if (!openSensitivePreferences(&preferences, true, functionName)) {
     return false;
   }
 
-  *jsonTextOut = file.readString();
-  file.close();
+  const size_t storedLength = preferences.getBytesLength(sensitiveDataNvsBlobKey);
+  if (storedLength == 0U) {
+    preferences.end();
+    appLogError("%s failed. NVS blob is missing. key=%s", functionName, sensitiveDataNvsBlobKey);
+    return false;
+  }
+
+  char* valueBuffer = static_cast<char*>(malloc(storedLength + 1U));
+  if (valueBuffer == nullptr) {
+    preferences.end();
+    appLogError("%s failed. malloc returned null. storedLength=%u", functionName, static_cast<unsigned>(storedLength));
+    return false;
+  }
+
+  const size_t loadedLength = preferences.getBytes(sensitiveDataNvsBlobKey, valueBuffer, storedLength);
+  preferences.end();
+  if (loadedLength != storedLength) {
+    appLogError("%s failed. getBytes length mismatch. expected=%u actual=%u",
+                functionName,
+                static_cast<unsigned>(storedLength),
+                static_cast<unsigned>(loadedLength));
+    free(valueBuffer);
+    return false;
+  }
+  valueBuffer[storedLength] = '\0';
+  *jsonTextOut = String(valueBuffer);
+  free(valueBuffer);
 
   if (jsonTextOut->length() <= 0) {
-    appLogError("%s failed. file is empty. path=%s", functionName, sensitiveDataFilePath);
+    appLogError("%s failed. NVS payload is empty. key=%s", functionName, sensitiveDataNvsBlobKey);
     return false;
   }
 
@@ -671,20 +1406,59 @@ bool sensitiveDataService::writeJsonText(const String& jsonText, const char* fun
     appLogError("sensitiveDataService::writeJsonText failed. functionName is null.");
     return false;
   }
-
-  File file = LittleFS.open(sensitiveDataFilePath, "w");
-  if (!file) {
-    appLogError("%s failed. open write file failed. path=%s", functionName, sensitiveDataFilePath);
+  if (jsonText.length() <= 0) {
+    appLogError("%s failed. jsonText is empty.", functionName);
     return false;
   }
 
-  size_t writtenSize = file.print(jsonText);
-  file.close();
+  Preferences preferences;
+  if (!openSensitivePreferences(&preferences, false, functionName)) {
+    return false;
+  }
+
+  const size_t writtenSize = preferences.putBytes(sensitiveDataNvsBlobKey, jsonText.c_str(), static_cast<size_t>(jsonText.length()));
+  preferences.end();
 
   if (writtenSize != static_cast<size_t>(jsonText.length())) {
-    appLogError("%s failed. write size mismatch. expected=%d actual=%u", functionName, jsonText.length(), static_cast<unsigned>(writtenSize));
+    appLogError("%s failed. putBytes length mismatch. expected=%d actual=%u",
+                functionName,
+                jsonText.length(),
+                static_cast<unsigned>(writtenSize));
     return false;
   }
 
+  return true;
+}
+
+bool sensitiveDataService::readLegacyJsonText(String* jsonTextOut, const char* functionName) {
+  if (jsonTextOut == nullptr || functionName == nullptr) {
+    appLogError("sensitiveDataService::readLegacyJsonText failed. invalid parameter. jsonTextOut=%p functionName=%p",
+                jsonTextOut,
+                functionName);
+    return false;
+  }
+  if (!LittleFS.begin(false)) {
+    appLogWarn("%s skipped legacy migration. LittleFS.begin(formatOnFail=false) returned false.", functionName);
+    return false;
+  }
+  if (!LittleFS.exists(sensitiveDataFilePath)) {
+    return false;
+  }
+
+  File file = LittleFS.open(sensitiveDataFilePath, "r");
+  if (!file) {
+    appLogError("%s failed. legacy file open failed. path=%s", functionName, sensitiveDataFilePath);
+    return false;
+  }
+  *jsonTextOut = file.readString();
+  file.close();
+  if (jsonTextOut->length() <= 0) {
+    appLogError("%s failed. legacy file is empty. path=%s", functionName, sensitiveDataFilePath);
+    return false;
+  }
+
+  if (!LittleFS.remove(sensitiveDataFilePath)) {
+    appLogWarn("%s warning. legacy file remove failed. path=%s", functionName, sensitiveDataFilePath);
+  }
   return true;
 }

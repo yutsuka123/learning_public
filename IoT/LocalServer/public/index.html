@@ -3,7 +3,9 @@
   @description LocalServer管理画面（ESP32一覧、status要求、OTA要求）を提供する。
   @important [重要] Web UIは読み取り中心で、操作はREST API経由で実行する。
   @strict [厳守] 送信対象は「選択」「全体」を切替可能にする。
+  @strict [003-0001] OTA実行時は管理者パスワード再入力を要求。同一セッション内3時間有効、ブラウザ終了で失効。
   @forbidden [禁止] 機密情報をブラウザ画面へ表示しない。
+  @forbidden [禁止][003-0011] eFuse 実行ボタン・UIを追加しない。eFuse は Production ツール専用。
 -->
 <!doctype html>
 <html lang="ja">
@@ -62,9 +64,28 @@
         color: #b91c1c;
         font-weight: 600;
       }
+      .envValue {
+        text-align: right;
+        font-family: "Consolas", "Menlo", monospace;
+        white-space: nowrap;
+      }
       .unknown {
         color: #6b7280;
         font-weight: 600;
+      }
+      .apWebLink {
+        display: inline-block;
+        padding: 4px 10px;
+        border: 1px solid #0f766e;
+        border-radius: 6px;
+        background: #f0fdfa;
+        color: #0f766e;
+        text-decoration: none;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .apWebLink:hover {
+        background: #ccfbf1;
       }
       #logArea {
         margin-top: 12px;
@@ -75,6 +96,31 @@
         overflow-y: auto;
         white-space: pre-wrap;
       }
+      .otaAuthOverlay {
+        display: none;
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: rgba(0,0,0,0.4);
+        z-index: 1000;
+        align-items: center;
+        justify-content: center;
+      }
+      .otaAuthOverlay.show { display: flex; }
+      .otaAuthModal {
+        background: #fff;
+        padding: 24px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        min-width: 320px;
+      }
+      .otaAuthModal h3 { margin-top: 0; }
+      .otaAuthModal label { display: block; margin-top: 12px; }
+      .otaAuthModal input { width: 100%; padding: 6px; margin-top: 4px; }
+      .otaAuthModal .buttonRow { margin-top: 16px; display: flex; gap: 8px; }
+      .otaAuthModal .errorText { color: #b91c1c; font-size: 13px; margin-top: 8px; }
     </style>
   </head>
   <body>
@@ -98,6 +144,9 @@
           <th>デバイス名</th>
           <th>IPアドレス</th>
           <th>status</th>
+          <th>温度</th>
+          <th>湿度</th>
+          <th>気圧</th>
           <th>Wi-Fi SSID</th>
           <th>FWバージョン</th>
           <th>FW書換日時</th>
@@ -110,6 +159,21 @@
       <tbody id="deviceTableBody"></tbody>
     </table>
     <div id="logArea"></div>
+    <div id="otaAuthOverlay" class="otaAuthOverlay">
+      <div class="otaAuthModal">
+        <h3>OTA実行のため管理者認証が必要です</h3>
+        <p>[003-0001] 管理者パスワードを入力してください。同一セッション内で3時間有効です。</p>
+        <label>ユーザー名</label>
+        <input id="otaAuthUsername" type="text" placeholder="admin" />
+        <label>パスワード</label>
+        <input id="otaAuthPassword" type="password" />
+        <div id="otaAuthError" class="errorText"></div>
+        <div class="buttonRow">
+          <button id="otaAuthSubmit">認証してOTA実行</button>
+          <button id="otaAuthCancel">キャンセル</button>
+        </div>
+      </div>
+    </div>
     <script>
       /**
        * @typedef {Object} DeviceState
@@ -128,6 +192,12 @@
        * @property {string} otaUpdatedAt OTA進捗更新日時
        * @property {string} detail 詳細メッセージ
        * @property {string} lastSeenAt 最終更新日時
+       * @property {number|null} temperatureC 温度(℃)
+       * @property {number|null} humidityRh 相対湿度(%)
+       * @property {number|null} pressureHpa 気圧(hPa)
+       * @property {string} environmentSensorId 環境センサーID
+       * @property {string} environmentSensorAddress 環境センサーI2Cアドレス
+       * @property {string} environmentUpdatedAt 環境データ最終取得日時
        */
 
       const deviceTableBody = document.getElementById("deviceTableBody");
@@ -156,7 +226,7 @@
         if (latestDeviceList.length === 0) {
           const emptyRow = document.createElement("tr");
           emptyRow.innerHTML = `
-            <td colspan="11">デバイス未検出です。status更新で再取得してください。</td>
+            <td colspan="14">デバイス未検出です。status更新で再取得してください。</td>
           `;
           deviceTableBody.appendChild(emptyRow);
           return;
@@ -168,11 +238,17 @@
           const partitionSummaryText = formatPartitionSummary(deviceItem);
           const firmwareWrittenAtText = formatDateTimeByTimeZone(deviceItem.firmwareWrittenAt);
           const lastSeenAtText = formatDateTimeByTimeZone(deviceItem.lastSeenAt);
+          const temperatureText = formatEnvironmentValue(deviceItem.temperatureC, "℃");
+          const humidityText = formatEnvironmentValue(deviceItem.humidityRh, "%");
+          const pressureText = formatEnvironmentValue(deviceItem.pressureHpa, "hPa");
           row.innerHTML = `
             <td><input type="checkbox" data-device-name="${deviceItem.deviceName}" ${checkedValue}></td>
             <td>${deviceItem.deviceName}</td>
             <td>${deviceItem.ipAddress || ""}</td>
             <td class="${deviceItem.onlineState}">${deviceItem.onlineState || "unknown"}</td>
+            <td class="envValue">${temperatureText}</td>
+            <td class="envValue">${humidityText}</td>
+            <td class="envValue">${pressureText}</td>
             <td>${deviceItem.wifiSsid || ""}</td>
             <td>${deviceItem.firmwareVersion || ""}</td>
             <td>${firmwareWrittenAtText}</td>
@@ -183,11 +259,25 @@
               <div class="rowActionGroup">
                 <button type="button" data-row-action="status" data-device-name="${deviceItem.deviceName}">status更新</button>
                 <button type="button" data-row-action="ota" data-device-name="${deviceItem.deviceName}">OTA開始</button>
+                ${(deviceItem.apWebUrl || "").length > 0 ? `<a href="${deviceItem.apWebUrl}" target="_blank" rel="noopener noreferrer" class="apWebLink">Webページへ移動</a>` : ""}
               </div>
             </td>
           `;
           deviceTableBody.appendChild(row);
         });
+      }
+
+      /**
+       * @description 環境センサー値の表示文字列を返す。
+       * @param {number|null} value センサー値。
+       * @param {string} unitText 単位文字列。
+       * @returns {string} 表示用文字列。未取得時は"-"。
+       */
+      function formatEnvironmentValue(value, unitText) {
+        if (value === null || value === undefined) {
+          return "-";
+        }
+        return `${value.toFixed(1)} ${unitText}`;
       }
 
       /**
@@ -332,18 +422,113 @@
         appendLog(`status command result=${jsonObject.result} target=${deviceName}`);
       }
 
+      /** [003-0001] admin.html と共通。同一オリジンで sessionStorage を共有。 */
+      const adminTokenStorageKey = "localserverAdminToken";
+
+      /**
+       * @description OTA実行に必要な管理者トークンを取得する。無効・無ければ null。
+       * @returns {string|null} トークンまたは null。
+       */
+      function getAdminToken() {
+        return sessionStorage.getItem(adminTokenStorageKey) || null;
+      }
+
+      /**
+       * @description OTA実行前に認証を確保する。トークンが無効ならモーダルで入力を促す。
+       * @returns {Promise<string>} 有効なトークン。キャンセル時は reject。
+       */
+      function ensureOtaAuth() {
+        const token = getAdminToken();
+        if (token && token.length > 0) {
+          return Promise.resolve(token);
+        }
+        return new Promise((resolve, reject) => {
+          showOtaAuthModal(resolve, reject);
+        });
+      }
+
+      /**
+       * @description OTA認証モーダルを表示する。
+       * @param {function(string): void} onSuccess 認証成功時のコールバック（トークン渡し）。
+       * @param {function(): void} onCancel キャンセル時のコールバック。
+       */
+      function showOtaAuthModal(onSuccess, onCancel) {
+        const overlay = document.getElementById("otaAuthOverlay");
+        const usernameInput = document.getElementById("otaAuthUsername");
+        const passwordInput = document.getElementById("otaAuthPassword");
+        const errorEl = document.getElementById("otaAuthError");
+        const submitBtn = document.getElementById("otaAuthSubmit");
+        const cancelBtn = document.getElementById("otaAuthCancel");
+        errorEl.textContent = "";
+        usernameInput.value = "";
+        passwordInput.value = "";
+        overlay.classList.add("show");
+
+        async function performLogin() {
+          const username = (usernameInput.value || "").trim();
+          const password = passwordInput.value || "";
+          if (username.length === 0 || password.length === 0) {
+            errorEl.textContent = "ユーザー名とパスワードを入力してください。";
+            return;
+          }
+          try {
+            const res = await fetch("/api/admin/auth/login", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ username, password })
+            });
+            const json = await res.json();
+            if (json.result !== "OK" || !json.token) {
+              errorEl.textContent = json.detail || "認証に失敗しました。";
+              return;
+            }
+            sessionStorage.setItem(adminTokenStorageKey, json.token);
+            overlay.classList.remove("show");
+            onSuccess(json.token);
+          } catch (e) {
+            errorEl.textContent = e.message || "通信エラー";
+          }
+        }
+
+        function doCancel() {
+          overlay.classList.remove("show");
+          onCancel();
+        }
+
+        submitBtn.onclick = () => performLogin();
+        cancelBtn.onclick = doCancel;
+        passwordInput.onkeydown = (e) => {
+          if (e.key === "Enter") performLogin();
+        };
+      }
+
       /**
        * @description OTA要求を送信する。
        * @param {"all"|"selected"} mode 送信モード。
        */
       async function sendOtaCommand(mode) {
+        let token;
+        try {
+          token = await ensureOtaAuth();
+        } catch {
+          appendLog("OTA: 認証がキャンセルされました。");
+          return;
+        }
         syncSelectedDevicesFromView();
         const body = mode === "all" ? { targetNames: "all" } : { targetNames: Array.from(selectedDeviceSet) };
+        const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
         const response = await fetch("/api/commands/ota", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify(body)
         });
+        if (response.status === 401) {
+          sessionStorage.removeItem(adminTokenStorageKey);
+          appendLog("OTA: 認証が失効しました。再ログインしてください。");
+          token = await ensureOtaAuth().catch(() => null);
+          if (!token) return;
+          return sendOtaCommand(mode);
+        }
         const jsonObject = await response.json();
         appendLog(`ota command result=${jsonObject.result} target=${JSON.stringify(body.targetNames)}`);
       }
@@ -353,11 +538,26 @@
        * @param {string} deviceName 対象デバイス名。
        */
       async function sendOtaCommandToSingleDevice(deviceName) {
+        let token;
+        try {
+          token = await ensureOtaAuth();
+        } catch {
+          appendLog("OTA: 認証がキャンセルされました。");
+          return;
+        }
+        const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
         const response = await fetch("/api/commands/ota", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers,
           body: JSON.stringify({ targetNames: [deviceName] })
         });
+        if (response.status === 401) {
+          sessionStorage.removeItem(adminTokenStorageKey);
+          appendLog("OTA: 認証が失効しました。再ログインしてください。");
+          token = await ensureOtaAuth().catch(() => null);
+          if (!token) return;
+          return sendOtaCommandToSingleDevice(deviceName);
+        }
         const jsonObject = await response.json();
         appendLog(`ota command result=${jsonObject.result} target=${deviceName}`);
       }

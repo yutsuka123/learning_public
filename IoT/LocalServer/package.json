@@ -8,7 +8,8 @@
     "start": "node dist/server.js",
     "dev": "tsx watch src/server.ts",
     "check": "tsc -p tsconfig.json --noEmit",
-    "test:connect": "tsx src/tools/testConnection.ts"
+    "test:connect": "tsx src/tools/testConnection.ts",
+    "test:7064": "node scripts/test7064PasswordChange.mjs"
   },
   "keywords": [
     "iot",

@@ -23,6 +23,7 @@
 #include "interTaskMessage.h"
 #include "log.h"
 #include "sensitiveData.h"
+#include "sensitiveDataService.h"
 #include "util.h"
 
 namespace {
@@ -30,6 +31,9 @@ StackType_t* otaTaskStackBuffer = nullptr;
 StaticTask_t otaTaskControlBlock;
 otaStartRequestContext pendingOtaStartRequest{};
 bool hasPendingOtaStartRequest = false;
+sensitiveDataService otaSensitiveDataService;
+bool otaSensitiveDataInitialized = false;
+String otaTlsCaCertRuntime;
 
 constexpr uint32_t kOtaProgressHoldMs = 0;
 constexpr uint32_t kOtaAttemptMaxCount = 3;
@@ -47,6 +51,79 @@ struct otaUrlInfo {
   uint16_t port;
   String path;
 };
+
+/**
+ * @brief OTA経路で使用する機密設定サービスの初期化を保証する。
+ * @return 初期化成功時true。
+ */
+bool ensureOtaSensitiveDataReady() {
+  if (otaSensitiveDataInitialized) {
+    return true;
+  }
+  otaSensitiveDataInitialized = otaSensitiveDataService.initialize();
+  if (!otaSensitiveDataInitialized) {
+    appLogError("ensureOtaSensitiveDataReady failed. sensitiveDataService::initialize returned false.");
+  }
+  return otaSensitiveDataInitialized;
+}
+
+/**
+ * @brief OTAで使用するTLS CA証明書を解決する。
+ * @details
+ * - [重要] 主経路は `/certs/mqtt-ca.pem`（sensitiveDataService経由）とする。
+ * - [旧仕様] 設定未投入時のみヘッダー埋め込み証明書へフォールバックする。
+ * @param tlsCaCertOut 出力先（null不可）。
+ * @return 取得成功時true。
+ */
+bool resolveOtaTlsCaCertificate(String* tlsCaCertOut) {
+  if (tlsCaCertOut == nullptr) {
+    appLogError("resolveOtaTlsCaCertificate failed. tlsCaCertOut is null.");
+    return false;
+  }
+
+  if (!ensureOtaSensitiveDataReady()) {
+    return false;
+  }
+
+  String certIssueNo;
+  String certSetAt;
+  String storedTlsCaCert;
+  if (!otaSensitiveDataService.loadMqttTlsCertificate(&storedTlsCaCert, &certIssueNo, &certSetAt)) {
+    appLogWarn("resolveOtaTlsCaCertificate: loadMqttTlsCertificate returned false. fallback check to header cert.");
+#if !defined(SENSITIVE_MQTT_TLS_CA_CERT)
+    appLogError("resolveOtaTlsCaCertificate failed. no stored cert and SENSITIVE_MQTT_TLS_CA_CERT is undefined.");
+    return false;
+#else
+    if (strlen(SENSITIVE_MQTT_TLS_CA_CERT) == 0) {
+      appLogError("resolveOtaTlsCaCertificate failed. no stored cert and fallback header cert is empty.");
+      return false;
+    }
+    *tlsCaCertOut = String(SENSITIVE_MQTT_TLS_CA_CERT);
+    appLogWarn("resolveOtaTlsCaCertificate: fallback to header cert because stored cert load failed.");
+    return true;
+#endif
+  }
+  if (storedTlsCaCert.length() > 0) {
+    *tlsCaCertOut = storedTlsCaCert;
+    appLogInfo("resolveOtaTlsCaCertificate: use /certs certificate for OTA. issueNo=%s setAt=%s",
+               certIssueNo.c_str(),
+               certSetAt.c_str());
+    return true;
+  }
+
+#if !defined(SENSITIVE_MQTT_TLS_CA_CERT)
+  appLogError("resolveOtaTlsCaCertificate failed. no stored cert and SENSITIVE_MQTT_TLS_CA_CERT is undefined.");
+  return false;
+#else
+  if (strlen(SENSITIVE_MQTT_TLS_CA_CERT) == 0) {
+    appLogError("resolveOtaTlsCaCertificate failed. no stored cert and fallback header cert is empty.");
+    return false;
+  }
+  *tlsCaCertOut = String(SENSITIVE_MQTT_TLS_CA_CERT);
+  appLogWarn("resolveOtaTlsCaCertificate: fallback to header cert. configure /certs certificate as primary.");
+  return true;
+#endif
+}
 
 /**
  * @brief OTA向けTLSクライアント。
@@ -503,8 +580,14 @@ bool executeSingleOtaAttempt(const otaStartRequestContext& requestContext,
 
   if (useTls) {
     secureClient.setTimeout(15000);
-    secureClient.setCACert(SENSITIVE_MQTT_TLS_CA_CERT);
-    secureClient.setTlsValidationContext(urlInfo.host.c_str(), SENSITIVE_MQTT_TLS_CA_CERT);
+    if (!resolveOtaTlsCaCertificate(&otaTlsCaCertRuntime) || otaTlsCaCertRuntime.length() == 0) {
+      *errorDetailOut = "ota tls cert unavailable";
+      appLogError("executeSingleOtaAttempt failed. OTA TLS cert is unavailable. url=%s",
+                  requestContext.firmwareUrl.c_str());
+      return false;
+    }
+    secureClient.setCACert(otaTlsCaCertRuntime.c_str());
+    secureClient.setTlsValidationContext(urlInfo.host.c_str(), otaTlsCaCertRuntime.c_str());
     connectResult = secureClient.connect(resolvedIpAddress, urlInfo.port);
     activeClient = &secureClient;
   } else {

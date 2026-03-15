@@ -41,15 +41,20 @@
 - 未配置時はOTA HTTPSサーバーを起動せず警告ログを出力する。
 - 配布バイナリは `ota/firmware.bin` に置く。
 
-## 5. 自動起動（Task Scheduler）
+## 5. インストール/アンインストール（003-0015）
+- インストール: `scripts/install-local-server.ps1` を実行（npm install / build、data/logs/uploads/certs 作成、オプションで Task Scheduler 登録）。
+- アンインストール: `scripts/uninstall-local-server.ps1` を実行（プロセス停止、Task Scheduler 解除、機密データ上書き消去、監査ログ出力）。
+- [厳守] 詳細は `IoT/コマンド仕様書.md` 4.1 を参照する。
+
+## 6. 自動起動（Task Scheduler）
 - PowerShell（管理者）で `scripts/install-task-scheduler.ps1` を実行。
 - 実行後、PC起動時に `npm run start` が自動起動する。
 
-## 6. API一覧（最小）
+## 7. API一覧（最小）
 - `GET /api/health`
 - `GET /api/devices`
 - `POST /api/commands/status` body: `{ "targetNames": "all" }` または `{ "targetNames": ["IoT_xxx"] }`
-- `POST /api/commands/ota` body: `{ "targetNames": "all" }` または `{ "targetNames": ["IoT_xxx"] }`
+- `POST /api/commands/ota` body: `{ "targetNames": "all" }` または `{ "targetNames": ["IoT_xxx"] }`（[003-0001] `Authorization: Bearer <adminToken>` 必須）
 - `POST /api/workflows/pairing/start`
 - `POST /api/workflows/key-rotation/start`
 - `POST /api/workflows/signed-ota/start`
@@ -63,13 +68,14 @@
 - `GET /api/admin/devices`
 - `POST /api/admin/commands/maintenance-reboot`
 
-## 7. セキュリティ境界
+## 8. セキュリティ境界
 - [厳守] `LocalServer` は `SecretCore` の用途固定 API を呼び出すのみとし、汎用署名APIや raw key 取得APIを持たない。
 - [厳守] `runPairingSession()` 実行時は Wi-Fi / MQTT / OTA / 認証情報の必須項目を `LocalServer` 側で事前検証し、不足時は処理を開始しない。
 - [禁止] `POST /api/pairing/bundle` のような内部 helper 直公開 API を持たない。
 - [厳守] `Production` 専用の eFuse 最終有効化機能は、本READMEの通常運用スコープへ含めない。
 
-## 8. 変更履歴
+## 9. 変更履歴
+- 2026-03-14: [003-0015] インストール/アンインストール（5節）を追加。コマンド仕様書 4.1 参照を記載。理由: 安全消去付き運用を README から辿れるようにするため。
 - 2026-03-11: 管理者画面認証、鍵発行、AP一括設定、統合一覧、メンテナンス再起動、eFuse分離方針を追記。理由: LocalServer 管理画面要件を README で即参照可能にするため。
 - 2026-03-09: workflow 公開 API（`/api/workflows/...`）と `createPairingBundle` 直公開禁止を追記。理由: 公開 API と内部 helper の境界を README でも明確化するため。
 - 2026-03-09: `LocalServer` の責任範囲、`SecretCore` との境界、`Production` 非混在、`createPairingBundle` 前段検証責務を追記。理由: 通常運用サーバーとしての役割を現在設計へ合わせるため。

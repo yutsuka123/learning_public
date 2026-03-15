@@ -7,7 +7,7 @@
  * - [禁止] 不正JSON受信でプロセス全体を停止させない。
  */
 
-import { deviceState, otaProgressMessage, statusMessage } from "./types";
+import { deviceState, otaProgressMessage, statusMessage, trhMessage } from "./types";
 
 /**
  * @description デバイス状態のインメモリ管理クラス。
@@ -15,13 +15,15 @@ import { deviceState, otaProgressMessage, statusMessage } from "./types";
 export class DeviceRegistry {
   private readonly deviceMap = new Map<string, deviceState>();
   private readonly offlineTimeoutMs: number;
+  private readonly enableLocalOfflineTimeout: boolean;
 
   /**
    * @description コンストラクタ。
    * @param statusOfflineTimeoutSeconds 受信途絶時にofflineへ遷移する秒数。
    */
-  public constructor(statusOfflineTimeoutSeconds: number) {
+  public constructor(statusOfflineTimeoutSeconds: number, enableLocalOfflineTimeout: boolean = true) {
     this.offlineTimeoutMs = Math.max(1, statusOfflineTimeoutSeconds) * 1000;
+    this.enableLocalOfflineTimeout = enableLocalOfflineTimeout;
   }
 
   /**
@@ -41,6 +43,8 @@ export class DeviceRegistry {
 
     const nextState: deviceState = {
       deviceName: normalizedDeviceName,
+      publicId: status.publicId,
+      configVersion: status.configVersion,
       srcId: status.srcId,
       dstId: status.dstId,
       macAddr: status.macAddr,
@@ -61,11 +65,23 @@ export class DeviceRegistry {
       lastMessageId: status.messageId,
       lastStatusSub: status.statusSub,
       lastSeenAt: status.receivedAt,
-      statusTopic: status.topic
+      statusTopic: status.topic,
+      temperatureC: previousState?.temperatureC ?? null,
+      humidityRh: previousState?.humidityRh ?? null,
+      pressureHpa: previousState?.pressureHpa ?? null,
+      environmentSensorId: previousState?.environmentSensorId ?? "",
+      environmentSensorAddress: previousState?.environmentSensorAddress ?? "",
+      environmentUpdatedAt: previousState?.environmentUpdatedAt ?? ""
     };
 
     if (previousState !== undefined && nextState.firmwareVersion.length === 0) {
       nextState.firmwareVersion = previousState.firmwareVersion;
+    }
+    if (previousState !== undefined && nextState.publicId.length === 0) {
+      nextState.publicId = previousState.publicId;
+    }
+    if (previousState !== undefined && nextState.configVersion.length === 0) {
+      nextState.configVersion = previousState.configVersion;
     }
     if (previousState !== undefined && nextState.firmwareWrittenAt.length === 0) {
       nextState.firmwareWrittenAt = previousState.firmwareWrittenAt;
@@ -85,6 +101,8 @@ export class DeviceRegistry {
     const previousState = this.deviceMap.get(normalizedDeviceName);
     const nextState: deviceState = {
       deviceName: normalizedDeviceName,
+      publicId: previousState?.publicId ?? "",
+      configVersion: previousState?.configVersion ?? "",
       srcId: otaProgress.srcId,
       dstId: otaProgress.dstId,
       macAddr: previousState?.macAddr ?? "",
@@ -104,9 +122,69 @@ export class DeviceRegistry {
       lastMessageId: otaProgress.messageId,
       lastStatusSub: previousState?.lastStatusSub ?? "",
       lastSeenAt: previousState?.lastSeenAt ?? "",
-      statusTopic: previousState?.statusTopic ?? ""
+      statusTopic: previousState?.statusTopic ?? "",
+      temperatureC: previousState?.temperatureC ?? null,
+      humidityRh: previousState?.humidityRh ?? null,
+      pressureHpa: previousState?.pressureHpa ?? null,
+      environmentSensorId: previousState?.environmentSensorId ?? "",
+      environmentSensorAddress: previousState?.environmentSensorAddress ?? "",
+      environmentUpdatedAt: previousState?.environmentUpdatedAt ?? ""
     };
     this.deviceMap.set(normalizedDeviceName, nextState);
+    return nextState;
+  }
+
+  /**
+   * @description 環境センサー(notice/trh)受信でレジストリを部分更新する。
+   * @param trh 受信した正規化trh。
+   * @returns 更新後のデバイス状態。
+   */
+  public updateByTrh(trh: trhMessage): deviceState {
+    const normalizedDeviceName = trh.topic.split("/").at(-1) ?? trh.srcId;
+    const previousState = this.deviceMap.get(normalizedDeviceName);
+    const isSuccess = trh.result.toUpperCase() === "OK";
+    const nextState: deviceState = {
+      deviceName: normalizedDeviceName,
+      publicId: previousState?.publicId ?? "",
+      configVersion: previousState?.configVersion ?? "",
+      srcId: trh.srcId,
+      dstId: trh.dstId,
+      macAddr: previousState?.macAddr ?? "",
+      ipAddress: previousState?.ipAddress ?? "",
+      wifiSsid: previousState?.wifiSsid ?? "",
+      firmwareVersion: previousState?.firmwareVersion ?? "",
+      firmwareWrittenAt: previousState?.firmwareWrittenAt ?? "",
+      runningPartition: previousState?.runningPartition ?? "",
+      bootPartition: previousState?.bootPartition ?? "",
+      nextUpdatePartition: previousState?.nextUpdatePartition ?? "",
+      otaProgressPercent: previousState?.otaProgressPercent ?? null,
+      otaPhase: previousState?.otaPhase ?? "",
+      otaDetail: previousState?.otaDetail ?? "",
+      otaUpdatedAt: previousState?.otaUpdatedAt ?? "",
+      onlineState: previousState?.onlineState ?? "online",
+      detail: previousState?.detail ?? "",
+      lastMessageId: trh.messageId,
+      lastStatusSub: previousState?.lastStatusSub ?? "",
+      lastSeenAt: trh.receivedAt,
+      statusTopic: previousState?.statusTopic ?? "",
+      temperatureC: isSuccess ? trh.temperatureC : previousState?.temperatureC ?? null,
+      humidityRh: isSuccess ? trh.humidityRh : previousState?.humidityRh ?? null,
+      pressureHpa: isSuccess ? trh.pressureHpa : previousState?.pressureHpa ?? null,
+      environmentSensorId: trh.sensorId.length > 0 ? trh.sensorId : previousState?.environmentSensorId ?? "",
+      environmentSensorAddress: trh.sensorAddress.length > 0 ? trh.sensorAddress : previousState?.environmentSensorAddress ?? "",
+      environmentUpdatedAt: trh.receivedAt
+    };
+    this.deviceMap.set(normalizedDeviceName, nextState);
+    return nextState;
+  }
+
+  /**
+   * @description 完成済み deviceState スナップショットで上書き更新する。
+   * @param nextState Rust 等で統合済みのデバイス状態。
+   * @returns 保持後の状態。
+   */
+  public upsertDeviceState(nextState: deviceState): deviceState {
+    this.deviceMap.set(nextState.deviceName, nextState);
     return nextState;
   }
 
@@ -115,7 +193,9 @@ export class DeviceRegistry {
    * @returns デバイス状態配列。
    */
   public listDevices(): deviceState[] {
-    this.updateOfflineByTimeout();
+    if (this.enableLocalOfflineTimeout) {
+      this.updateOfflineByTimeout();
+    }
     return Array.from(this.deviceMap.values()).sort((leftDevice, rightDevice) => {
       return leftDevice.deviceName.localeCompare(rightDevice.deviceName);
     });
@@ -126,7 +206,9 @@ export class DeviceRegistry {
    * @returns デバイス名配列。
    */
   public listDeviceNames(): string[] {
-    this.updateOfflineByTimeout();
+    if (this.enableLocalOfflineTimeout) {
+      this.updateOfflineByTimeout();
+    }
     return this.listDevices().map((deviceStateItem) => deviceStateItem.deviceName);
   }
 
@@ -134,6 +216,9 @@ export class DeviceRegistry {
    * @description status受信途絶端末をofflineへ更新する。
    */
   public updateOfflineByTimeout(): void {
+    if (!this.enableLocalOfflineTimeout) {
+      return;
+    }
     const currentTimeMs = Date.now();
     for (const [deviceName, deviceStatus] of this.deviceMap.entries()) {
       if (deviceStatus.lastSeenAt.length === 0) {

@@ -26,6 +26,7 @@
 #include "led.h"
 #include "log.h"
 #include "maintenanceMode.h"
+#include "maintenanceApServer.h"
 #include "mqtt.h"
 #include "ota.h"
 #include "otaRollback.h"
@@ -83,6 +84,8 @@ constexpr uint8_t startupButtonGpio = 4;
 constexpr uint8_t startupButtonPressedLevel = LOW;
 /** @brief 起動時AP遷移判定の長押し時間(ms)。@type uint32_t */
 constexpr uint32_t startupMaintenanceLongPressMs = 3000;
+/** @brief 起動時NTP待ちの上限(ms)。超過時は未同期でもMQTT接続へ進む。@type uint32_t */
+constexpr uint32_t startupNtpWaitMaxMs = 30000;
 
 /** @brief Wi-Fi制御タスクサービスインスタンス。 */
 wifiTask wifiService;
@@ -132,6 +135,8 @@ bool executeNtpSyncAndConfirm(const String& timeServerUrl, int32_t timeServerPor
 bool createMaintenanceApSsidText(String* apSsidTextOut);
 bool startMaintenanceApModeAndHold(i2cService* i2cModuleOut);
 bool detectStartupMaintenanceLongPress();
+bool detectMaintenanceApModeRebootLongPress();
+bool shouldAllowStartupMqttWithoutSyncedTime(uint32_t mainTaskEntryCpuMillis);
 
 /**
  * @brief パスワード等の秘匿値をログ表示用にマスクする。
@@ -479,9 +484,21 @@ bool startMaintenanceApModeAndHold(i2cService* i2cModuleOut) {
   if (i2cModuleOut != nullptr) {
     i2cModuleOut->requestLcdText("MaintenanceMode", maintenanceApSsid.substring(0, 16).c_str(), 0);
   }
+  const bool maintenanceServerStartResult = maintenanceApServer::start(maintenanceApSsid, &sensitiveDataModule);
+  if (!maintenanceServerStartResult) {
+    appLogError("startMaintenanceApModeAndHold failed. maintenanceApServer::start returned false.");
+    return false;
+  }
+  pinMode(startupButtonGpio, INPUT_PULLUP);
 
   // [重要] APモード専用処理。通常のWi-Fi/MQTT初期化には進ませない。
   for (;;) {
+    maintenanceApServer::loopOnce();
+    if (detectMaintenanceApModeRebootLongPress()) {
+      appLogWarn("startMaintenanceApModeAndHold: reboot requested by button long press in AP mode.");
+      ledController::indicateButtonLongPressRebootPattern();
+      esp_restart();
+    }
     ledController::indicateMaintenanceModeBluePatternCycle();
   }
 }
@@ -506,6 +523,53 @@ bool detectStartupMaintenanceLongPress() {
     vTaskDelay(pdMS_TO_TICKS(30));
   }
   appLogWarn("detectStartupMaintenanceLongPress: 3s long press detected.");
+  return true;
+}
+
+/**
+ * @brief APモード中の3秒長押し再起動要求を判定する。
+ * @return 長押し再起動成立時true。
+ */
+bool detectMaintenanceApModeRebootLongPress() {
+  static bool isPressing = false;
+  static uint32_t pressedStartMs = 0;
+  const bool isPressed = (digitalRead(startupButtonGpio) == startupButtonPressedLevel);
+  if (!isPressed) {
+    isPressing = false;
+    pressedStartMs = 0;
+    return false;
+  }
+  if (!isPressing) {
+    isPressing = true;
+    pressedStartMs = millis();
+    appLogInfo("detectMaintenanceApModeRebootLongPress: button press started in AP mode.");
+    return false;
+  }
+  if (millis() - pressedStartMs < startupMaintenanceLongPressMs) {
+    return false;
+  }
+  isPressing = false;
+  pressedStartMs = 0;
+  appLogWarn("detectMaintenanceApModeRebootLongPress: 3s long press detected in AP mode.");
+  return true;
+}
+
+/**
+ * @brief 起動時NTP待ちが長過ぎる場合にMQTT接続を許可する判定。
+ * @param mainTaskEntryCpuMillis mainTask開始時刻(ms)。
+ * @return 許可する場合true。
+ */
+bool shouldAllowStartupMqttWithoutSyncedTime(uint32_t mainTaskEntryCpuMillis) {
+  static bool hasLoggedFallback = false;
+  const uint32_t elapsedMs = millis() - mainTaskEntryCpuMillis;
+  if (elapsedMs < startupNtpWaitMaxMs) {
+    return false;
+  }
+  if (!hasLoggedFallback) {
+    hasLoggedFallback = true;
+    appLogWarn("mainTaskEntry: NTP wait timeout reached. continue MQTT connect without UTC sync. elapsedMs=%lu",
+               static_cast<unsigned long>(elapsedMs));
+  }
   return true;
 }
 
@@ -575,6 +639,7 @@ void mainTaskEntry(void* taskParameter) {
   String wifiSsid;
   String wifiPass;
   String mqttUrl;
+  String mqttUrlName;
   String mqttUser;
   String mqttPass;
   int32_t mqttPort = 0;
@@ -588,7 +653,7 @@ void mainTaskEntry(void* taskParameter) {
     appLogWarn("mainTaskEntry: loadWifiCredentials failed. fallback empty values.");
   }
 
-  bool mqttLoadResult = sensitiveDataModule.loadMqttConfig(&mqttUrl, &mqttUser, &mqttPass, &mqttPort, &mqttTls);
+  bool mqttLoadResult = sensitiveDataModule.loadMqttConfig(&mqttUrl, &mqttUrlName, &mqttUser, &mqttPass, &mqttPort, &mqttTls);
   if (!mqttLoadResult) {
     appLogWarn("mainTaskEntry: loadMqttConfig failed. fallback default values.");
     mqttPort = 8883;
@@ -765,7 +830,8 @@ void mainTaskEntry(void* taskParameter) {
 
     const bool isStartupPhase = !isStartupStatusPublished;
     const bool canRegisterWillWithSynchronizedTime = isUtcTimeSynchronized();
-    const bool canStartMqttConnect = !isStartupPhase || canRegisterWillWithSynchronizedTime;
+    const bool startupNtpWaitTimedOut = shouldAllowStartupMqttWithoutSyncedTime(mainTaskEntryCpuMillis);
+    const bool canStartMqttConnect = !isStartupPhase || canRegisterWillWithSynchronizedTime || startupNtpWaitTimedOut;
     if (isWifiReady && !isMqttReady && !canStartMqttConnect) {
       // [重要] 起動フェーズのWill登録はUTC同期後に行う。
       // [理由] Willのts/startUpTimeへ時刻を入れ、(unsynchronized)フォールバックを常用しないため。

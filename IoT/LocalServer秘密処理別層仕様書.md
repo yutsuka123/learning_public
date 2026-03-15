@@ -21,8 +21,8 @@
 - [補足] 同一PC侵害は運用PC管理者責任の範囲として扱う。
 
 ### 1.3 責任範囲の親定義
-- [厳守] `LocalServer` / `SecretCore` / `Production` / `ESP32` / `LocalSoft` の責任境界は `モジュール仕様書.md` を親定義とする。
-- [厳守] 本書はそのうち `LocalServer` と `SecretCore` の境界を詳細化する文書とし、`Production` の製造責務や `LocalSoft` の保存責務を取り込まない。
+- [厳守] `LocalServer` / `SecretCore` / `Production` / `ESP32` の責任境界は `モジュール仕様書.md` を親定義とする。
+- [厳守] 本書はそのうち `LocalServer` と `SecretCore` の境界を詳細化する文書とし、`Production` の製造責務を取り込まない。
 
 ## 2. アーキテクチャ概要
 ```text
@@ -75,14 +75,34 @@ TPM
 - [厳守] `wrapped_secret` のみを保存する。
 
 ## 4. TS本体と SecretCore の責務分担
+### 4.0 現在の到達点と残課題
+- [重要][2026-03-15] 現在の実装では、`SecretCore` は鍵管理、暗号化/復号、バックアップ、fingerprint 取得に加え、Stage1 の MQTT command publish、Stage2 の notice subscribe / 受信イベントキュー、Stage3 の `k-device` 復号と最小DTO正規化、Stage4 の `deviceState` 完成スナップショット統合、Stage5 の `offline timeout` 判定、Stage6 の `status recovery wait`、Stage7 の OTA workflow 開始/監視/状態取得を担当する。
+- [重要][2026-03-15] 現在の実装では、`LocalServer` は Rust から受けた `deviceState` を保持し、WebSocket/UI 更新、OTA HTTPS 配布、REST 公開を担当している。
+- [重要][2026-03-15] 上記は最終要件「高リスク通信を含む通信まで Rust 主導」との間に差分があるため、`003-0012` は [部分完了] として扱う。
+- [厳守][2026-03-15] `003-0013` 対応として、TypeScript から SecretCore を呼ぶ窓口は `SecretCoreFacade` のみとし、`SecretCoreIpcClient` の直接利用を禁止する。
+- [進捗][2026-03-15] `003-0012` の次段階として、`server.ts` は `deviceTransport` IF に依存し、`mqttGateway` はその TS 実装として扱う構成へ移行開始した。
+- [進捗][2026-03-15] `mqttGateway` の command publish は `SecretCoreFacade -> mqtt_publish` を経由する構成へ切替済み。
+- [進捗][2026-03-15] `mqttGateway` の notice subscribe は `SecretCoreFacade -> mqtt_start_receiver / mqtt_drain_events` を経由する構成へ移行開始した。
+- [進捗][2026-03-15] `mqttGateway` の Rust モードでは raw topic/payload ではなく、`statusUpdated` / `trhUpdated` / `otaProgressUpdated` / `secureEchoUpdated` の DTO を受け取る構成へ更新した。
+- [進捗][2026-03-15] `mqttGateway` の Rust モードでは `deviceState` 完成スナップショットも受け取り、TS 側は `registry.upsertDeviceState()` で保持する構成へ更新した。
+- [進捗][2026-03-15] `mqttGateway` の Rust モードでは `deviceStateUpdated` による `offline timeout` 更新も受け取り、TS 側ローカル timeout 判定を無効化した。
+- [進捗][2026-03-15] `waitForStatusRecoveryByDevice()` は Rust モード時 `SecretCoreFacade -> wait_for_status_recovery` を使い、TS 側 polling ループを通さずに online 復帰待機を行う構成へ更新した。
+- [進捗][2026-03-15] `/api/workflows/signed-ota/start` と `GET /api/workflows/:workflowId` は Rust workflow を呼ぶ薄い窓口として追加し、TS 側は OTA 開始後の逐次手順を保持しない構成へ移行開始した。
+- [重要][2026-03-15] 起動時は `SecretCore` readiness を確認後に `gateway.connect()` する。理由: pipe 生成前に strict 復号要求が先行し、起動直後の受信失敗ノイズが出るため。
+
 ### 4.1 TypeScript 本体（LocalServer）担当
 - Web UI（デバイス一覧、OTA操作、設定画面）
 - REST API
 - WebSocket 配信
-- MQTT 通常監視
-- OTA 配布エンドポイント提供（HTTPS）
+- MQTT 受信DTO/`deviceState` スナップショットの保持・UI反映
+- MQTT command publish の要求生成と `SecretCoreFacade` への委譲
+- MQTT notice 受信DTOの drain と `DeviceRegistry` / UI 反映
+- Rust モード時の `deviceStateUpdated` 受信と画面反映
+- Rust モード時の `wait_for_status_recovery` 呼び出し
+- Rust 側 workflow 開始API / 状態取得API の公開
+- OTA 配布エンドポイント提供（HTTPS） [旧仕様][2026-03-15 時点]
 - 公開設定管理
-- SecretCore への IPC 依頼送信と結果受信
+- `SecretCoreFacade` 経由での IPC 依頼送信と結果受信
 - AP 共通トップ画面、Production 追加認証前の通常画面制御
 - 高リスクワークフロー実行前の入力検証、進行状態管理、監査表示
 - `public_id`、`keyVersion`、再ペアリング状態などのメタ情報管理
@@ -100,6 +120,14 @@ TPM
 - `k-device` 導出
 - HMAC / 署名生成
 - AES-GCM payload 生成/検証補助
+- `k-user` のパスワード暗号化バックアップ出力/復元
+- MQTT command publish（Stage1）
+- MQTT notice subscribe / 受信イベントキュー（Stage2）
+- MQTT notice payload の `k-device` 復号と最小DTO正規化（Stage3）
+- `deviceState` 完成スナップショット統合（Stage4）
+- `offline timeout` 判定と `deviceStateUpdated` 生成（Stage5）
+- `status recovery wait` と online 復帰結果返却（Stage6）
+- OTA workflow `run_signed_ota_command` / `get_workflow_status`（Stage7）
 - workflow 内部での `createPairingBundle` 生成
 - AP モード ECDH セッション鍵生成
 - 高リスク処理の対ESP32通信開始、進捗管理、完了判定
@@ -115,6 +143,9 @@ TPM
 - [厳守] `LocalServer` は高リスク処理の逐次通信手順を保持せず、開始要求と進捗表示のみを行う。
 - [厳守] `SecretCore` は通常運用 UI、MQTT 状態表示、SQLite 保存、製造画面制御を担当しない。
 - [厳守] `Production` に属する eFuse 最終有効化、製造ログ主記録、工場内セキュア化主体は本書の対象外とする。
+- [厳守] `SecretCoreIpcClient` は low-level 実装とし、業務コードから直接 `sendRequest()` を呼ばない。必ず `SecretCoreFacade` を経由する。
+- [厳守] `SecretCoreFacade` の戻り値は fingerprint、status、workflow 状態、暗号化済み payload などの最小DTOに限定する。
+- [禁止] Web UI / REST handler が low-level IPC コマンド名や payload 形式を直接知る構成。
 
 ### 4.4 ワークフロー進捗状態
 - [厳守] 高リスクワークフローの進捗状態は `queued` / `running` / `waiting_device` / `verifying` / `completed` / `failed` を正規値とする。
@@ -150,7 +181,7 @@ TPM
 ### 6.2 接続制限
 **Windows（Named Pipe）**
 ```text
-PipeName: \\.\pipe\IoT_SecretCore_<machineId>
+PipeName: \\.\pipe\iot-secret-core-<machineId>-<sessionId>
 DACL:
   - LocalServer 実行ユーザーSIDのみ ReadWrite 許可
   - Everyone 拒否
@@ -158,13 +189,18 @@ DACL:
 ```
 
 - [厳守] `machineId` を Pipe 名へ含める。
+- [厳守] `sessionId` は LocalServer 起動ごとにランダム生成し、固定化しない。
 - [厳守] SecretCore は LocalServer の子プロセスとして起動する。
+- [重要] 現在実装では、LocalServer 親プロセスがランダムな Pipe 名と 32byte セッション鍵を生成し、環境変数で SecretCore 子プロセスへ渡す。
 
 ### 6.3 IPC通信保護
 - [厳守] IPC チャネルは AES-256-GCM + nonce + requestId で保護する。
 - [厳守] `nonce` は再利用禁止とする。
 - [厳守] `requestId` は `crypto.randomUUID()` 等の暗号学的乱数で生成する。
 - [厳守] `timestamp` は ±30秒以内のみ受理する。
+- [厳守] SecretCore は受信済み `requestId` を短時間キャッシュし、同一 `requestId` の再送を拒否する。
+- [重要] 現在実装では、AAD を `v=1|rid=<requestId>|ts=<timestamp>` / `v=1|rrid=<requestId>|ts=<timestamp>` の固定文字列で構成し、Node/Rust 間の順序差による検証不一致を防ぐ。
+- [旧仕様] `SECRET_CORE_IPC_SESSION_KEY_B64` 未指定の手動起動時のみ、互換の平文IPCを許可する。理由: 既存保守スクリプトとの互換維持のため。ただし通常運用では使用しない。
 
 ## 7. SecretCore の公開 API（限定）
 ### 7.1 許可 API
@@ -177,7 +213,19 @@ DACL:
 | `runProductionSecureFlow` | Production 高リスク処理を開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `runSignedOtaCommand` | 署名付き OTA 開始ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `getWorkflowStatus` | workflow の進捗状態と結果を取得 | 状態、結果、エラー要約 |
+| `issue_k_user` | k-user 発行状態を保証し fingerprint を返す | `isIssued` `keyFingerprint` `source` |
+| `get_k_user_status` | k-user 状態取得 | `isIssued` `issuedAt` `keyFingerprint` `deviceKeyCount` `source` |
 | `verifyInboundHmac` | 受信HMAC検証 | bool |
+| `encrypt` / `decrypt` | `k-device` による暗号化/復号 | 暗号化済み payload / 復号文字列 |
+| `export_k_user` / `import_k_user_backup` | `k-user` の暗号化バックアップ出力/復元 | ファイル出力結果 / 復元結果 |
+| `mqtt_publish` | MQTT broker へ QoS付き publish を実行する（Stage1: command publish用） | `published` `topic` `qos` `payloadLength` |
+| `mqtt_start_receiver` / `mqtt_drain_events` | MQTT notice subscribe 常駐ループ起動と受信イベント取り出し（Stage2） | 起動結果 / 受信イベント配列 |
+| `mqtt_drain_events` Stage3 | `status/trh/otaProgress/secureEcho` の最小DTOを返す | DTO配列 |
+| `mqtt_drain_events` Stage4 | `deviceState` 完成スナップショット付きで返す | DTO + deviceState |
+| `mqtt_drain_events` Stage5 | `offline timeout` 検出時に `deviceStateUpdated` を返す | DTO + deviceState |
+| `wait_for_status_recovery` Stage6 | Rust 側 `deviceState` を参照して online 復帰を待機する | `deviceName/publicId/firmwareVersion/configVersion` |
+| `run_signed_ota_command` Stage7 | 単一対象機の OTA workflow を開始し、publish〜進捗監視〜完了判定を Rust 側で実行する | `workflowId/state/...` |
+| `get_workflow_status` Stage7 | workflow 状態を取得する | `workflowId/state/result/errorSummary/...` |
 | `exportWrappedSecretBackup` | `wrapped_secret` のバックアップ準備 | ファイル出力結果 |
 | `restoreWrappedSecretBackup` | `wrapped_secret` の復元 | 成功/失敗 |
 | `getAuditLog` | 監査ログ取得 | 秘密値を含まない配列 |
@@ -319,6 +367,16 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-03-15: Stage7 の OTA workflow（`run_signed_ota_command` / `get_workflow_status`）と TS 側薄い窓口化を追記。理由: `003-0012` の高リスク通信workflow移行開始を文書へ同期するため。
+- 2026-03-15: Stage6 の `wait_for_status_recovery` IPC と TS wait ループ委譲を追記。理由: `003-0012` の完了判定監視責務移行を文書へ同期するため。
+- 2026-03-15: Stage5 の Rust `offline timeout` 判定と `deviceStateUpdated` を追記。理由: `003-0012` の状態遷移責務移行を文書へ同期するため。
+- 2026-03-15: Stage4 の Rust `deviceState` 完成スナップショット統合を追記。理由: `003-0012` の状態統合責務移行を文書へ同期するため。
+- 2026-03-15: Stage3 の Rust `k-device` 復号と最小DTO正規化を追記。理由: `003-0012` の受信payload処理移行開始を文書へ同期するため。
+- 2026-03-15: Stage2 の Rust notice subscribe / 受信イベントキュー（`mqtt_start_receiver` / `mqtt_drain_events`）を追記。理由: `003-0012` の subscribe Rust化開始を文書へ同期するため。
+- 2026-03-15: `mqtt_publish` による Stage1 の Rust MQTT command publish と、起動時 `SecretCore` readiness 待機を追記。理由: `003-0012` の最初の通信Rust化を文書へ同期するため。
+- 2026-03-15: IPC 保護の現行実装（ランダム Pipe 名、32byte セッション鍵、AES-256-GCM、requestId リプレイ拒否、互換モード条件）を追記。理由: `003-0014` の実装実態を文書へ同期するため。
+- 2026-03-15: `SecretCoreFacade` による境界IF固定、`003-0012` の [部分完了] 扱い、現時点で MQTT/OTA 通信スタックは TS 側担当である整理を追記。理由: 実装実態と最終要件の差分を明示しつつ、UI とセキュア部の境界を固定するため。
+- 2026-03-13: 親定義参照から `LocalSoft` を除外。理由: `LocalSoft` 廃止方針に合わせ、別層仕様の責任境界を現行構成へ同期するため。
 - 2026-03-10: `k-user-backup.enc` とパスワードによる別PC復旧経路を追加し、`wrapped_secret` 単独前提の復元制約を更新。理由: 冗長化・多重接続方針に合わせて復旧性を確保するため。
 - 2026-03-09: `LocalServer` の workflow 公開 REST 経路（`/api/workflows/...`）と、`createPairingBundle` 直公開禁止を追加。理由: 外部公開 API と `SecretCore` 内部 helper の境界を実装前に明確化するため。
 - 2026-03-09: `runPairingSession()` / `runKeyRotationSession()` / `runProductionSecureFlow()` / `runSignedOtaCommand()` と workflow 進捗状態を追加し、TS は開始要求と進捗表示中心へ更新。理由: 高リスク処理を Rust 側で通信開始から完了判定まで責任を持つ構成へ改めるため。

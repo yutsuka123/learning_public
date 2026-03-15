@@ -11,6 +11,7 @@ import fs from "fs";
 import path from "path";
 import crypto from "crypto";
 import { appConfig } from "./config";
+import { SecretCoreFacade, secretCoreEncryptedPayload } from "./secretCoreFacade";
 
 interface encryptedBlob {
   ivBase64: string;
@@ -35,9 +36,13 @@ interface keyStoreEnvelope {
 export class keyService {
   private readonly storeFilePath: string;
   private readonly appConfig: appConfig;
+  private readonly secretCoreFacade?: SecretCoreFacade;
+  private readonly useSecretCore: boolean;
 
-  public constructor(config: appConfig) {
+  public constructor(config: appConfig, secretCoreFacade?: SecretCoreFacade, useSecretCore: boolean = false) {
     this.appConfig = config;
+    this.secretCoreFacade = secretCoreFacade;
+    this.useSecretCore = useSecretCore;
     const dataDirectoryPath = path.resolve(process.cwd(), "data");
     if (!fs.existsSync(dataDirectoryPath)) {
       fs.mkdirSync(dataDirectoryPath, { recursive: true });
@@ -49,7 +54,11 @@ export class keyService {
    * @description k-user を発行して保存する。
    * @returns 発行結果（指紋のみ）。
    */
-  public issueKUser(): { issuedAt: string; keyFingerprint: string } {
+  public async issueKUser(): Promise<{ issuedAt: string; keyFingerprint: string }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      const issuedResult = await this.secretCoreFacade.issueKUser();
+      return { issuedAt: new Date().toISOString(), keyFingerprint: issuedResult.keyFingerprint };
+    }
     const nextPayload = this.readPayload();
     const issuedAt = new Date().toISOString();
     const kUserBuffer = crypto.randomBytes(32);
@@ -64,11 +73,49 @@ export class keyService {
   }
 
   /**
+   * @description k-user 発行状態を返す。
+   * @returns 発行状態。
+   */
+  public async getKUserStatus(): Promise<{ isIssued: boolean; issuedAt: string; keyFingerprint: string; deviceKeyCount: number }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      const statusResult = await this.secretCoreFacade.getKUserStatus();
+      return {
+        isIssued: statusResult.isIssued,
+        issuedAt: statusResult.issuedAt,
+        keyFingerprint: statusResult.keyFingerprint,
+        deviceKeyCount: statusResult.deviceKeyCount
+      };
+    }
+    const payload = this.readPayload();
+    if (payload.kUserBase64.length === 0) {
+      return {
+        isIssued: false,
+        issuedAt: "",
+        keyFingerprint: "",
+        deviceKeyCount: Object.keys(payload.deviceKeys).length
+      };
+    }
+    const kUserBuffer = this.getKUserBufferFromPayload(payload);
+    return {
+      isIssued: true,
+      issuedAt: payload.kUserIssuedAt,
+      keyFingerprint: this.createFingerprintText(kUserBuffer),
+      deviceKeyCount: Object.keys(payload.deviceKeys).length
+    };
+  }
+
+  /**
    * @description 対象デバイス向け k-device を導出し保存する。
    * @param targetDeviceName 対象デバイス名。
    * @returns 導出結果。
    */
-  public issueKDevice(targetDeviceName: string): { targetDeviceName: string; issuedAt: string; keyDeviceBase64: string; keyFingerprint: string } {
+  public async issueKDevice(targetDeviceName: string): Promise<{ targetDeviceName: string; issuedAt: string; keyDeviceBase64: string; keyFingerprint: string }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      const result = await this.secretCoreFacade.getKDevice(targetDeviceName);
+      const keyDeviceBase64 = result.keyDeviceBase64;
+      const keyFingerprint = crypto.createHash("sha256").update(Buffer.from(keyDeviceBase64, "base64")).digest("hex").slice(0, 16);
+      return { targetDeviceName, issuedAt: new Date().toISOString(), keyDeviceBase64, keyFingerprint };
+    }
     if (targetDeviceName.trim().length === 0) {
       throw new Error("issueKDevice failed. targetDeviceName is empty.");
     }
@@ -95,7 +142,11 @@ export class keyService {
    * @param targetDeviceName 対象デバイス名。
    * @returns Base64文字列。
    */
-  public getKDeviceBase64(targetDeviceName: string): string {
+  public async getKDeviceBase64(targetDeviceName: string): Promise<string> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      const result = await this.secretCoreFacade.getKDevice(targetDeviceName);
+      return result.keyDeviceBase64;
+    }
     const loadedPayload = this.readPayload();
     const found = loadedPayload.deviceKeys[targetDeviceName];
     if (found === undefined) {
@@ -110,8 +161,12 @@ export class keyService {
    * @param plainText 平文。
    * @returns 暗号化オブジェクト。
    */
-  public encryptByKDevice(targetDeviceName: string, plainText: string): { alg: "A256GCM"; ivBase64: string; cipherBase64: string; tagBase64: string } {
-    const keyDeviceBuffer = Buffer.from(this.getKDeviceBase64(targetDeviceName), "base64");
+  public async encryptByKDevice(targetDeviceName: string, plainText: string): Promise<{ alg: "A256GCM"; ivBase64: string; cipherBase64: string; tagBase64: string }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      return await this.secretCoreFacade.encryptByKDevice(targetDeviceName, plainText);
+    }
+    const keyBase64 = await this.getKDeviceBase64(targetDeviceName);
+    const keyDeviceBuffer = Buffer.from(keyBase64, "base64");
     if (keyDeviceBuffer.length !== 32) {
       throw new Error(`encryptByKDevice failed. key length must be 32 bytes. targetDeviceName=${targetDeviceName} actual=${keyDeviceBuffer.length}`);
     }
@@ -133,11 +188,15 @@ export class keyService {
    * @param encrypted 暗号化オブジェクト。
    * @returns 復号平文。
    */
-  public decryptByKDevice(
+  public async decryptByKDevice(
     targetDeviceName: string,
     encrypted: { ivBase64: string; cipherBase64: string; tagBase64: string }
-  ): string {
-    const keyDeviceBuffer = Buffer.from(this.getKDeviceBase64(targetDeviceName), "base64");
+  ): Promise<string> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      return await this.secretCoreFacade.decryptByKDevice(targetDeviceName, encrypted as secretCoreEncryptedPayload);
+    }
+    const keyBase64 = await this.getKDeviceBase64(targetDeviceName);
+    const keyDeviceBuffer = Buffer.from(keyBase64, "base64");
     if (keyDeviceBuffer.length !== 32) {
       throw new Error(`decryptByKDevice failed. key length must be 32 bytes. targetDeviceName=${targetDeviceName} actual=${keyDeviceBuffer.length}`);
     }

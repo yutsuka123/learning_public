@@ -12,28 +12,16 @@ import { EventEmitter } from "events";
 import mqtt, { MqttClient, IClientOptions } from "mqtt";
 import { appConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
-import { mqttCommandPayload, otaProgressMessage, statusMessage } from "./types";
-
-export interface secureEchoMessage {
-  topic: string;
-  srcId: string;
-  requestId: string;
-  ivBase64: string;
-  cipherBase64: string;
-  tagBase64: string;
-  receivedAt: string;
-}
+import { deviceTransport, deviceTransportEventMap, secureEchoMessage } from "./deviceTransport";
+import { keyService } from "./keyService";
+import { mqttPayloadSecurityService, resolveMqttPayloadEncryptionMode } from "./mqttPayloadSecurity";
+import { SecretCoreFacade } from "./secretCoreFacade";
+import { mqttCommandPayload, otaProgressMessage, statusMessage, trhMessage } from "./types";
 
 /**
  * @description MQTTイベントの型。
  */
-interface mqttGatewayEvents {
-  statusUpdated: [status: statusMessage];
-  otaProgressUpdated: [otaProgress: otaProgressMessage];
-  secureEchoUpdated: [secureEcho: secureEchoMessage];
-  connected: [];
-  disconnected: [];
-}
+type mqttGatewayEvents = deviceTransportEventMap;
 
 type mqttCommandKind = "call" | "set" | "get" | "network";
 const commandPublishQos: 1 = 1;
@@ -54,12 +42,18 @@ class typedEmitter extends EventEmitter {
 /**
  * @description MQTT入出力を扱うゲートウェイクラス。
  */
-export class mqttGateway {
+export class mqttGateway implements deviceTransport {
   private readonly config: appConfig;
   private readonly registry: DeviceRegistry;
+  private readonly payloadSecurityService: mqttPayloadSecurityService;
+  private readonly secretCoreFacade?: SecretCoreFacade;
+  private readonly mqttTransportMode: "ts" | "rust";
   private readonly emitter = new typedEmitter();
-  private readonly client: MqttClient;
+  private readonly client?: MqttClient;
   private readonly sourceId: string;
+  private rustPollTimer?: NodeJS.Timeout;
+  private rustPollInFlight = false;
+  private rustReceiverStartPromise?: Promise<void>;
   private readonly pendingSecureEchoMap = new Map<
     string,
     {
@@ -74,19 +68,36 @@ export class mqttGateway {
    * @param config アプリ設定。
    * @param registry 状態レジストリ。
    */
-  public constructor(config: appConfig, registry: DeviceRegistry) {
+  public constructor(
+    config: appConfig,
+    registry: DeviceRegistry,
+    localKeyService: keyService,
+    secretCoreFacade?: SecretCoreFacade,
+    mqttTransportMode: "ts" | "rust" = "ts"
+  ) {
     this.config = config;
     this.registry = registry;
     this.sourceId = config.sourceId;
-    this.client = this.createClient();
-    this.registerClientHandlers();
+    this.payloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
+    this.secretCoreFacade = secretCoreFacade;
+    this.mqttTransportMode = mqttTransportMode;
+    console.info(`mqttGateway: payload encryption mode=${this.payloadSecurityService.getMode()}`);
+    console.info(`mqttGateway: transport mode=${this.mqttTransportMode}`);
+    if (this.mqttTransportMode === "ts") {
+      this.client = this.createClient();
+      this.registerClientHandlers();
+    }
   }
 
   /**
    * @description MQTT接続を開始する。
    */
   public connect(): void {
-    if (this.client.connected) {
+    if (this.mqttTransportMode === "rust") {
+      void this.connectByRustBridge();
+      return;
+    }
+    if (this.client === undefined || this.client.connected) {
       return;
     }
     this.client.reconnect();
@@ -241,7 +252,9 @@ export class mqttGateway {
         args
       };
       const nextTopic = `esp32lab/${commandKind}/${subCommand}/${destinationName}`;
-      await this.publish(nextTopic, JSON.stringify(nextPayload));
+      const plainPayloadText = JSON.stringify(nextPayload);
+      const encodedPayloadText = await this.payloadSecurityService.encodeOutgoingPayload(destinationName, plainPayloadText);
+      await this.publish(nextTopic, encodedPayloadText);
     });
 
     await Promise.all(publishTasks);
@@ -266,9 +279,17 @@ export class mqttGateway {
    * @param payload JSON文字列。
    */
   private async publish(topic: string, payload: string): Promise<void> {
+    if (this.mqttTransportMode === "rust" && this.secretCoreFacade) {
+      await this.secretCoreFacade.publishMqttMessage(topic, payload, commandPublishQos);
+      return;
+    }
+    if (this.client === undefined) {
+      throw new Error(`publish failed. client is undefined. topic=${topic}`);
+    }
+    const currentClient = this.client;
     await new Promise<void>((resolve, reject) => {
       // [厳守] コマンド publish は QoS1 固定で送信する。
-      this.client.publish(topic, payload, { qos: commandPublishQos }, (publishError) => {
+      currentClient.publish(topic, payload, { qos: commandPublishQos }, (publishError) => {
         if (publishError !== undefined && publishError !== null) {
           reject(
             new Error(
@@ -314,6 +335,9 @@ export class mqttGateway {
    * @description MQTTイベントを登録する。
    */
   private registerClientHandlers(): void {
+    if (this.client === undefined) {
+      throw new Error("registerClientHandlers failed. client is undefined.");
+    }
     this.client.on("connect", () => {
       this.subscribeStatusTopics();
       this.emitter.emit("connected");
@@ -327,24 +351,9 @@ export class mqttGateway {
       console.error(`mqttGateway client error. message=${clientError.message}`);
     });
 
-    this.client.on("message", (topic, payloadBuffer) => {
+    this.client.on("message", async (topic, payloadBuffer) => {
       try {
-        const payloadText = payloadBuffer.toString("utf8");
-        if (topic.includes("/notice/otaProgress/")) {
-          const parsedOtaProgress = this.parseOtaProgressMessage(topic, payloadText);
-          this.registry.updateByOtaProgress(parsedOtaProgress);
-          this.emitter.emit("otaProgressUpdated", parsedOtaProgress);
-          return;
-        }
-        if (topic.includes("/notice/secureEcho/")) {
-          const parsedSecureEcho = this.parseSecureEchoMessage(topic, payloadText);
-          this.resolvePendingSecureEcho(parsedSecureEcho);
-          this.emitter.emit("secureEchoUpdated", parsedSecureEcho);
-          return;
-        }
-        const parsedStatus = this.parseStatusMessage(topic, payloadText);
-        this.registry.updateByStatus(parsedStatus);
-        this.emitter.emit("statusUpdated", parsedStatus);
+        await this.handleIncomingTopicPayload(topic, payloadBuffer.toString("utf8"));
       } catch (messageError) {
         const errorMessage = messageError instanceof Error ? messageError.message : String(messageError);
         console.error(`mqttGateway onMessage parse failed. topic=${topic} error=${errorMessage}`);
@@ -356,6 +365,9 @@ export class mqttGateway {
    * @description status通知トピック購読を設定する。
    */
   private subscribeStatusTopics(): void {
+    if (this.client === undefined) {
+      throw new Error("subscribeStatusTopics failed. client is undefined.");
+    }
     const topicList = ["esp32lab/notice/status/+", "esp32lab/notice/+/+"];
     for (const topicName of topicList) {
       this.client.subscribe(topicName, { qos: 1 }, (subscribeError) => {
@@ -364,6 +376,149 @@ export class mqttGateway {
         }
       });
     }
+  }
+
+  /**
+   * @description SecretCore の MQTT subscribe 受信ループを起動し、イベントpollを開始する。
+   */
+  private async connectByRustBridge(): Promise<void> {
+    if (this.secretCoreFacade === undefined) {
+      throw new Error("connectByRustBridge failed. secretCoreFacade is undefined.");
+    }
+    const facade = this.secretCoreFacade;
+    if (this.rustReceiverStartPromise === undefined) {
+      this.rustReceiverStartPromise = (async () => {
+        const startResult = await facade.startMqttReceiver();
+        console.info(
+          `mqttGateway: rust receiver start result. started=${startResult.started} alreadyRunning=${startResult.alreadyRunning}`
+        );
+        this.startRustEventPolling();
+        await this.pollRustEvents();
+      })();
+    }
+    try {
+      await this.rustReceiverStartPromise;
+    } catch (rustConnectError) {
+      const errorMessage = rustConnectError instanceof Error ? rustConnectError.message : String(rustConnectError);
+      console.error(`connectByRustBridge failed. error=${errorMessage}`);
+    }
+  }
+
+  /**
+   * @description SecretCore 受信イベントの定期pollを開始する。
+   */
+  private startRustEventPolling(): void {
+    if (this.rustPollTimer !== undefined) {
+      return;
+    }
+    this.rustPollTimer = setInterval(() => {
+      void this.pollRustEvents();
+    }, 300);
+  }
+
+  /**
+   * @description SecretCore から MQTT 受信イベントを取り出して反映する。
+   */
+  private async pollRustEvents(): Promise<void> {
+    if (this.secretCoreFacade === undefined || this.rustPollInFlight) {
+      return;
+    }
+    this.rustPollInFlight = true;
+    try {
+      const drainResult = await this.secretCoreFacade.drainMqttEvents();
+      for (const eventItem of drainResult.events) {
+        if (eventItem.kind === "connected") {
+          this.emitter.emit("connected");
+          continue;
+        }
+        if (eventItem.kind === "disconnected") {
+          if ((eventItem.detail ?? "").length > 0) {
+            console.warn(`mqttGateway rust disconnected. detail=${eventItem.detail}`);
+          }
+          this.emitter.emit("disconnected");
+          continue;
+        }
+        if (eventItem.kind === "error") {
+          console.error(`mqttGateway rust receiver error. detail=${eventItem.detail ?? ""}`);
+          continue;
+        }
+        if (eventItem.kind === "deviceStateUpdated" && eventItem.deviceState) {
+          this.registry.upsertDeviceState(eventItem.deviceState);
+          this.emitter.emit("deviceStateUpdated", eventItem.deviceState);
+          continue;
+        }
+        if (eventItem.kind === "statusUpdated" && eventItem.status) {
+          if (eventItem.deviceState) {
+            this.registry.upsertDeviceState(eventItem.deviceState);
+          } else {
+            this.registry.updateByStatus(eventItem.status);
+          }
+          this.emitter.emit("statusUpdated", eventItem.status);
+          continue;
+        }
+        if (eventItem.kind === "trhUpdated" && eventItem.trh) {
+          if (eventItem.deviceState) {
+            this.registry.upsertDeviceState(eventItem.deviceState);
+          } else {
+            this.registry.updateByTrh(eventItem.trh);
+          }
+          this.emitter.emit("trhUpdated", eventItem.trh);
+          continue;
+        }
+        if (eventItem.kind === "otaProgressUpdated" && eventItem.otaProgress) {
+          if (eventItem.deviceState) {
+            this.registry.upsertDeviceState(eventItem.deviceState);
+          } else {
+            this.registry.updateByOtaProgress(eventItem.otaProgress);
+          }
+          this.emitter.emit("otaProgressUpdated", eventItem.otaProgress);
+          continue;
+        }
+        if (eventItem.kind === "secureEchoUpdated" && eventItem.secureEcho) {
+          this.resolvePendingSecureEcho(eventItem.secureEcho);
+          this.emitter.emit("secureEchoUpdated", eventItem.secureEcho);
+          continue;
+        }
+        console.warn(`mqttGateway rust event ignored. kind=${eventItem.kind}`);
+      }
+    } catch (pollError) {
+      const errorMessage = pollError instanceof Error ? pollError.message : String(pollError);
+      console.error(`pollRustEvents failed. error=${errorMessage}`);
+    } finally {
+      this.rustPollInFlight = false;
+    }
+  }
+
+  /**
+   * @description MQTT受信topic/payloadを復号し、種別ごとに状態反映する。
+   * @param topic MQTTトピック。
+   * @param payloadText 受信payload文字列。
+   */
+  private async handleIncomingTopicPayload(topic: string, payloadText: string): Promise<void> {
+    const sourceDeviceName = this.resolveDeviceNameFromTopic(topic);
+    const decodedPayload = await this.payloadSecurityService.decodeIncomingPayload(sourceDeviceName, payloadText);
+    const effectivePayloadText = decodedPayload.plainPayloadText;
+    if (topic.includes("/notice/otaProgress/")) {
+      const parsedOtaProgress = this.parseOtaProgressMessage(topic, effectivePayloadText);
+      this.registry.updateByOtaProgress(parsedOtaProgress);
+      this.emitter.emit("otaProgressUpdated", parsedOtaProgress);
+      return;
+    }
+    if (topic.includes("/notice/secureEcho/")) {
+      const parsedSecureEcho = this.parseSecureEchoMessage(topic, effectivePayloadText);
+      this.resolvePendingSecureEcho(parsedSecureEcho);
+      this.emitter.emit("secureEchoUpdated", parsedSecureEcho);
+      return;
+    }
+    if (topic.includes("/notice/trh/")) {
+      const parsedTrh = this.parseTrhMessage(topic, effectivePayloadText);
+      this.registry.updateByTrh(parsedTrh);
+      this.emitter.emit("trhUpdated", parsedTrh);
+      return;
+    }
+    const parsedStatus = this.parseStatusMessage(topic, effectivePayloadText);
+    this.registry.updateByStatus(parsedStatus);
+    this.emitter.emit("statusUpdated", parsedStatus);
   }
 
   /**
@@ -392,6 +547,12 @@ export class mqttGateway {
       srcId,
       dstId,
       messageId,
+      publicId:
+        this.getStringValue(parsedObject, "publicId", "") ||
+        this.getStringValue(parsedObject, "public_id", ""),
+      configVersion:
+        this.getStringValue(parsedObject, "configVersion", "") ||
+        this.getStringValue(parsedObject, "configVer", ""),
       macAddr: this.getStringValue(parsedObject, "macAddr", ""),
       ipAddress: this.getStringValue(parsedObject, "ipAddress", ""),
       wifiSsid: this.getStringValue(parsedObject, "wifiSsid", ""),
@@ -465,6 +626,34 @@ export class mqttGateway {
   }
 
   /**
+   * @description 環境センサー(notice/trh) JSONを正規化する。
+   * @param topic MQTTトピック。
+   * @param payloadText JSON文字列。
+   * @returns 正規化trh。
+   */
+  private parseTrhMessage(topic: string, payloadText: string): trhMessage {
+    const parsedObject = JSON.parse(payloadText) as Record<string, unknown>;
+    const srcId = this.getStringValue(parsedObject, "SrcID", "unknown-source");
+    const dstId = this.getStringValue(parsedObject, "DstID", "");
+    const receivedAt = new Date().toISOString();
+    const argsObject = (parsedObject.args as Record<string, unknown> | undefined) ?? {};
+    return {
+      topic,
+      srcId,
+      dstId,
+      messageId: this.getStringValue(parsedObject, "id", `${srcId}-${Date.now()}`),
+      result: this.getStringValue(parsedObject, "Res", ""),
+      detail: this.getStringValue(parsedObject, "detail", ""),
+      sensorId: this.getStringValue(argsObject, "sensorId", ""),
+      sensorAddress: this.getStringValue(argsObject, "sensorAddress", ""),
+      temperatureC: this.getNumberValue(argsObject, "temperatureC"),
+      humidityRh: this.getNumberValue(argsObject, "humidityRh"),
+      pressureHpa: this.getNumberValue(argsObject, "pressureHpa"),
+      receivedAt
+    };
+  }
+
+  /**
    * @description requestId待ちのsecureEcho Promiseを解決する。
    * @param secureEcho 受信メッセージ。
    */
@@ -531,5 +720,18 @@ export class mqttGateway {
    */
   private createMessageId(): string {
     return `${this.sourceId}-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+  }
+
+  /**
+   * @description MQTTトピック末尾からデバイス名を抽出する。
+   * @param topic MQTTトピック文字列。
+   * @returns デバイス名。抽出不可時は空文字。
+   */
+  private resolveDeviceNameFromTopic(topic: string): string {
+    const topicParts = topic.split("/");
+    if (topicParts.length === 0) {
+      return "";
+    }
+    return topicParts[topicParts.length - 1] ?? "";
   }
 }
