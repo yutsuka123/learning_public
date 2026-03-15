@@ -43,6 +43,12 @@ export interface appConfig {
   kUserAppIdentifier: string;
   adminUsername: string;
   adminPassword: string;
+  wifiUsbInterfaceName: string;
+  apHttpBaseUrl: string;
+  apSsidPrefix: string;
+  apWifiPassword: string;
+  apRoleAdminUsername: string;
+  apRoleAdminPassword: string;
 }
 
 /**
@@ -155,7 +161,13 @@ export function loadConfig(): appConfig {
     otaFirmwareVersion: getStringEnv("OTA_FIRMWARE_VERSION", "0.1.0"),
     kUserAppIdentifier: getStringEnv("K_USER_APP_IDENTIFIER", "esp32lab-default"),
     adminUsername: getStringEnv("LOCAL_ADMIN_USERNAME", "admin"),
-    adminPassword: getStringEnv("LOCAL_ADMIN_PASSWORD", "change-this-password")
+    adminPassword: getStringEnv("LOCAL_ADMIN_PASSWORD", "change-this-password"),
+    wifiUsbInterfaceName: getStringEnv("LOCAL_WIFI_USB_INTERFACE_NAME", ""),
+    apHttpBaseUrl: getStringEnv("AP_HTTP_BASE_URL", "http://192.168.4.1"),
+    apSsidPrefix: getStringEnv("AP_SSID_PREFIX", "AP-esp32lab-"),
+    apWifiPassword: getStringEnv("AP_WIFI_PASSWORD", "pass-esp32"),
+    apRoleAdminUsername: getStringEnv("AP_ROLE_ADMIN_USERNAME", "admin"),
+    apRoleAdminPassword: getStringEnv("AP_ROLE_ADMIN_PASSWORD", "change-me")
   };
 
   if (nextConfig.mqttHostName.length === 0) {

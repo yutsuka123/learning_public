@@ -17,6 +17,8 @@ export type deviceOnlineState = "online" | "offline" | "unknown";
  */
 export interface deviceState {
   deviceName: string;
+  publicId: string;
+  configVersion: string;
   srcId: string;
   dstId: string;
   macAddr: string;
@@ -37,6 +39,18 @@ export interface deviceState {
   lastStatusSub: string;
   lastSeenAt: string;
   statusTopic: string;
+  /** BME280温度(℃)。未取得時null。 */
+  temperatureC: number | null;
+  /** BME280相対湿度(%)。未取得時null。 */
+  humidityRh: number | null;
+  /** BME280気圧(hPa)。未取得時null。 */
+  pressureHpa: number | null;
+  /** 環境センサーID。 */
+  environmentSensorId: string;
+  /** 環境センサーI2Cアドレス。 */
+  environmentSensorAddress: string;
+  /** 環境データ最終取得日時(ISO8601)。 */
+  environmentUpdatedAt: string;
 }
 
 /**
@@ -47,6 +61,8 @@ export interface statusMessage {
   srcId: string;
   dstId: string;
   messageId: string;
+  publicId: string;
+  configVersion: string;
   macAddr: string;
   ipAddress: string;
   wifiSsid: string;
@@ -58,6 +74,24 @@ export interface statusMessage {
   onlineState: string;
   statusSub: string;
   detail: string;
+  receivedAt: string;
+}
+
+/**
+ * @description 環境センサー(BME280) notice/trh 受信の正規化結果。
+ */
+export interface trhMessage {
+  topic: string;
+  srcId: string;
+  dstId: string;
+  messageId: string;
+  result: string;
+  detail: string;
+  sensorId: string;
+  sensorAddress: string;
+  temperatureC: number | null;
+  humidityRh: number | null;
+  pressureHpa: number | null;
   receivedAt: string;
 }
 
@@ -123,6 +157,7 @@ export interface localServerSettings {
   firmwareLocalPath: string;
   firmwareUploadedFileName: string;
   otaFirmwareVersion: string;
+  wifiUsbInterfaceName: string;
 }
 
 /**

@@ -21,7 +21,11 @@
 - [厳守] MQTTログインID/パスワード認証を有効化する。
 - [禁止] 平文MQTT（通常 `1883`）を運用利用しない。
 - [禁止] 証明書検証を無効化しない。
-- [厳守] payload内のWi-Fi設定はAES-256-GCMで暗号化する。
+- [厳守] MQTT payload本文は `k-device` による AES-256-GCM で全文暗号化する（トピックは平文）。
+- [厳守] 暗号化エンベロープは `security.mode=k-device-a256gcm-v1` / `enc.alg=A256GCM` / `enc.iv` / `enc.ct` / `enc.tag` を必須とする。
+- [厳守] `enc` 欠損、アルゴリズム不一致、認証タグ不一致時は復号失敗として処理拒否する。
+- [推奨] 本番は暗号化必須（strict）運用とし、移行期間のみ compat、障害切り分け時のみ plain を短時間許可する。
+- [新規利用禁止] 恒久的な plain 運用。理由: MQTTモニタから機密情報が読み取れるため。
 - [厳守] `publicId` を使用し、Wi-Fiステーション名や通常 topic に base_mac を直接使用しない。
 
 ### 1.3 メッセージ例
@@ -36,6 +40,8 @@
   - `{"requestId":"req-010","publicId":"a1b2c3d4","ciphertext":"...","nonce":"...","tag":"...","version":1}`
 - Wi-Fi更新確定:
   - `{"requestId":"req-010","confirm":true}`
+- payload全文暗号化エンベロープ:
+  - `{"v":"1.0.0","security":{"mode":"k-device-a256gcm-v1"},"enc":{"alg":"A256GCM","iv":"...","ct":"...","tag":"..."}}`
 
 ### 1.4 QoS方針
 - 起動通知: QoS1
@@ -62,6 +68,8 @@
 - [厳守] AP 接続後は共通トップ画面パスワード認証を要求する。
 - [厳守] 共通トップ画面から Production 画面へ進む場合は、メーカーモード専用パスワードの追加認証を要求する。
 - [厳守] 未認証状態では設定値参照、設定更新、FW更新、画像更新APIを拒否する。
+- [推奨] AP Web UI の初期パスワード（各ロール）は、初回ログイン時または運用開始前に変更する。
+- [推奨] 例外的に固定値継続する場合でも、理由・対象・予定期間を監査ログへ記録する。
 - [重要] 共通トップ画面の表示項目は少なくとも以下とする。
   - `shortId`
   - `publicId`
@@ -148,7 +156,7 @@
   - `hostName`（`timeServerUrlName` 相当）
   - `port`
   - `tls`
-- [将来対応] `mqttUrlName` / `serverUrlName` / `otaUrlName` / `timeServerUrlName` / `keyDevice` は `common.h` へ追加済み。ESP32/LocalServer 反映は別タスクで実施する。
+- [重要] `mqttUrlName` / `serverUrlName` / `otaUrlName` / `timeServerUrlName` / `keyDevice` は ESP32 / LocalServer の保存読書きとAPI入出力へ反映済み。
 
 ### 4.5 `createPairingBundle` 内部生成項目
 - `publicId`
@@ -286,6 +294,22 @@
 - [厳守] 未認証状態では管理者画面系 API を `AUTH_REQUIRED` で拒否する。
 - [推奨] `POST /api/admin/auth/logout` で管理者セッションを明示終了できるようにする。
 
+### 6.1.1 パスワード変更・推奨運用 IF
+- [重要] AP Web UI ロール別パスワード、LocalServer 管理者パスワード、関連サービス認証情報（MQTT/DB/外部連携）は同一ポリシーで管理する。
+- [推奨] 初期値の継続利用を避けるため、変更 API または画面導線を提供する。
+- `POST /api/admin/auth/password/change`
+  - 用途: LocalServer 管理者パスワード変更
+  - 最低入力: `currentPassword`、`newPassword`
+- `POST /api/admin/ap/password/change`
+  - 用途: AP Web UI ロール別パスワード変更
+  - 最低入力: `role`、`currentPassword`、`newPassword`
+- `POST /api/admin/credentials/rotation`
+  - 用途: 関連サービス認証情報（MQTT/DB/外部連携）の変更
+  - 最低入力: `targetType`、`targetId`、`newCredential`
+- [厳守] パスワード/認証情報変更 API の監査ログには、`targetType`、`targetId`、`changedBy`、`changedAt`、`reason`、`result` を記録する。
+- [厳守] 監査ログへ平文パスワードや復元可能な秘密値を出力しない。
+- [推奨] 例外継続（固定値運用）を登録する場合は `reason`、`scope`、`expiresAt` を必須入力にする。
+
 ### 6.2 管理者機能 IF（鍵発行）
 - `POST /api/admin/keys/k-user/issue`
   - 用途: `k-user` 発行要求
@@ -317,6 +341,9 @@
 - [厳守] eFuse 操作 API は LocalServer 側へ実装しない。
 
 ## 7. 変更履歴
+- 2026-03-13: AP/管理者/サービス認証情報の「変更推奨運用」IFを追加し、変更APIおよび監査ログ必須項目を明記。理由: 初期パスワード方針変更を他パスワード類へ横展開し、実装・試験の参照先を統一するため。
+- 2026-03-12: `mqttUrlName` / `serverUrlName` / `otaUrlName` / `timeServerUrlName` / `keyDevice` の実装追従完了に合わせ、4.4 の「将来対応」表記を「反映済み」へ更新。理由: 仕様先行の注記を残すと実装状態と齟齬になるため。
+- 2026-03-12: MQTT payload全文暗号化（`k-device` / `A256GCM`）を必須条件へ昇格し、エンベロープキー（`security.mode` / `enc.*`）と運用モード（plain/compat/strict）を追記。理由: LocalServer-ESP32間の暗号化通信を実装・試験した内容をIF契約へ反映するため。
 - 2026-03-11: LocalServer 管理者画面 IF（認証、鍵発行、AP一括設定、統合一覧、メンテナンス再起動）を追加。理由: 管理画面要件を接続契約として実装可能な粒度へ固定するため。
 - 2026-03-11: AP画面詳細（ロール定義・権限制御・表示項目）の正規参照先として `APメンテナンス画面仕様書.md` を追加。理由: IF仕様書を接続契約中心に保ちつつ、画面仕様の更新先を固定するため。
 - 2026-03-11: HTTPS OTA IF の参照先へ `OTA_HTTPコマンド仕様書.md` を追加。理由: 方式仕様とHTTP API仕様の分離に追従するため。

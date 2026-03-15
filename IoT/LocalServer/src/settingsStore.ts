@@ -92,7 +92,8 @@ export class SettingsStore {
       firmwareSource: "localPath",
       firmwareLocalPath: config.otaFirmwarePath,
       firmwareUploadedFileName: "",
-      otaFirmwareVersion: config.otaFirmwareVersion
+      otaFirmwareVersion: config.otaFirmwareVersion,
+      wifiUsbInterfaceName: config.wifiUsbInterfaceName
     };
 
     const settingsDirectoryPath = path.dirname(this.settingsFilePath);

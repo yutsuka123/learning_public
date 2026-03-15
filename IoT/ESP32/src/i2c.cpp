@@ -8,8 +8,10 @@
 
 #include "i2c.h"
 
+#include <Adafruit_BME280.h>
 #include <Arduino.h>
 #include <Wire.h>
+#include <math.h>
 #include <hd44780.h>
 #include <hd44780ioClass/hd44780_I2Cexp.h>
 #include <esp_heap_caps.h>
@@ -27,27 +29,74 @@ constexpr uint8_t lcdAddressCandidate2 = 0x3F;
 constexpr uint8_t lcdColumnCount = 16;
 /** @brief LCD行数。@type uint8_t */
 constexpr uint8_t lcdRowCount = 2;
+/** @brief BME280の第1候補I2Cアドレス。@type uint8_t */
+constexpr uint8_t bme280AddressCandidate1 = 0x76;
+/** @brief BME280の第2候補I2Cアドレス。@type uint8_t */
+constexpr uint8_t bme280AddressCandidate2 = 0x77;
 /** @brief 表示要求キュー長。@type uint32_t */
 constexpr uint32_t requestQueueLength = 8;
 /** @brief ESP32側SDAピン番号。@type uint8_t */
 constexpr uint8_t i2cSdaPin = 8;
 /** @brief ESP32側SCLピン番号。@type uint8_t */
 constexpr uint8_t i2cSclPin = 9;
+/** @brief BME280読み取り応答待機既定時間(ms)。@type uint32_t */
+constexpr uint32_t defaultEnvironmentResponseTimeoutMs = 1500;
+
+/**
+ * @brief I2Cキュー要求種別。
+ * @details
+ * - [重要] LCD表示とBME280読み取りを同じI2C専用タスクへ直列化する。
+ */
+enum class i2cRequestType : uint8_t {
+  kUnknown = 0,
+  kDisplayText = 1,
+  kReadEnvironment = 2,
+};
+
+/**
+ * @brief BME280読み取り応答データ。
+ */
+struct i2cEnvironmentResponse {
+  /** @brief 読み取り成功フラグ。@type bool */
+  bool success;
+  /** @brief 取得スナップショット。@type i2cEnvironmentSnapshot */
+  i2cEnvironmentSnapshot snapshot;
+};
+
+/**
+ * @brief I2Cタスクへ投入する要求データ。
+ */
+struct i2cTaskRequest {
+  /** @brief 要求種別。@type i2cRequestType */
+  i2cRequestType requestType;
+  /** @brief LCD表示要求。@type i2cDisplayRequest */
+  i2cDisplayRequest displayRequest;
+  /** @brief 応答返却用Queue。不要時はnullptr。@type QueueHandle_t */
+  QueueHandle_t responseQueue;
+};
 
 /** @brief i2cTaskの静的スタック領域。 */
 StackType_t* i2cTaskStackBuffer = nullptr;
 /** @brief i2cTaskの静的制御ブロック。 */
 StaticTask_t i2cTaskControlBlock;
-/** @brief I2C表示要求を受けるFreeRTOSキュー。 */
+/** @brief I2C要求を受けるFreeRTOSキュー。 */
 QueueHandle_t i2cRequestQueue = nullptr;
 /** @brief hd44780 I2C LCDドライバインスタンス。 */
 hd44780_I2Cexp i2cLcd;
+/** @brief BME280ドライバインスタンス。 */
+Adafruit_BME280 bme280Device;
 /** @brief I2Cバス初期化済みフラグ。 */
 bool isI2cInitialized = false;
 /** @brief LCD初期化済みフラグ。 */
 bool isLcdInitialized = false;
 /** @brief 検出済みLCDアドレス。 */
 uint8_t detectedLcdAddress = 0;
+/** @brief BME280初期化済みフラグ。 */
+bool isBme280Initialized = false;
+/** @brief 検出済みBME280アドレス。 */
+uint8_t detectedBme280Address = 0;
+/** @brief 起動済みI2Cサービス実体。 */
+i2cService* activeI2cServiceInstance = nullptr;
 
 /**
  * @brief I2Cバスを初期化する。
@@ -141,6 +190,43 @@ bool detectLcdAddress(uint8_t* detectedAddressOut) {
 }
 
 /**
+ * @brief BME280のI2Cアドレスを検出する。
+ * @param detectedAddressOut 検出アドレス出力先。
+ * @return 検出成功時true、失敗時false。
+ */
+bool detectBme280Address(uint8_t* detectedAddressOut) {
+  if (detectedAddressOut == nullptr) {
+    appLogError("detectBme280Address failed. detectedAddressOut is null.");
+    return false;
+  }
+
+  uint8_t testResult76 = getI2cAddressTestResult(bme280AddressCandidate1);
+  appLogInfo("detectBme280Address test. address=0x%02X result=%u",
+             static_cast<unsigned>(bme280AddressCandidate1),
+             static_cast<unsigned>(testResult76));
+  if (testResult76 == 0) {
+    *detectedAddressOut = bme280AddressCandidate1;
+    appLogInfo("detectBme280Address success. address=0x%02X", static_cast<unsigned>(*detectedAddressOut));
+    return true;
+  }
+
+  uint8_t testResult77 = getI2cAddressTestResult(bme280AddressCandidate2);
+  appLogInfo("detectBme280Address test. address=0x%02X result=%u",
+             static_cast<unsigned>(bme280AddressCandidate2),
+             static_cast<unsigned>(testResult77));
+  if (testResult77 == 0) {
+    *detectedAddressOut = bme280AddressCandidate2;
+    appLogInfo("detectBme280Address success. address=0x%02X", static_cast<unsigned>(*detectedAddressOut));
+    return true;
+  }
+
+  appLogWarn("detectBme280Address failed. tried=0x%02X,0x%02X",
+             static_cast<unsigned>(bme280AddressCandidate1),
+             static_cast<unsigned>(bme280AddressCandidate2));
+  return false;
+}
+
+/**
  * @brief LCDを初期化する。
  * @return 初期化成功時true、失敗時false。
  */
@@ -184,6 +270,48 @@ bool initializeLcdDevice() {
 }
 
 /**
+ * @brief BME280を初期化する。
+ * @return 初期化成功時true、失敗時false。
+ * @details
+ * - [重要] BME280未接続時はfalseを返し、呼び出し元でMQTT/シリアルへ異常を通知する。
+ * - [重要] I2Cモード前提のため、基板の `CSB` は 3.3V 固定を想定する。
+ */
+bool initializeBme280Device() {
+  if (isBme280Initialized) {
+    return true;
+  }
+  if (!initializeI2cBus()) {
+    appLogError("initializeBme280Device failed. initializeI2cBus returned false.");
+    return false;
+  }
+
+  uint8_t bme280Address = 0;
+  if (!detectBme280Address(&bme280Address)) {
+    appLogWarn("initializeBme280Device skipped. BME280 address not detected.");
+    return false;
+  }
+
+  detectedBme280Address = bme280Address;
+  const bool beginResult = bme280Device.begin(static_cast<uint8_t>(detectedBme280Address), &Wire);
+  if (!beginResult) {
+    appLogError("initializeBme280Device failed. bme280Device.begin returned false. address=0x%02X",
+                static_cast<unsigned>(detectedBme280Address));
+    return false;
+  }
+
+  // [重要] 5分ごとのオンデマンド取得が主用途のため、forced modeで必要時のみ測定する。
+  bme280Device.setSampling(Adafruit_BME280::MODE_FORCED,
+                           Adafruit_BME280::SAMPLING_X1,
+                           Adafruit_BME280::SAMPLING_X1,
+                           Adafruit_BME280::SAMPLING_X1,
+                           Adafruit_BME280::FILTER_OFF);
+  isBme280Initialized = true;
+  appLogInfo("initializeBme280Device success. address=0x%02X",
+             static_cast<unsigned>(detectedBme280Address));
+  return true;
+}
+
+/**
  * @brief LCDへ2行文字列を出力する。
  * @param request 表示要求データ。
  * @return 表示成功時true、失敗時false。
@@ -209,6 +337,58 @@ bool renderLcdText(const i2cDisplayRequest& request) {
              request.line1,
              request.line2,
              static_cast<unsigned long>(request.holdMs));
+  return true;
+}
+
+/**
+ * @brief BME280から環境値を読み取る。
+ * @param snapshotOut 読み取り結果出力先。
+ * @return 成功時true、失敗時false。
+ */
+bool readEnvironmentSnapshot(i2cEnvironmentSnapshot* snapshotOut) {
+  if (snapshotOut == nullptr) {
+    appLogError("readEnvironmentSnapshot failed. snapshotOut is null.");
+    return false;
+  }
+
+  *snapshotOut = i2cEnvironmentSnapshot{};
+  if (!initializeBme280Device()) {
+    snapshotOut->isValid = false;
+    snapshotOut->isSensorDetected = false;
+    snapshotOut->sensorAddress = 0;
+    appLogWarn("readEnvironmentSnapshot failed. initializeBme280Device returned false.");
+    return false;
+  }
+
+  if (!bme280Device.takeForcedMeasurement()) {
+    appLogWarn("readEnvironmentSnapshot: takeForcedMeasurement returned false. continue with current sampled values.");
+  }
+
+  const float temperatureC = bme280Device.readTemperature();
+  const float humidityRh = bme280Device.readHumidity();
+  const float pressureHpa = bme280Device.readPressure() / 100.0F;
+  if (isnan(temperatureC) || isnan(humidityRh) || isnan(pressureHpa)) {
+    appLogError("readEnvironmentSnapshot failed. invalid measurement. temperature=%f humidity=%f pressure=%f",
+                static_cast<double>(temperatureC),
+                static_cast<double>(humidityRh),
+                static_cast<double>(pressureHpa));
+    snapshotOut->isValid = false;
+    snapshotOut->isSensorDetected = true;
+    snapshotOut->sensorAddress = detectedBme280Address;
+    return false;
+  }
+
+  snapshotOut->isValid = true;
+  snapshotOut->isSensorDetected = true;
+  snapshotOut->sensorAddress = detectedBme280Address;
+  snapshotOut->temperatureC = temperatureC;
+  snapshotOut->humidityRh = humidityRh;
+  snapshotOut->pressureHpa = pressureHpa;
+  appLogInfo("readEnvironmentSnapshot success. address=0x%02X temperature=%.2f humidity=%.2f pressure=%.2f",
+             static_cast<unsigned>(snapshotOut->sensorAddress),
+             static_cast<double>(snapshotOut->temperatureC),
+             static_cast<double>(snapshotOut->humidityRh),
+             static_cast<double>(snapshotOut->pressureHpa));
   return true;
 }
 
@@ -248,12 +428,13 @@ String normalizeLcdLine(const char* rawText) {
 
 bool i2cService::startTask() {
   if (i2cRequestQueue == nullptr) {
-    i2cRequestQueue = xQueueCreate(requestQueueLength, sizeof(i2cDisplayRequest));
+    i2cRequestQueue = xQueueCreate(requestQueueLength, sizeof(i2cTaskRequest));
   }
   if (i2cRequestQueue == nullptr) {
     appLogError("i2cService::startTask failed. xQueueCreate returned null.");
     return false;
   }
+  activeI2cServiceInstance = this;
 
   if (i2cTaskStackBuffer == nullptr) {
     i2cTaskStackBuffer = static_cast<StackType_t*>(
@@ -299,27 +480,82 @@ bool i2cService::requestLcdText(const char* line1, const char* line2, uint32_t h
     return false;
   }
 
-  i2cDisplayRequest request{};
+  i2cTaskRequest request{};
+  request.requestType = i2cRequestType::kDisplayText;
+  request.responseQueue = nullptr;
   String normalizedLine1 = normalizeLcdLine(line1);
   String normalizedLine2 = normalizeLcdLine(line2);
-  strncpy(request.line1, normalizedLine1.c_str(), sizeof(request.line1) - 1);
-  request.line1[sizeof(request.line1) - 1] = '\0';
-  strncpy(request.line2, normalizedLine2.c_str(), sizeof(request.line2) - 1);
-  request.line2[sizeof(request.line2) - 1] = '\0';
-  request.holdMs = holdMs;
+  strncpy(request.displayRequest.line1, normalizedLine1.c_str(), sizeof(request.displayRequest.line1) - 1);
+  request.displayRequest.line1[sizeof(request.displayRequest.line1) - 1] = '\0';
+  strncpy(request.displayRequest.line2, normalizedLine2.c_str(), sizeof(request.displayRequest.line2) - 1);
+  request.displayRequest.line2[sizeof(request.displayRequest.line2) - 1] = '\0';
+  request.displayRequest.holdMs = holdMs;
 
   BaseType_t sendResult = xQueueSend(i2cRequestQueue, &request, pdMS_TO_TICKS(200));
   if (sendResult != pdTRUE) {
     appLogError("requestLcdText failed. xQueueSend timeout. line1=%s line2=%s holdMs=%lu",
-                request.line1,
-                request.line2,
-                static_cast<unsigned long>(request.holdMs));
+                request.displayRequest.line1,
+                request.displayRequest.line2,
+                static_cast<unsigned long>(request.displayRequest.holdMs));
     return false;
   }
   appLogInfo("requestLcdText queued. line1=%s line2=%s holdMs=%lu",
-             request.line1,
-             request.line2,
-             static_cast<unsigned long>(request.holdMs));
+             request.displayRequest.line1,
+             request.displayRequest.line2,
+             static_cast<unsigned long>(request.displayRequest.holdMs));
+  return true;
+}
+
+/**
+ * @brief BME280読み取り要求をI2C専用タスクへ送信する。
+ * @param snapshotOut 読み取り結果出力先。
+ * @param timeoutMs 応答待機ms。
+ * @return 読み取り成功時true、失敗時false。
+ */
+bool i2cService::requestEnvironmentSnapshot(i2cEnvironmentSnapshot* snapshotOut, uint32_t timeoutMs) {
+  if (snapshotOut == nullptr) {
+    appLogError("requestEnvironmentSnapshot failed. snapshotOut is null.");
+    return false;
+  }
+  if (i2cRequestQueue == nullptr) {
+    appLogError("requestEnvironmentSnapshot failed. queue is null. call startTask first.");
+    return false;
+  }
+
+  QueueHandle_t responseQueue = xQueueCreate(1, sizeof(i2cEnvironmentResponse));
+  if (responseQueue == nullptr) {
+    appLogError("requestEnvironmentSnapshot failed. xQueueCreate responseQueue returned null.");
+    return false;
+  }
+
+  i2cTaskRequest request{};
+  request.requestType = i2cRequestType::kReadEnvironment;
+  request.responseQueue = responseQueue;
+  const uint32_t effectiveTimeoutMs = (timeoutMs == 0) ? defaultEnvironmentResponseTimeoutMs : timeoutMs;
+  BaseType_t sendResult = xQueueSend(i2cRequestQueue, &request, pdMS_TO_TICKS(200));
+  if (sendResult != pdTRUE) {
+    appLogError("requestEnvironmentSnapshot failed. xQueueSend timeout. timeoutMs=%lu",
+                static_cast<unsigned long>(effectiveTimeoutMs));
+    vQueueDelete(responseQueue);
+    return false;
+  }
+
+  i2cEnvironmentResponse response{};
+  BaseType_t receiveResult = xQueueReceive(responseQueue, &response, pdMS_TO_TICKS(effectiveTimeoutMs));
+  vQueueDelete(responseQueue);
+  if (receiveResult != pdTRUE) {
+    appLogError("requestEnvironmentSnapshot failed. response timeout. timeoutMs=%lu",
+                static_cast<unsigned long>(effectiveTimeoutMs));
+    return false;
+  }
+
+  *snapshotOut = response.snapshot;
+  if (!response.success) {
+    appLogWarn("requestEnvironmentSnapshot completed with sensor read failure. detected=%d address=0x%02X",
+               response.snapshot.isSensorDetected ? 1 : 0,
+               static_cast<unsigned>(response.snapshot.sensorAddress));
+    return false;
+  }
   return true;
 }
 
@@ -341,21 +577,43 @@ void i2cService::taskEntry(void* taskParameter) {
 void i2cService::runLoop() {
   appLogInfo("i2cService loop started.");
   for (;;) {
-    i2cDisplayRequest request{};
+    i2cTaskRequest request{};
     BaseType_t receiveResult = xQueueReceive(i2cRequestQueue, &request, pdMS_TO_TICKS(100));
     if (receiveResult == pdTRUE) {
-      appLogInfo("i2cService dequeued request. line1=%s line2=%s holdMs=%lu",
-                 request.line1,
-                 request.line2,
-                 static_cast<unsigned long>(request.holdMs));
-      bool renderResult = renderLcdText(request);
-      if (!renderResult) {
-        appLogError("i2cService render failed. line1=%s line2=%s", request.line1, request.line2);
-      }
-      if (request.holdMs > 0) {
-        vTaskDelay(pdMS_TO_TICKS(request.holdMs));
+      if (request.requestType == i2cRequestType::kDisplayText) {
+        appLogInfo("i2cService dequeued LCD request. line1=%s line2=%s holdMs=%lu",
+                   request.displayRequest.line1,
+                   request.displayRequest.line2,
+                   static_cast<unsigned long>(request.displayRequest.holdMs));
+        bool renderResult = renderLcdText(request.displayRequest);
+        if (!renderResult) {
+          appLogError("i2cService render failed. line1=%s line2=%s",
+                      request.displayRequest.line1,
+                      request.displayRequest.line2);
+        }
+        if (request.displayRequest.holdMs > 0) {
+          vTaskDelay(pdMS_TO_TICKS(request.displayRequest.holdMs));
+        }
+      } else if (request.requestType == i2cRequestType::kReadEnvironment) {
+        i2cEnvironmentResponse response{};
+        response.success = readEnvironmentSnapshot(&response.snapshot);
+        if (request.responseQueue != nullptr) {
+          BaseType_t replyResult = xQueueSend(request.responseQueue, &response, pdMS_TO_TICKS(100));
+          if (replyResult != pdTRUE) {
+            appLogError("i2cService failed to send environment response.");
+          }
+        } else {
+          appLogWarn("i2cService skipped environment response. responseQueue is null.");
+        }
+      } else {
+        appLogWarn("i2cService skipped unknown request. requestType=%u",
+                   static_cast<unsigned>(request.requestType));
       }
     }
     vTaskDelay(pdMS_TO_TICKS(20));
   }
+}
+
+i2cService* getI2cServiceInstance() {
+  return activeI2cServiceInstance;
 }
