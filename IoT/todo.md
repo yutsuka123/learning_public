@@ -26,10 +26,29 @@
   - 完了条件: 002-0001〜002-0004、002-0019〜002-0022、002-0027、002-0028 は文書・コード確認で完了済み。詳細は `todo_old20260313.md`。
   - [完了][2026-03-14] 002-0099 ゲート完了。7027/7064/7065/7066/7067 全 OK、試験で変更したパスワードはデフォルトへ復元済み。退避先: `todo_old20260313.md`。
 
+## 直近実行順序（2026-03-16再整理）
+1. [最優先] フェーズCとして、`LocalServer` / `SecretCore` / ESP32 の通常運用とセキュア基礎機能を先に固定する。
+   - 対象の主軸: `003-0004`, `003-0012`, `003-0020`, `003-0021`, `009-0019`, `009-0020`, `009-0021`, `009-0023`, `010-0002`〜`010-0009`
+   - [重要] 少なくとも OTA、Pairing、APメンテナンス、復旧導線、MQTT/TLS 名前解決を固めるまで eFuse 系へ進まない。
+2. [最優先] フェーズDとして、`ProductionTool` の基本機能を「実装済み」ではなく「実装 + 試験 + 安定動作確認済み」まで持っていく。
+   - 対象の主軸: `004-0008`〜`004-0010`, `005-0001`〜`005-0005`, `003-0016`, `009-1021`
+   - [厳守] この段階では不可逆処理を本実行せず、起動、追加認証、対象機確認、状態表示、監査ログ、段階実行UI/導線、インストーラ方針までを先に固定する。
+3. [厳守] フェーズC/D の基本機能が両方安定した後に、耐久・過負荷・回帰の安定性ゲート試験を完了する。
+   - 対象の主軸: `003-0022`, `003-0023`
+   - [重要] OTA耐久試験（10回程度）、1時間過負荷試験（1時間×10回）、および必要な回帰試験を先に終える。
+   - 理由: 途中 abort やスタック不足のまま secure boot / eFuse へ進み、試験機や本番機を積ませることを防止するため。
+4. [重要] 上記安定化の後に、試験用鍵・署名素材・証明書手順と、`ProductionTool` の不可逆処理導線を固定する。
+   - 対象の主軸: `004-0001`〜`004-0007`, `005-0006`〜`005-0008`, `003-0017`, `009-1020`
+5. [厳守] その後に `003-0024` の総合進入判定ゲートを通過してから、Secure Boot / ROM暗号化 / Flash Encryption / eFuse のリハーサルへ進む。
+   - 対象の主軸: `003-0024`, `006-0001`〜`006-0011`
+6. [最重要] 最後に本番対象機へ eFuse 最終化と OTA 再更新確認を実施する。
+   - 対象の主軸: `007-0001`, `007-0002`
+- [厳守] 既存IDは固定のため再採番しない。実施順は本節を正とし、章番号は歴史的なまとまりとして扱う。
+
 ### 003. 直近フェーズC: LocalServer OTA実行面の整備
 - [重要] [念のため保存] 003-0001, 003-0002, 003-0003, 003-0008, 003-0011, 003-0015, 003-0018 は todo_old20260314.md へ退避済み。
 - [ ] [003-0004] [2026-03-08][重要] ESP32 ファームへ OTA HTTPS 証明書検証用の CA / 信頼設定を本番前提で組み込み、証明書検証有効状態で OTA 成功を確認する。
-- [ ] [003-0012] [2026-03-12][最優先][重要][部分完了] `LocalServer` / `Production` のセキュア処理を Rust（`SecretCore`）主導へ段階移行する。
+- [ ] [003-0012] [2026-03-12][最優先][重要][部分完了] `LocalServer` / `ProductionTool` のセキュア処理を Rust（`SecretCore`）主導へ段階移行する。
   - [進捗] `SecretCore` プロジェクトを初期化し、Named Pipe による IPC サーバーと TS 側からの起動・通信を実装済み。
   - [進捗] Rust 側に DPAPI (`S_random`) を用いた `k-user` 導出と `k-device` (AES-256-GCM) 暗号処理を実装。
   - [進捗] TS 側 (`keyService.ts`, `mqttPayloadSecurity.ts`) を非同期化し、`SecretCoreIpcClient` 経由での通信に切り替え完了。
@@ -43,18 +62,22 @@
   - [進捗][2026-03-15] Stage5 として Rust 側 `mqtt_drain_events` で `offline timeout` 判定を実施し、`deviceStateUpdated` で TS 側へ通知する構成へ移行した。実機で `online -> offline(timeout)` を確認済み。
   - [進捗][2026-03-15] Stage6 として `wait_for_status_recovery` IPC を追加し、TS 側の status 復帰待機ループを Rust 側 `deviceState` 参照へ委譲した。単体 IPC 試験で online 復帰結果を確認済み。
   - [進捗][2026-03-15] Stage7 として `run_signed_ota_command` / `get_workflow_status` を追加し、単一対象機の OTA 専用 workflow（`queued/running/waiting_device/verifying/completed/failed`）を Rust 側へ新設した。TS 側は `/api/workflows/signed-ota/start` / `GET /api/workflows/:workflowId` の薄い窓口を提供。
-  - [残課題][2026-03-15] Pairing / KeyRotation / Production workflow 本体と、OTA workflow の実機 end-to-end 完了確認・UI進捗表示は未完了。最終要件「通信まで Rust 主導」はなお部分完了。
+  - [進捗][2026-03-16] `LocalServer/public/index.html` を signed OTA workflow API へ接続し、単一対象機の `queued/running/waiting_device/verifying/completed/failed` を一覧表示・2秒polling する UI を追加。`全体OTA` は未対応表示へ変更。
+  - [試験結果][2026-03-16] 7080 実機試験を `beta.15` で再実施し、`queued -> waiting_device -> verifying -> completed` と `firmwareVersion=1.1.0-beta.15` / `onlineState=online` を確認。OTA workflow の end-to-end は確認済み。
+  - [進捗][2026-03-16] 版数ずれ再発防止として `bump-esp32-beta-version.ps1` を修正し、`ESP32/header/version.h`、`LocalServer/.env`、`LocalServer/data/settings.json` の 3 点を同時同期するよう更新した。
+  - [残課題][2026-03-16] Pairing / KeyRotation / ProductionTool workflow 本体は未完了。最終要件「通信まで Rust 主導」はなお部分完了だが、OTA workflow は UI進捗表示と実機完了確認まで到達した。
   - [厳守] 高リスク処理は UI 側に逐次手順を持たせず、Rust 側で開始〜完了判定まで責務を持つ。
   - [重要] 既存の `runPairingSession()` / `runKeyRotationSession()` / `runProductionSecureFlow()` / `runSignedOtaCommand()` 方針と整合させる。
   - [厳守] 完成まで既存 TS セキュア部と併用・切り替え可能とする。Rust 化で機能が満足されたと試験で判断したのちに TS 併用を廃止する。理由: 問題の切り分けのため。
-- [x] [003-0013] [2026-03-12][厳守] `LocalServer` / `Production` の UI 部とセキュア部（Rust）を明確分離し、境界IFを固定する。
+- [x] [003-0013] [2026-03-12][厳守] `LocalServer` / `ProductionTool` の UI 部とセキュア部（Rust）を明確分離し、境界IFを固定する。
   - [厳守] UI は「進捗状態・最終結果」のみ受け取り、raw key / 中間秘密 / 復号済み平文を受け取らない。
   - [禁止] UI から直接秘密処理ライブラリへリンクして機密メモリを共有する構成。
-  - [重要] `Production`（ProductionSoft）の Rust 部は LocalServer で作成した共通部分を活用する。GUI はブラウザではなく Windows アプリとする。
+  - [重要] `ProductionTool` の Rust 部は `LocalServer` 側で作成した共通部分を活用する。これはソフト統合ではなく、共通ライブラリ/共通モジュールの再利用を意味する。GUI はブラウザではなく Windows アプリとする。
+  - [厳守] `LocalServer` と `ProductionTool` は別ソフト、別実行物、別インストーラとして独立動作させる。
 - [x] [003-0014] [2026-03-12][厳守] UI部 - セキュア部（Rust）通信の保護要件を実装する（ローカルIPCの認可・改ざん防止・リプレイ防止）。
   - [重要] 既存文書（`環境仕様書.md` の「ローカルIPC限定」、`要件定義書.md` の `NFR-032/033`）に基づき、通信路で脆弱化しないよう検証項目を追加する。
   - [禁止] TCP/HTTP公開待受を `SecretCore` 側へ新設する。
-- [ ] [003-0016] [2026-03-12][重要] `Production` 用インストーラ/アンインストーラを整備する（工場端末向け）。
+- [ ] [003-0016] [2026-03-12][重要] `ProductionTool` 用インストーラ/アンインストーラを整備する（工場端末向け）。
   - [厳守] 工場端末に残る鍵素材・実行履歴・一時ファイルを安全消去できること。
   - [厳守] 通常 `LocalServer` 環境へ混在インストールしない制約をインストーラ側で担保する。
 - [ ] [003-0017] [2026-03-12][重要] `LocalSoft` 廃止時のアンインストール手順（移行含む）を整備し、旧保存DB/キャッシュ/機密設定の安全消去を実装する。
@@ -64,7 +87,54 @@
   - [厳守] バックアップファイルは `scrypt + AES-256-GCM` で暗号化し、raw `k-user` を保存しない。
   - [厳守] API応答・ログには `fingerprint` のみ出力し、平文キーを返却しない。
   - [重要] `TS -> Rust` 移行後（`wrapped_k_user.bin` 利用中）でも Rust 単独でバックアップ/復元が完結することを確認する。
-### 004. 直近フェーズD: 本番鍵・署名素材・証明書の整備
+- [x] [003-0020] [2026-03-16][最優先][重要] `LocalServer` 基本機能の着手前提を「実装済み」から「連続試験で安定確認済み」へ引き上げる。
+  - 対象: 管理者認証、一覧表示、`status` / `trh`、単一対象 OTA workflow、APログイン、AP設定、再起動、復旧導線
+  - [厳守] `試験仕様書.md` と `試験記録書.md` に、通常操作の連続実行・再起動・通信断復帰を含む確認観点を追加する。
+  - [進捗][2026-03-18] 7081 用半自動スクリプト `test7081BasicStability.mjs` を追加。`npm run test:7081` で認証・一覧・status・trh・OTA・AP を 1 セットとし、連続 10 回実行可能。`--skipOta --skipAp` で実機未接続時の最小セット実行に対応。実施時は LocalServer + SecretCore を起動した状態で実行する。
+  - [完了][2026-03-19] 7081 を 10 セット実行し、全回 OK。003-0020 完了。
+  - 理由: secure boot / eFuse 前に「基本機能は動く」だけでなく「繰り返しで崩れない」を確認するため。
+- [ ] [003-0021] [2026-03-16][最優先][重要] `LocalServer` セキュア機能の着手前提を「疎通済み」から「最低限 end-to-end で固定済み」へ引き上げる。
+  - 対象: signed OTA、Pairing workflow、`SecretCore` workflow 状態表示、AP secure transport、鍵バックアップ/復元
+  - [厳守] raw `k-device`、ECDH 共有秘密、`k-pairing-session` を TS や REST 応答へ出さないまま試験を成立させる。
+  - 理由: secure boot / eFuse 前に高リスク経路の責務境界を固定し、後戻り改修を減らすため。
+- [ ] [003-0022] [2026-03-16][最重要] secure boot / Flash Encryption / eFuse 着手前に OTA耐久試験を最低 10 回実施し、全回成功を確認する。
+  - [厳守] `試験仕様書.md` に試験IDを追加し、開始版数・完了版数・所要時間・失敗時ログ・復帰可否を `試験記録書.md` へ残す。
+  - [厳守] 1回でも abort、stack canary、watchdog、復帰不能が出た場合は 006章/007章へ進まない。
+  - 理由: OTA の繰り返しで不安定なまま fuse 系へ進むと、回復不能な固体を作るリスクが高いため。
+- [ ] [003-0023] [2026-03-16][最重要] secure boot / Flash Encryption / eFuse 着手前に 1時間過負荷試験を 10 セット実施する。
+  - 負荷候補: MQTT送受信、状態更新、AP切替、OTA配布口待受、ログ出力、画面 polling、Rust workflow 連続起動
+  - [厳守] 各 1 時間の監視項目にメモリ使用量、stack 高水位、温湿度応答、online/offline 遷移、AP復旧可否を含める。
+  - [厳守] 10 セットのどこかで abort / reboot loop / deadlock / 通信復帰不能が出た場合は 006章/007章へ進まない。
+  - 理由: 長時間運用で潜む不安定要因を eFuse 前に潰し、secure 化後のデバッグ不能化を防ぐため。
+- [ ] [003-0024] [2026-03-16][厳守][重要] 006章/007章へ進む前の「総合進入判定ゲート」を `todo.md` と `試験仕様書.md` に固定する。
+  - 必須条件:
+    - `003-0004`, `003-0012`, `003-0020`, `003-0021`, `003-0022`, `003-0023` 完了
+    - `004-0010` 完了（`ProductionTool` 基本機能の実装・試験・安定動作確認まで完了）
+    - `009-0019` の encrypted bundle 本体送達 / 復号 / NVS 保存まで到達
+    - `005-0001`〜`005-0008` のうち ProductionTool 実行導線に必要な設計・基本実装完了
+    - `004-0001`〜`004-0005` の試験用鍵・署名素材手順完了
+  - [禁止] 上記未達のまま `006-0002` 以降や `007-0001` へ着手しない。
+  - 理由: 実装・試験・Production導線・鍵手順のどれかが未整備のまま fuse 系へ進む事故を防ぐため。
+### 004. 直近フェーズD: ProductionTool 基本機能の安定化と試験用鍵・署名素材・証明書の整備
+- [実行順序][2026-03-16] 本章は前半の `004-0008`〜`004-0010` で `ProductionTool` 基本機能の実装・試験・安定化を先行し、その後に後半の `004-0001`〜`004-0007` で試験用鍵・署名素材・証明書手順を固定する。理由: `ProductionTool` の基本導線が固まる前に鍵手順だけを先行確定すると、後で実装都合の戻りが出やすいため。
+- [x] [004-0008] [2026-03-16][最優先][重要] `ProductionTool` の最小実行骨格を実装し、`LocalServer` と分離起動できることを確認する。
+  - 対象: アプリ起動、`SecretCore` 共通部接続、対象機一覧または識別情報表示、追加認証入口、状態表示、監査ログ出力
+  - [厳守] この段階では eFuse / Secure Boot / Flash Encryption の不可逆処理本体を実行しない。
+  - [進捗][2026-03-17] Rust 最小起動骨格（`ProductionTool/Cargo.toml`、`src/main.rs`、`src/app_config.rs`、`src/audit_logger.rs`、`config/productionTool.settings.example.json`）を追加し、`cargo check` を通過した。現時点では設定読込、監査ログ初期化、`SecretCore` Named Pipe 到達確認、安全停止までを実装済み。
+  - [完了][2026-03-18] `SecretCore` 起動状態で `cargo run` を実行し、`secretCorePreflightResult=reachable`・`canProceedToNextStep=true`・PT-001 起動画面 JSON 表示・監査ログ JSON 出力（`logs/audit-20260318-104221.json`）を確認。7086 OK。
+  - 理由: 高リスク本体より前に、`ProductionTool` を単独の実行物として安定起動させる必要があるため。
+- [進捗][2026-03-18] [004-0009] [2026-03-16][最優先][重要] `ProductionTool` の基本機能試験を `試験仕様書.md` / `試験記録書.md` へ追加し、通常系・異常系のスモーク試験を固定する。
+  - 対象: 起動、追加認証、対象機誤選択防止、状態表示、監査ログ、dry-run 導線、失敗時の安全停止
+  - [厳守] raw key、中間秘密、不可逆処理直実行を含めない状態で試験を成立させる。
+  - [進捗][2026-03-18] PT-002（追加認証）・PT-003（対象機確認）・PT-005（dry-run）の骨格実装完了（`auth_screen_state.rs`・`device_select_screen_state.rs`・`dry_run_screen_state.rs`）。`main.rs` をウィザードフロー対応に拡張し `cargo check` 通過。次は実機を使ったスモーク試験の実施と試験記録書への記録。
+  - 理由: `ProductionTool` の基礎品質を eFuse 手前で先に確認し、以後は不可逆処理部分だけに試験論点を絞れるようにするため。
+- [ ] [004-0010] [2026-03-16][厳守][重要] 試験用鍵・署名素材手順へ進む前の `ProductionTool` 基本機能安定化ゲートを完了する。
+  - 必須条件:
+    - `004-0008`, `004-0009` 完了
+    - `005-0001`〜`005-0005` 完了
+    - `003-0016`, `009-1021` の方針が確定し、工場端末配布の前提が崩れていない
+  - [禁止] `004-0001`〜`004-0007` を、`ProductionTool` の起動・追加認証・dry-run 導線未整備のまま先行完了扱いにしない。
+  - 理由: 鍵手順だけ先に整備しても、実行主体の `ProductionTool` が不安定なら工場導線として成立しないため。
 - [ ] [004-0001] [2026-03-08][重要] `鍵一覧仕様書.md` を基準に、`k-iot` 系の論理名・用途・保存場所・生成タイミングを固定し、関連文書の表記を統一する。
 - [ ] [004-0002] [2026-03-08][重要] 試験用 `k-iot-secure-boot` 生成手順を `コマンド仕様書.md` へ追記する。
   - 生成コマンド
@@ -80,20 +150,21 @@
 - [ ] [004-0006] [2026-03-08][厳守] 本番用 `k-iot-secure-boot` は eFuse 書込み直前にオフライン環境で生成し、秘密鍵の保管先・責任者・バックアップ先を記録する。
 - [ ] [004-0007] [2026-03-08][厳守] 本番用 `k-iot-flash-encryption` は本番書込み直前に生成し、実値をリポジトリや `sensitiveData.h` に残さないことを確認する。
 
-### 005. 直近フェーズE: Production ツールと AP 画面分離の実装
-- [ ] [005-0001] [2026-03-09][重要] `IoT/Production`（ProductionSoft）を `LocalServer` と分離したメーカー専用ツール群として設計する。
+### 005. 直近フェーズE: ProductionTool と AP 画面分離の実装
+- [実行順序][2026-03-16] 本章は前半 `005-0001`〜`005-0005` をフェーズDの `ProductionTool` 基本機能整備として先行し、後半 `005-0006`〜`005-0008` を `004-0001`〜`004-0007` の鍵手順固定後に進める。理由: 先に UI / 認証 / 対象機確認 / ウィザードを固め、その後に不可逆処理の中身を差し込む方が手戻りが少ないため。
+- [ ] [005-0001] [2026-03-09][重要] `IoT/ProductionTool`（`ProductionTool`）を `LocalServer` と分離したメーカー専用ツール群として設計する。
   - 製造用書込み、初回セキュア化、eFuse 最終有効化、監査ログ保存
   - [重要] Rust セキュア部は LocalServer で作成した `SecretCore` 共通部分を活用する。GUI はブラウザではなく Windows アプリとする。
-- [ ] [005-0002] [2026-03-09][重要] AP 共通トップ画面と Production 画面を分離する。
+- [ ] [005-0002] [2026-03-09][重要] AP 共通トップ画面と ProductionTool 画面を分離する。
   - AP 名は共通
   - 共通トップ画面は共通パスワード認証
-  - Production 操作は追加認証
+  - ProductionTool 操作は追加認証
   - 画面・権限・監査ログを分離
 - [ ] [005-0003] [2026-03-09][厳守] 通常管理者パスワードとは別の「メーカーモード専用パスワード」の管理方式を設計する。
   - リポジトリ保存禁止
   - 変更・失効可能にする
   - 工場内での保管責任者、配布方法、更新手順を決める
-- [ ] [005-0004] [2026-03-09][重要] Production 画面の段階実行ウィザードを設計する。
+- [ ] [005-0004] [2026-03-09][重要] ProductionTool 画面の段階実行ウィザードを設計する。
   - 事前確認
   - 対象機確認
   - 実行内容確認
@@ -101,10 +172,10 @@
   - 段階実行
   - 完了判定または隔離判定
 - [ ] [005-0005] [2026-03-08][推奨] 最終確認で対象機シリアル番号、MAC、確認文言の再入力ルールを決める。
-- [ ] [005-0006] [2026-03-09][重要] ESP32 側に Production 専用セキュア化フローを設計する。
+- [ ] [005-0006] [2026-03-09][重要] ESP32 側に ProductionTool 専用セキュア化フローを設計する。
   - 通常OTA、通常アプリ、通常MQTT経路と共用しない
   - 事前条件確認、段階実行、各段階の eFuse 読戻し検証を入れる
-- [ ] [005-0007] [2026-03-09][重要] Production 専用の事前チェック項目を確定する。
+- [ ] [005-0007] [2026-03-09][重要] ProductionTool 専用の事前チェック項目を確定する。
   - 対象機識別
   - 電源安定確認
   - 版数確認
@@ -113,7 +184,7 @@
   - 作業者認証確認
   - スタック余裕確認
   - 空きヒープ確認
-- [ ] [005-0008] [2026-03-09][重要] Production 実行完了後の自動検証を設計する。
+- [ ] [005-0008] [2026-03-09][重要] ProductionTool 実行完了後の自動検証を設計する。
   - Secure Boot 有効確認
   - Flash Encryption 有効確認
   - 署名済みファームウェア起動確認
@@ -121,6 +192,7 @@
   - 出荷可否判定ログ保存
 
 ### 006. 直近フェーズF: Secure Boot / ROM暗号化 / Flash Encryption / eFuse試験
+- [厳守][2026-03-16] 本章の着手条件は `003-0024` 完了、および `005` 章の ProductionTool 導線と `004` 章の試験用鍵手順が揃っていること。理由: abort や試験手戻りを抱えたまま fuse 系へ進まないため。
 - [ ] [006-0001] 第3段階のeFuse適用チェックリストを作成する。
 - [ ] [006-0002] eFuse・セキュアブート・ROM暗号化準備を実施する。
 - [ ] [006-0003] [2026-03-08][厳守] eFuse 本番適用前に、同一手順・同一ファームウェア系統で試験機リハーサルを十分に実施し、結果を `試験記録書.md` へ残す。
@@ -134,11 +206,12 @@
 - [ ] [006-0007] [2026-03-08][重要] eFuse 専用処理タスクのスタック使用量を測定し、最小必要サイズと安全マージンを `機能仕様書.md` か `コマンド仕様書.md` へ記録する。
 - [ ] [006-0008] [2026-03-08][重要] スタック不足・ヒープ逼迫時に eFuse 開始を拒否する保護処理を実装する。
 - [ ] [006-0009] [2026-03-08][厳守] 「途中まで焼けたら全部焼ける」前提を採用せず、中断時は eFuse 読戻し結果と製造ログで残工程判定または隔離判定を行う手順を `機能仕様書.md` か専用仕様書へ明文化する。
-- [ ] [006-0010] [2026-03-09][重要] 7019〜7024 を実施し、Production 画面、再判定、スタック余裕、旧面継続起動まで `試験記録書.md` へ反映する。
+- [ ] [006-0010] [2026-03-09][重要] 7019〜7024 を実施し、ProductionTool 画面、再判定、スタック余裕、旧面継続起動まで `試験記録書.md` へ反映する。
 - [ ] [006-0011] [2026-03-09][重要] eFuse・セキュアブート・ROM暗号化試験を実施し、OTA可否、FW制御によるシリアル出力制約、DL/UL可否を `試験記録書.md` へ記録する。
 
 ### 007. 直近フェーズG: eFuse最終化とOTA再更新
-- [ ] [007-0001] [2026-03-09][重要] `Production` ツールから本番対象機へ eFuse 最終有効化を実施し、出荷可否判定ログを保存する。
+- [厳守][2026-03-16] 本章は `006-0001`〜`006-0011` 完了後のみ着手する。理由: リハーサル未了のまま本番 fuse 適用へ進むことを禁止するため。
+- [ ] [007-0001] [2026-03-09][重要] `ProductionTool` から本番対象機へ eFuse 最終有効化を実施し、出荷可否判定ログを保存する。
 - [ ] [007-0002] [2026-03-08][最重要] 7025 を実施し、eFuse 最終化後でも OTA によるバージョンアップができることを `試験記録書.md` へ反映する。
 
 ### 008. 直近ゴール後のセキュリティ拡張
@@ -237,10 +310,16 @@
   - bundle 署名
   - bundle 暗号化
   - [厳守] `runPairingSession()` からのみ呼び出す
-- [ ] [008-0028] [2026-03-09][重要] AP 共通トップ画面の共通パスワード認証と、Production 追加認証を実装する。
+  - [進捗][2026-03-16] `SecretCore/src/pairing_workflow.rs` に `create_pairing_bundle()` を追加し、`publicId` / `kDevice` / `keyVersion` / `requestedSettings` / `bundleId` / `sessionId` / `targetDeviceId` / `nonce` / `signature` の内部生成を実装した。理由: `runPairingSession()` が受理だけでなく内部成果物を持つ形に進め、今後の AP モード通信実装を workflow 内に閉じ込めるため。
+  - [進捗][2026-03-16] `reqwest` を追加し、Pairing workflow の Rust 側で AP モード `/api/auth/login` と `GET /api/settings/network` による到達・認証 precheck を実装した。理由: `LocalServer` が担っていた AP 認証責務を段階的に `SecretCore` へ寄せ、bundle 送達前の失敗理由を Rust 側 workflow 状態へ反映できるようにするため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/session` placeholder を追加し、Rust 側 `runPairingSession()` から `sessionId` / `bundleId` / `targetDeviceId` / `keyVersion` を登録して `verifying` 手前まで進める足場を実装した。理由: 平文秘密値を送らずに AP 側受理状態だけを先に固定し、後続の ECDH / secure bundle 本体送達 / NVS 完了判定を差し込めるようにするため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/bundle-summary` placeholder を追加し、Rust 側 `runPairingSession()` から `publicId` / `nonce` / `signature` / `requestedSettingsSha256` を登録して `bundle_staged` まで進める足場を実装した。理由: raw `k-device` や認証情報をまだ送らずに、AP 側で bundle 受理導線の一段先を固定し、次段の secure bundle transport 実装地点を明確化するため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/transport-session` placeholder を追加し、Rust 側 `runPairingSession()` から `requestedKeyAgreement` / `requestedBundleProtection` を登録して `transport_prepared` まで進める足場を実装した。理由: ECDH / AES-GCM 本体未実装のままでも secure transport の責務境界を先に固定し、後続の実ハンドシェイク差し込み位置を明確化するため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/transport-handshake` を追加し、Rust 側 `runPairingSession()` から P-256 公開鍵交換を実行して双方が transport session key をセッション内メモリだけに保持できるよう更新した。理由: placeholder 交渉から実ハンドシェイクへ進めつつ、raw ECDH 共有秘密を TS や REST 応答へ出さない境界を維持するため。
+- [ ] [008-0028] [2026-03-09][重要] AP 共通トップ画面の共通パスワード認証と、ProductionTool 追加認証を実装する。
   - 共通トップ画面は全デバイス共通固定値で開始
   - 将来変更可能な設計余地を残す
-  - Production はメーカーモード専用パスワードで追加認証
+  - ProductionTool はメーカーモード専用パスワードで追加認証
   - 10分ごと高権限再認証
   - 3回失敗時は AP 再接続または5分待機
 - [ ] [008-0029] [2026-03-09][重要] AP 共通トップ画面へ `shortId`、`public_id`、Production対応/非対応、eFuse、Secure Boot、Flash Encryption、シリアル状態を表示する。
@@ -284,7 +363,7 @@
   - [重要] ファイアウォール許可（ポート 3100 / 4443 等）や Task Scheduler 登録を自動化するが、裏で勝手に行わずウィザード画面でユーザーに一つずつ確認・同意させる方式とする。
   - [重要] アンインストール時の安全消去（`安全消去ポリシー.md`）とファイアウォール・タスク解除を EXE 内の [UninstallRun] 処理等で実装する。
   - 詳細は `インストーラEXE化設計仕様書.md` を参照する。
-- [ ] [009-1021] [2026-03-15][重要] Production（ProductionSoft）用インストーラ/アンインストーラを EXE 化する。
+- [ ] [009-1021] [2026-03-15][重要] `ProductionTool` 用インストーラ/アンインストーラを EXE 化する。
   - [厳守] Inno Setup 等で単一 EXE 化（アンインストーラ自動生成）。工場端末に Python / Node.js 等の追加ランタイムを極力要求しない構成とする。.NET の self-contained 公開または Rust 単体 EXE を優先。
   - [厳守] 実行は管理者権限（UAC）必須。
   - [厳守] LocalServer 環境への混在インストール制約をインストーラで担保する。
@@ -304,6 +383,16 @@
 - [ ] [009-0017] ESP32側でAES-256-GCM復号処理（nonce/tag検証付き）を実装する。
 - [ ] [009-0018] 初回ペアリングAPモード（物理操作必須、短時間有効）を実装する。
 - [ ] [009-0019] [2026-03-09][重要] ペアリング手順（`runPairingSession()` -> ECDH -> `createPairingBundle` 内部生成 -> `k-device` / Wi-Fi / MQTT / OTA / 認証情報 の NVS 保存）を実装する。
+  - [進捗][2026-03-16] `LocalServer/src/pairingWorkflowInput.ts` を追加し、`requestedSettings` の TS 型、`ap/configure` 系入力から `runPairingSession()` start body への変換 helper、TS 側必須項目検証 helper を実装した。理由: pairing workflow API 着手前に入力境界を固定し、`SecretCore` へ不完全入力を流さないようにするため。
+  - [進捗][2026-03-16] `LocalServer/src/server.ts` に `POST /api/workflows/pairing/start` を追加し、`requestedSettings` 直接入力と `ap/configure` 系入力の両方から start body を解決して `SecretCoreFacade.runPairingSession()` へ渡す経路を実装した。理由: TS 側の REST 境界を先に固定し、次段の Rust workflow 実装を差し込みやすくするため。
+  - [進捗][2026-03-16] `SecretCore/src/pairing_workflow.rs` と `main.rs` に `run_pairing_session` / `get_workflow_status` の Pairing workflow 骨格を追加し、`queued -> running -> failed(placeholder)` の状態管理を実装した。理由: IPC unknown-command 状態を解消し、次段で AP モード通信 / ECDH / bundle 送達 / NVS 完了判定を差し込める Rust 側の土台を先に固定するため。
+  - [進捗][2026-03-16] Pairing workflow 骨格を `create_pairing_bundle()` 利用へ更新し、`queued -> running(bundle生成済み) -> waiting_device(bundle送達待ち) -> failed(placeholder)` まで進めた。理由: `createPairingBundle` を workflow 内部 helper として先に固定し、次段で AP モード通信本体を差し込む位置を明確にするため。
+  - [進捗][2026-03-16] Pairing workflow に AP モード到達・認証 precheck を追加し、Rust 側で `/api/auth/login` と `GET /api/settings/network` を実行してから `waiting_device` へ進むよう更新した。理由: 秘密処理側が通信開始責務を持つ設計へ段階移行し、AP 未到達・認証失敗を workflow エラーとして返せるようにするため。
+  - [進捗][2026-03-16] ESP32 AP 側に `GET /api/pairing/state` placeholder を追加し、Rust 側 precheck から `targetDeviceId` / `state` / `keyDevicePresent` を取得できるよう更新した。理由: `waiting_device` 以降の監視導線を先に固定し、bundle 送達後の `verifying` 実装へつなげやすくするため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/session` placeholder を追加し、Rust 側 workflow が `waiting_device -> verifying -> failed(placeholder)` まで進めるよう更新した。理由: 秘密 payload 本文をまだ送らずとも、AP 側の session metadata 受理状態を固定して次段の secure transport 実装地点を明確化するため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/bundle-summary` placeholder を追加し、Rust 側 workflow が `publicId` / `nonce` / `signature` / `requestedSettingsSha256` を stage して `bundle_staged` 状態を確認できるよう更新した。理由: `verifying` に入る前の AP 側受理状態を session metadata より一段具体化しつつ、秘密本体未送信の安全側 placeholder を維持するため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/transport-session` placeholder を追加し、Rust 側 workflow が `requestedKeyAgreement` / `requestedBundleProtection` を交渉して `transport_prepared` 状態を確認できるよう更新した。理由: secure bundle 本体送達直前の交渉段階を先に固定し、ECDH 実装時に TS 側へ責務を漏らさず後続APIを差し込めるようにするため。
+  - [進捗][2026-03-16] ESP32 AP 側に `POST /api/pairing/transport-handshake` を追加し、Rust 側 workflow が P-256 ECDH handshake と transport session key 導出を完了して `transport_established` 状態を確認できるよう更新した。理由: secure transport の実ハンドシェイクを先に成立させ、残課題を encrypted bundle 本体送達 / 復号 / NVS 保存へ絞るため。
 - [ ] [009-0020] [2026-03-09][重要] ESP32 の `current/previous` key 2 スロット運用と稼働時間 48h / 240h 管理を実装する。
   - `previousKeyState = grace / expired-retained / deleted`
   - 起動後5分で1回、その後1時間ごとに runtime を NVS へ記録
@@ -348,10 +437,14 @@
 - [厳守] 完了タスクは `todo_oldYYYYMMDD.md` へ退避し、本書から削除する。
 
 ## 変更履歴
+- 2026-03-18: `004-0009` 進捗: PT-002/PT-003/PT-005 骨格（`auth_screen_state.rs`・`device_select_screen_state.rs`・`dry_run_screen_state.rs`）を追加し、`main.rs` をウィザードフロー対応に拡張して `cargo check` 通過。理由: スモーク試験実施に向けて追加認証・対象機確認・dry-run 導線の実装を先行完了させるため。
+- 2026-03-18: `004-0008` を完了化し、`SecretCore` reachable 到達確認結果（7086 OK）を記録。理由: `SecretCore` 起動状態で `ProductionTool cargo run` を実行し、`secretCorePreflightResult=reachable`・監査ログ出力を確認したため。
+- 2026-03-16: フェーズC/D を「`LocalServer` 基本安定化 -> `ProductionTool` 基本安定化 -> 耐久/過負荷 -> 鍵/不可逆導線 -> 総合ゲート -> eFuse」の順へ再整理し、`004-0008`〜`004-0010` を追加。理由: `LocalServer` と `ProductionTool` の基本機能を先に実装・試験・安定化させてから鍵手順や不可逆処理へ進む方針を `todo.md` 全体へ反映するため。
+- 2026-03-16: `todo.md` に「直近実行順序（2026-03-16再整理）」と `003-0020`〜`003-0024` の安定化/耐久/過負荷/総合進入判定ゲートを追加し、`005`→`004`→`006`→`007` の着手順を明示。理由: `LocalServer` とセキュア機能を先に固め、OTA耐久試験と長時間過負荷試験を通してから `ProductionTool` / eFuse へ進む方針を明文化するため。
 - 2026-03-15: `003-0014` を完了化。理由: ランダム Pipe 名、32byte IPC セッション鍵、AES-256-GCM、requestId リプレイ拒否を実装し、E2E 動作確認まで完了したため。
 - 2026-03-15: `003-0012` を [部分完了] へ見直し、`003-0013` と `003-0019` を完了化。理由: `SecretCoreFacade` による境界IF固定と k-user バックアップ実装は完了した一方、通信まで Rust 主導の最終要件は未達のため。
 - 2026-03-15: `003-0019`（SecretCore `export_k_user` / `import_k_user_backup`）を追加。理由: `k-user` のパスワード暗号化バックアップ受け渡しを Rust 側で完結させるフェーズC課題を明示するため。
-- 2026-03-13: Rust/TS 併用切り替え可能、ProductionSoft（Rust共通・GUI=Windowsアプリ）、002-1000番台・009-1000番台セクション、新ルータ `192.168.1.x` 運用反映。理由: セキュア部移行方針、Production設計、タスク順序、ネットワーク現状を整合させるため。
+- 2026-03-13: Rust/TS 併用切り替え可能、`ProductionTool`（Rust共通部再利用・GUI=Windowsアプリ・`LocalServer` とは別ソフト）、002-1000番台・009-1000番台セクション、新ルータ `192.168.1.x` 運用反映。理由: セキュア部移行方針、`ProductionTool` 設計、タスク順序、ネットワーク現状を整合させるため。
 - 2026-03-13: `LocalSoft` 廃止・`LocalServer` 一体化方針を反映し、`003-0012`/`003-0013`/`003-0017` と `009-0002`〜`009-0006` を統合前提へ更新。理由: 保存・同期・運用機能の実装先を単一化し、以後のタスクを新方針と一致させるため。
 - 2026-03-13: `7048/7049` を完了化。理由: 7048 最終620回異常0件に加え、7049 で `pruneFileLogsIfNeeded removed` の実機証跡を取得し、試験後に本番しきい値FWへ復元したため。
 - 2026-03-13: 7048/7049 に最終620回再試験の進捗を追記。理由: バッチflush版FWで異常0件を再確認し、#0008 の再現性評価を最新化するため。
@@ -385,7 +478,7 @@
 - 2026-03-13: `002-0017` の進捗を更新。理由: `connection refused` の内訳を再調査した結果、実体は `X509` 検証失敗および `mqttTlsCertSha256` メタ不整合（`cert sha256 mismatch`）であることを確認し、再開手順を「COM9で復旧FW反映」優先へ改めたため。
 - 2026-03-13: `002-0017` の進捗を更新。理由: OTA反映後の実機試験で `IPKG_HTTP_CONNECT_FAILED`（`reason=connection refused`）を確認し、阻害点が `SHA-256` ではなく HTTPS 配布口 `:4443` の接続拒否であることを確定できたため。
 - 2026-03-12: `002-0017` の進捗を更新。理由: `imagePackageApply` 実機再試験で `connect(): failed connect` を確認し、失敗原因を遠隔で判別できるよう `IPKG_HTTP_CONNECT_FAILED` など詳細エラーコード通知を `mqtt.cpp` へ追加したため。
-- 2026-03-12: `003-0012`〜`003-0018` を追加。理由: `LocalServer` / `Production` / `LocalSoft` の Rust主導セキュア化、UI/セキュア分離、境界IPC保護、インストーラ/アンインストーラ整備（機密安全消去必須）を直近フェーズCの実装タスクとして固定するため。
+- 2026-03-12: `003-0012`〜`003-0018` を追加。理由: `LocalServer` / `ProductionTool` / `LocalSoft` の Rust主導セキュア化、UI/セキュア分離、境界IPC保護、インストーラ/アンインストーラ整備（機密安全消去必須）を直近フェーズCの実装タスクとして固定するため。
 - 2026-03-12: `002-0017` / `002-0018` の進捗を更新。理由: `imagePackageApply` 実送信で `planning=OK` / `downloading=NG(IPKG_DOWNLOAD_OR_HASH_FAILED)` まで確認し、OTA HTTPS 側 `/assets` 公開対応・`mqttTask` スタック最適化（12288 + 分割静的バッファ）を反映、翌日再開手順を固定するため。
 - 2026-03-12: `002-0017` の進捗を再更新。理由: `imagePackageApply` の ZIP 展開本体（安全パス検証・`overwrite` 制御・`tmp` + `rename`）を実装し、`IPKG_ZIP_NOT_IMPLEMENTED` 状態を解消したため（現時点は ZIP `stored` 方式のみ対応）。
 - 2026-03-12: `002-0017` の進捗を更新。理由: `imagePackageApply` の受信・署名検証・HTTPS取得・SHA-256検証・スコープ検証・進捗通知（`imagePackageStatus`）を追加し、残課題を ZIP 安全展開に限定したため。
@@ -423,8 +516,8 @@
 - 2026-03-08: ESP32 内部設定の NVS 永続化と、メンテナンス用 Wi-Fi AP モードからの設定修正を直近フェーズへ追加。理由: Wi-Fi AP や MQTT ブローカー変更時に現地メンテナンスで復旧できることを、当面の最優先課題へ反映するため。
 - 2026-03-08: 直近ゴール順に `todo.md` を再編成し、完了済みの「仕様書へ追加する」系タスクを整理。理由: ESP32 と LocalServer の当面の到達目標（2面OTA確認、鍵/証明書本番化、Secure Boot/ROM暗号化、eFuse後OTA継続）に沿って着手順を明確化するため。
 - 2026-03-08: eFuse 本番前リハーサル、専用処理タスクのスタックサイズ確保、開始前メモリ余裕確認のタスクを追加。理由: eFuse 失敗防止には手順確認だけでなく実行時資源の安全余裕も必要であるため。
-- 2026-03-08: `Production` の隠し入口、専用パスワード、段階実行ウィザードの設計タスクを追加。理由: 高リスク機能の入口制御と操作確認を未完了タスクとして具体化するため。
-- 2026-03-08: `Production`、ESP32内部専用セキュア化フロー、中断時の読戻し判定タスクを追加。理由: 過去のシリアル焼込み中断経験を踏まえて、eFuse 最終有効化の安全設計を未完了タスクへ具体化するため。
+- 2026-03-08: `ProductionTool` の隠し入口、専用パスワード、段階実行ウィザードの設計タスクを追加。理由: 高リスク機能の入口制御と操作確認を未完了タスクとして具体化するため。
+- 2026-03-08: `ProductionTool`、ESP32内部専用セキュア化フロー、中断時の読戻し判定タスクを追加。理由: 過去のシリアル焼込み中断経験を踏まえて、eFuse 最終有効化の安全設計を未完了タスクへ具体化するため。
 - 2026-03-08: OTA標準運用を「メーカー署名 + 顧客実行」として実装タスクへ反映。理由: 正式採用した運用モデルを作業項目へ直結させるため。
 - 2026-03-08: `日程表_ローカル運用まで_50日.md` の未完了事項と進捗ルールを `todo.md` へ統合する前提で、試験・統合タスクと運用ルールを追加。理由: タスク管理文書の冗長化を解消し、更新先を一本化するため。
 - 2026-03-08: `k-iot` 系の実キー生成タスク（試験用/本番用の生成時期、保存場所、eFuseリハーサル、文書追記）を追加。理由: ESP32 セキュリティ鍵の作成タイミングと保管責任を未完了タスクとして具体化するため。

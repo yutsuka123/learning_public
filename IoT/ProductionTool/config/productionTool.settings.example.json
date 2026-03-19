@@ -1,0 +1,8 @@
+{
+  "applicationName": "ProductionTool",
+  "applicationVersion": "0.1.0",
+  "defaultMode": "startupSkeleton",
+  "auditLogDirectoryPath": "logs",
+  "secretCorePipeName": "\\\\.\\pipe\\iot-secret-core-ipc",
+  "enableSecretCorePreflight": true
+}

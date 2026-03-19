@@ -2,10 +2,11 @@
   @file index.html
   @description LocalServer管理画面（ESP32一覧、status要求、OTA要求）を提供する。
   @important [重要] Web UIは読み取り中心で、操作はREST API経由で実行する。
-  @strict [厳守] 送信対象は「選択」「全体」を切替可能にする。
+  @strict [厳守] `status` は「選択」「全体」を切替可能にし、OTA は単一対象機 workflow のみを扱う。
   @strict [003-0001] OTA実行時は管理者パスワード再入力を要求。同一セッション内3時間有効、ブラウザ終了で失効。
+  @important [2026-03-16][003-0012] SecretCore有効時のOTA開始は単一対象機の signed OTA workflow を優先し、UIは workflow 状態表示のみを担当する。
   @forbidden [禁止] 機密情報をブラウザ画面へ表示しない。
-  @forbidden [禁止][003-0011] eFuse 実行ボタン・UIを追加しない。eFuse は Production ツール専用。
+  @forbidden [禁止][003-0011] eFuse 実行ボタン・UIを追加しない。eFuse は ProductionTool専用。
 -->
 <!doctype html>
 <html lang="ja">
@@ -121,21 +122,36 @@
       .otaAuthModal input { width: 100%; padding: 6px; margin-top: 4px; }
       .otaAuthModal .buttonRow { margin-top: 16px; display: flex; gap: 8px; }
       .otaAuthModal .errorText { color: #b91c1c; font-size: 13px; margin-top: 8px; }
+      .workflowNotice {
+        margin-bottom: 12px;
+        padding: 10px 12px;
+        border: 1px solid #93c5fd;
+        border-radius: 8px;
+        background: #eff6ff;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
     </style>
   </head>
   <body>
     <h1>IoT LocalServer</h1>
     <div class="pageDescription">
-      ESP32一覧をブラウザで確認し、各デバイスごとに `status更新` と `OTA開始` を実行します。
+      ESP32一覧をブラウザで確認し、各デバイスごとに `status更新` と `OTA開始` を実行します。OTA は `SecretCore` の workflow 状態を表示します。
     </div>
     <div class="toolbar">
       <button id="refreshButton">一覧更新</button>
       <button id="statusSelectedButton">選択へstatus要求</button>
       <button id="statusAllButton">全体へstatus要求</button>
-      <button id="otaSelectedButton">選択へOTA要求</button>
-      <button id="otaAllButton">全体へOTA要求</button>
+      <button id="otaSelectedButton">選択1台へOTA開始</button>
+      <button id="otaAllButton">全体OTAは未対応</button>
       <button id="openSettingsButton">設定</button>
       <button id="openAdminButton">管理者画面</button>
+    </div>
+    <div class="workflowNotice">
+      [重要][2026-03-16] `SecretCore` の signed OTA workflow は現在単一対象機のみ対応です。
+      Web UI は開始要求と `queued / running / waiting_device / verifying / completed / failed` の状態表示のみを担当します。
     </div>
     <table>
       <thead>
@@ -151,6 +167,7 @@
           <th>FWバージョン</th>
           <th>FW書換日時</th>
           <th>OTA進捗</th>
+          <th>OTA workflow</th>
           <th>詳細</th>
           <th>最終更新日時</th>
           <th>操作</th>
@@ -200,11 +217,29 @@
        * @property {string} environmentUpdatedAt 環境データ最終取得日時
        */
 
+      /**
+       * @typedef {Object} OtaWorkflowStatus
+       * @property {string} workflowId workflow識別子
+       * @property {string} workflowType workflow種別
+       * @property {string} targetDeviceName 対象デバイス名
+       * @property {"queued"|"running"|"waiting_device"|"verifying"|"completed"|"failed"} state workflow状態
+       * @property {string} result 最終結果
+       * @property {string} errorSummary エラー要約
+       * @property {string} detail 補助詳細
+       * @property {string} startedAt 開始日時
+       * @property {string} updatedAt 更新日時
+       * @property {string} firmwareVersion 対象ファームウェア版数
+       */
+
       const deviceTableBody = document.getElementById("deviceTableBody");
       const logArea = document.getElementById("logArea");
       const selectedDeviceSet = new Set();
+      const latestOtaWorkflowByDeviceName = new Map();
+      const activeOtaWorkflowPollMap = new Map();
       let latestDeviceList = [];
       let currentTimeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "Asia/Tokyo";
+      let otaWorkflowPollTimerId = null;
+      let isOtaWorkflowPolling = false;
 
       /**
        * @description ログ表示を追記する。
@@ -226,7 +261,7 @@
         if (latestDeviceList.length === 0) {
           const emptyRow = document.createElement("tr");
           emptyRow.innerHTML = `
-            <td colspan="14">デバイス未検出です。status更新で再取得してください。</td>
+            <td colspan="15">デバイス未検出です。status更新で再取得してください。</td>
           `;
           deviceTableBody.appendChild(emptyRow);
           return;
@@ -235,6 +270,7 @@
           const row = document.createElement("tr");
           const checkedValue = selectedDeviceSet.has(deviceItem.deviceName) ? "checked" : "";
           const otaProgressText = formatOtaProgress(deviceItem);
+          const otaWorkflowText = formatWorkflowStatusText(deviceItem.deviceName);
           const partitionSummaryText = formatPartitionSummary(deviceItem);
           const firmwareWrittenAtText = formatDateTimeByTimeZone(deviceItem.firmwareWrittenAt);
           const lastSeenAtText = formatDateTimeByTimeZone(deviceItem.lastSeenAt);
@@ -253,6 +289,7 @@
             <td>${deviceItem.firmwareVersion || ""}</td>
             <td>${firmwareWrittenAtText}</td>
             <td>${otaProgressText}</td>
+            <td>${otaWorkflowText}</td>
             <td>${buildDetailCellText(deviceItem.detail || "", partitionSummaryText)}</td>
             <td>${lastSeenAtText}</td>
             <td>
@@ -301,6 +338,89 @@
           partList.push(`(done Time=${formatDateTimeByTimeZone(deviceItem.otaUpdatedAt)})`);
         }
         return partList.join(" ").trim();
+      }
+
+      /**
+       * @description 対象デバイスの OTA workflow 状態表示文字列を返す。
+       * @param {string} deviceName 対象デバイス名。
+       * @returns {string} workflow 表示文字列。
+       */
+      function formatWorkflowStatusText(deviceName) {
+        const workflowStatus = latestOtaWorkflowByDeviceName.get(deviceName);
+        if (!workflowStatus) {
+          return "-";
+        }
+        return buildWorkflowSummaryText(workflowStatus);
+      }
+
+      /**
+       * @description workflow 状態を一覧表示向け文字列へ変換する。
+       * @param {OtaWorkflowStatus} workflowStatus workflow 状態。
+       * @returns {string} 表示文字列。
+       */
+      function buildWorkflowSummaryText(workflowStatus) {
+        const partList = [];
+        if (workflowStatus.state) {
+          partList.push(workflowStatus.state);
+        }
+        if (workflowStatus.result) {
+          partList.push(`result=${workflowStatus.result}`);
+        }
+        if (workflowStatus.errorSummary) {
+          partList.push(`error=${workflowStatus.errorSummary}`);
+        }
+        if (workflowStatus.detail) {
+          partList.push(workflowStatus.detail);
+        }
+        if (workflowStatus.updatedAt) {
+          partList.push(`updated=${formatDateTimeByTimeZone(workflowStatus.updatedAt)}`);
+        }
+        return partList.join(" / ").trim();
+      }
+
+      /**
+       * @description workflow が終端状態か判定する。
+       * @param {string} workflowState workflow 状態。
+       * @returns {boolean} 終端なら true。
+       */
+      function isTerminalWorkflowState(workflowState) {
+        return workflowState === "completed" || workflowState === "failed";
+      }
+
+      /**
+       * @description workflow 状態の主要表示項目が変化したか判定する。
+       * @param {OtaWorkflowStatus|undefined} previousWorkflowStatus 直前状態。
+       * @param {OtaWorkflowStatus} nextWorkflowStatus 最新状態。
+       * @returns {boolean} 表示更新が必要なら true。
+       */
+      function hasWorkflowStatusChanged(previousWorkflowStatus, nextWorkflowStatus) {
+        if (!previousWorkflowStatus) {
+          return true;
+        }
+        return previousWorkflowStatus.state !== nextWorkflowStatus.state ||
+          previousWorkflowStatus.result !== nextWorkflowStatus.result ||
+          previousWorkflowStatus.errorSummary !== nextWorkflowStatus.errorSummary ||
+          previousWorkflowStatus.detail !== nextWorkflowStatus.detail ||
+          previousWorkflowStatus.updatedAt !== nextWorkflowStatus.updatedAt;
+      }
+
+      /**
+       * @description workflow 状態を保持し、必要時に一覧再描画とログ追記を行う。
+       * @param {OtaWorkflowStatus} workflowStatus 最新 workflow 状態。
+       */
+      function upsertOtaWorkflowStatus(workflowStatus) {
+        const previousWorkflowStatus = latestOtaWorkflowByDeviceName.get(workflowStatus.targetDeviceName);
+        latestOtaWorkflowByDeviceName.set(workflowStatus.targetDeviceName, workflowStatus);
+        renderDeviceList(latestDeviceList);
+        if (hasWorkflowStatusChanged(previousWorkflowStatus, workflowStatus)) {
+          appendLog(
+            `ota workflow update device=${workflowStatus.targetDeviceName} workflowId=${workflowStatus.workflowId} ${buildWorkflowSummaryText(workflowStatus)}`
+          );
+        }
+        if (isTerminalWorkflowState(workflowStatus.state)) {
+          activeOtaWorkflowPollMap.delete(workflowStatus.workflowId);
+          stopOtaWorkflowPollingIfIdle();
+        }
       }
 
       /**
@@ -503,63 +623,171 @@
       }
 
       /**
+       * @description API応答から workflow 状態を検証して返す。
+       * @param {Response} response fetch 応答。
+       * @param {string} operationName 操作名。
+       * @returns {Promise<OtaWorkflowStatus>} workflow 状態。
+       */
+      async function parseWorkflowApiResponse(response, operationName) {
+        let jsonObject = {};
+        try {
+          jsonObject = await response.json();
+        } catch (responseJsonError) {
+          throw new Error(
+            `${operationName} failed. status=${response.status} responseJsonError=${responseJsonError.message || String(responseJsonError)}`
+          );
+        }
+        if (response.status === 401) {
+          throw new Error(`${operationName} failed. admin token expired.`);
+        }
+        if (!response.ok || jsonObject.result !== "OK" || !jsonObject.workflow) {
+          throw new Error(
+            `${operationName} failed. status=${response.status} detail=${jsonObject.detail || jsonObject.result || "unknown"}`
+          );
+        }
+        return jsonObject.workflow;
+      }
+
+      /**
+       * @description signed OTA workflow 開始APIを呼び出す。
+       * @param {string} targetDeviceName 対象デバイス名。
+       * @param {string} adminToken 管理者トークン。
+       * @returns {Promise<OtaWorkflowStatus>} 初期 workflow 状態。
+       */
+      async function requestSignedOtaWorkflowStart(targetDeviceName, adminToken) {
+        const response = await fetch("/api/workflows/signed-ota/start", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${adminToken}`
+          },
+          body: JSON.stringify({ targetNames: [targetDeviceName] })
+        });
+        return await parseWorkflowApiResponse(response, "requestSignedOtaWorkflowStart");
+      }
+
+      /**
+       * @description workflow 状態取得APIを呼び出す。
+       * @param {string} workflowId workflow ID。
+       * @param {string} adminToken 管理者トークン。
+       * @returns {Promise<OtaWorkflowStatus>} 最新 workflow 状態。
+       */
+      async function requestWorkflowStatus(workflowId, adminToken) {
+        const response = await fetch(`/api/workflows/${encodeURIComponent(workflowId)}`, {
+          headers: {
+            "Authorization": `Bearer ${adminToken}`
+          }
+        });
+        return await parseWorkflowApiResponse(response, "requestWorkflowStatus");
+      }
+
+      /**
+       * @description active な OTA workflow の polling を開始する。
+       */
+      function ensureOtaWorkflowPollingStarted() {
+        if (otaWorkflowPollTimerId !== null) {
+          return;
+        }
+        otaWorkflowPollTimerId = window.setInterval(() => {
+          pollActiveOtaWorkflows().catch((pollError) => appendLog(pollError.message));
+        }, 2000);
+      }
+
+      /**
+       * @description active workflow が無い場合は polling を停止する。
+       */
+      function stopOtaWorkflowPollingIfIdle() {
+        if (activeOtaWorkflowPollMap.size > 0 || otaWorkflowPollTimerId === null) {
+          return;
+        }
+        clearInterval(otaWorkflowPollTimerId);
+        otaWorkflowPollTimerId = null;
+      }
+
+      /**
+       * @description active な OTA workflow を順次 poll する。
+       */
+      async function pollActiveOtaWorkflows() {
+        if (isOtaWorkflowPolling || activeOtaWorkflowPollMap.size === 0) {
+          return;
+        }
+        isOtaWorkflowPolling = true;
+        try {
+          const activeWorkflowEntries = Array.from(activeOtaWorkflowPollMap.entries());
+          for (const [workflowId, pollState] of activeWorkflowEntries) {
+            try {
+              const workflowStatus = await requestWorkflowStatus(workflowId, pollState.adminToken);
+              upsertOtaWorkflowStatus(workflowStatus);
+            } catch (pollError) {
+              if ((pollError.message || "").includes("admin token expired")) {
+                sessionStorage.removeItem(adminTokenStorageKey);
+                activeOtaWorkflowPollMap.delete(workflowId);
+                appendLog(`ota workflow polling stopped. workflowId=${workflowId} reason=${pollError.message}`);
+                continue;
+              }
+              appendLog(`ota workflow polling retry. workflowId=${workflowId} reason=${pollError.message}`);
+            }
+          }
+        } finally {
+          isOtaWorkflowPolling = false;
+          stopOtaWorkflowPollingIfIdle();
+        }
+      }
+
+      /**
        * @description OTA要求を送信する。
        * @param {"all"|"selected"} mode 送信モード。
        */
       async function sendOtaCommand(mode) {
-        let token;
-        try {
-          token = await ensureOtaAuth();
-        } catch {
-          appendLog("OTA: 認証がキャンセルされました。");
-          return;
+        if (mode === "all") {
+          throw new Error("sendOtaCommand failed. signed OTA workflow is single-target only. mode=all is not supported.");
         }
         syncSelectedDevicesFromView();
-        const body = mode === "all" ? { targetNames: "all" } : { targetNames: Array.from(selectedDeviceSet) };
-        const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
-        const response = await fetch("/api/commands/ota", {
-          method: "POST",
-          headers,
-          body: JSON.stringify(body)
-        });
-        if (response.status === 401) {
-          sessionStorage.removeItem(adminTokenStorageKey);
-          appendLog("OTA: 認証が失効しました。再ログインしてください。");
-          token = await ensureOtaAuth().catch(() => null);
-          if (!token) return;
-          return sendOtaCommand(mode);
+        const targetDeviceNameList = Array.from(selectedDeviceSet);
+        if (targetDeviceNameList.length !== 1) {
+          throw new Error(`sendOtaCommand failed. single target is required. selectedCount=${targetDeviceNameList.length}`);
         }
-        const jsonObject = await response.json();
-        appendLog(`ota command result=${jsonObject.result} target=${JSON.stringify(body.targetNames)}`);
+        await sendOtaCommandToSingleDevice(targetDeviceNameList[0]);
       }
 
       /**
-       * @description 単体デバイスへOTA要求を送信する。
+       * @description 単体デバイスへ signed OTA workflow 開始要求を送信する。
        * @param {string} deviceName 対象デバイス名。
        */
       async function sendOtaCommandToSingleDevice(deviceName) {
-        let token;
+        let adminToken;
         try {
-          token = await ensureOtaAuth();
+          adminToken = await ensureOtaAuth();
         } catch {
           appendLog("OTA: 認証がキャンセルされました。");
           return;
         }
-        const headers = { "Content-Type": "application/json", "Authorization": `Bearer ${token}` };
-        const response = await fetch("/api/commands/ota", {
-          method: "POST",
-          headers,
-          body: JSON.stringify({ targetNames: [deviceName] })
-        });
-        if (response.status === 401) {
+        let workflowStatus;
+        try {
+          workflowStatus = await requestSignedOtaWorkflowStart(deviceName, adminToken);
+        } catch (startError) {
+          if (!(startError.message || "").includes("admin token expired")) {
+            throw startError;
+          }
           sessionStorage.removeItem(adminTokenStorageKey);
           appendLog("OTA: 認証が失効しました。再ログインしてください。");
-          token = await ensureOtaAuth().catch(() => null);
-          if (!token) return;
-          return sendOtaCommandToSingleDevice(deviceName);
+          adminToken = await ensureOtaAuth().catch(() => null);
+          if (!adminToken) {
+            return;
+          }
+          workflowStatus = await requestSignedOtaWorkflowStart(deviceName, adminToken);
         }
-        const jsonObject = await response.json();
-        appendLog(`ota command result=${jsonObject.result} target=${deviceName}`);
+        upsertOtaWorkflowStatus(workflowStatus);
+        if (!isTerminalWorkflowState(workflowStatus.state)) {
+          activeOtaWorkflowPollMap.set(workflowStatus.workflowId, {
+            adminToken,
+            targetDeviceName: deviceName
+          });
+          ensureOtaWorkflowPollingStarted();
+        }
+        appendLog(
+          `ota workflow started device=${deviceName} workflowId=${workflowStatus.workflowId} firmwareVersion=${workflowStatus.firmwareVersion}`
+        );
       }
 
       /**
@@ -603,6 +831,8 @@
           sendOtaCommandToSingleDevice(deviceName).catch((error) => appendLog(error.message));
         }
       });
+      document.getElementById("otaAllButton").disabled = true;
+      document.getElementById("otaAllButton").title = "SecretCore OTA workflow は現在単一対象機のみ対応です。";
       document.getElementById("refreshButton").addEventListener("click", () => fetchDevices().catch((error) => appendLog(error.message)));
       document.getElementById("statusSelectedButton").addEventListener("click", () => sendStatusCommand("selected").catch((error) => appendLog(error.message)));
       document.getElementById("statusAllButton").addEventListener("click", () => sendStatusCommand("all").catch((error) => appendLog(error.message)));

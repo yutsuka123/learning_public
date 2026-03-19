@@ -66,7 +66,7 @@
 ### 4.1 AP 共通トップ画面 IF
 - [厳守] AP 名は `AP-esp32lab-<MAC(no colon)>` とする。
 - [厳守] AP 接続後は共通トップ画面パスワード認証を要求する。
-- [厳守] 共通トップ画面から Production 画面へ進む場合は、メーカーモード専用パスワードの追加認証を要求する。
+- [厳守] 共通トップ画面から `ProductionTool` 画面へ進む場合は、メーカーモード専用パスワードの追加認証を要求する。
 - [厳守] 未認証状態では設定値参照、設定更新、FW更新、画像更新APIを拒否する。
 - [推奨] AP Web UI の初期パスワード（各ロール）は、初回ログイン時または運用開始前に変更する。
 - [推奨] 例外的に固定値継続する場合でも、理由・対象・予定期間を監査ログへ記録する。
@@ -85,7 +85,7 @@
 - [重要] APモードのロール定義、ユーザー別権限、画面項目詳細は `APメンテナンス画面仕様書.md` を参照する。
 
 ### 4.1.1 AP メンテナンス一括運用 IF（PC側）
-- [重要] LocalServer / Production は、指定USB Wi-Fiインタフェースで `AP-esp32lab-<MAC(no colon)>` を探索する。
+- [重要] `LocalServer` / `ProductionTool` は、指定USB Wi-Fiインタフェースで `AP-esp32lab-<MAC(no colon)>` を探索する。
 - [重要] 推奨フロー:
   1. AP探索
   2. 対象APへ接続
@@ -204,6 +204,103 @@
   - `previousKeyState`
 - [厳守] NVS 保存成功時のみ `result=OK` とする。
 - [厳守] 署名検証失敗、復号失敗、NVS 保存失敗時は `result=NG` とする。
+
+### 4.7.0 AP Pairing session metadata IF
+- 目的: `runPairingSession()` の placeholder 段階で、AP 側が `sessionId` / `bundleId` / `targetDeviceId` / `keyVersion` の受理状態を保持する。
+- HTTP:
+  - `POST /api/pairing/session`
+- 要求項目:
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `keyVersion`
+- 応答項目例:
+  - `result`
+  - `state`
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `detail`
+- [厳守] 現段階の placeholder IF では bundle 本文、raw `kDevice`、ECDH 共有秘密、`k-pairing-session` を送らない。
+- [厳守] 本 IF は AP 側状態の受理枠であり、NVS 保存成功を意味しない。
+- [将来対応] ECDH / 署名検証 / 復号 / NVS 保存本体を実装したら、metadata 受理から secure bundle 適用完了 IF へ拡張する。
+
+### 4.7.0.1 AP Pairing bundle summary IF
+- 目的: `runPairingSession()` の placeholder 段階で、AP 側が bundle 本体ではなく非秘密 summary の受理状態を保持する。
+- HTTP:
+  - `POST /api/pairing/bundle-summary`
+- 要求項目:
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `publicId`
+  - `keyVersion`
+  - `nonce`
+  - `signature`
+  - `requestedSettingsSha256`
+- 応答項目例:
+  - `result`
+  - `state`
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `publicId`
+  - `keyVersion`
+  - `requestedSettingsSha256`
+  - `detail`
+- [厳守] 現段階の placeholder IF では raw `kDevice`、Wi-Fi/MQTT/OTA 認証情報、bundle 平文 JSON、ECDH 共有秘密を送らない。
+- [厳守] `requestedSettingsSha256` は平文設定送達の代替ではなく、placeholder 段階の整合確認用 summary として扱う。
+- [厳守] 本 IF は AP 側状態の受理枠であり、署名検証成功や NVS 保存成功を意味しない。
+- [将来対応] ECDH / secure bundle transport / NVS 保存本体を実装したら、summary 受理から暗号化済み bundle 適用完了 IF へ拡張する。
+
+### 4.7.0.2 AP Pairing transport session IF
+- 目的: `runPairingSession()` の placeholder 段階で、AP 側が secure transport 本体に入る前の交渉状態を保持する。
+- HTTP:
+  - `POST /api/pairing/transport-session`
+- 要求項目:
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `requestedKeyAgreement`
+  - `requestedBundleProtection`
+- 応答項目例:
+  - `result`
+  - `state`
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `acceptedKeyAgreement`
+  - `acceptedBundleProtection`
+  - `detail`
+- [厳守] 現段階の placeholder IF では ECDH 公開鍵、ECDH 共有秘密、暗号化済み bundle 本体を送らない。
+- [厳守] `requestedKeyAgreement` / `requestedBundleProtection` は実暗号処理成功ではなく、secure transport 本体を差し込む前の交渉 placeholder として扱う。
+- [厳守] 本 IF は AP 側状態の受理枠であり、復号成功や NVS 保存成功を意味しない。
+- [将来対応] ECDH / secure bundle transport / NVS 保存本体を実装したら、交渉 placeholder から実ハンドシェイクへ拡張する。
+
+### 4.7.0.3 AP Pairing transport handshake IF
+- 目的: `runPairingSession()` が AP 側と P-256 ECDH handshake を行い、encrypted bundle 送達前の transport session key を双方で導出する。
+- HTTP:
+  - `POST /api/pairing/transport-handshake`
+- 要求項目:
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `clientPublicKeyBase64`
+- 応答項目例:
+  - `result`
+  - `state`
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `acceptedKeyAgreement`
+  - `acceptedBundleProtection`
+  - `serverPublicKeyBase64`
+  - `sharedSecretFingerprint`
+  - `detail`
+- [厳守] P-256 の ECDH 共有秘密そのものは REST 応答へ含めず、双方のプロセス内メモリだけに保持する。
+- [厳守] `sharedSecretFingerprint` は transport session key の照合用摘要であり、raw secret ではない。
+- [厳守] 本 IF は transport session key 導出までを担当し、encrypted bundle の復号成功や NVS 保存成功を意味しない。
+- [将来対応] 後続の encrypted bundle 受理 IF で、本 handshake により導出した transport session key を利用する。
 
 ### 4.7.1 workflow 状態 IF
 - 応答項目例:
@@ -340,7 +437,86 @@
   - 用途: MQTT接続中ESP32へ `call/maintenance` を送信する。
 - [厳守] eFuse 操作 API は LocalServer 側へ実装しない。
 
+### 6.6 `ProductionTool` 基本機能 IF [実装後に使用]
+- [重要] 本節は `004-0008`〜`004-0010` の基本機能安定化フェーズを対象とする。
+- [厳守] 本節の IF は起動、追加認証、対象機確認、dry-run、監査ログ確認までとし、eFuse / Secure Boot / Flash Encryption の不可逆処理本体は含めない。
+- [厳守] `ProductionTool` は `LocalServer` とは別の実行物、別の認証入口、別の監査ログ導線を持つ。
+- [厳守] `ProductionTool` は `LocalServer` と別ソフトとして独立動作し、`SecretCore` 共通部再利用はソフト統合を意味しない。
+
+### 6.6.1 `ProductionTool` 追加認証 IF
+- `POST /api/production/auth/login`
+  - 用途: メーカーモード専用の追加認証を開始する。
+  - 最低入力:
+    - `operatorId`
+    - `password`
+    - `workOrderId`
+  - 応答項目例:
+    - `result`
+    - `sessionId`
+    - `role`
+    - `expiresAt`
+    - `detail`
+- [厳守] 通常管理者パスワードでは代替できない。
+- [厳守] 平文パスワード、復元可能な秘密値を応答や監査ログへ出さない。
+
+### 6.6.2 対象機確認 IF
+- `GET /api/production/devices`
+  - 用途: `ProductionTool` が対象機の識別情報とセキュア化状態を表示する。
+  - 応答項目例:
+    - `deviceName`
+    - `serialNumber`
+    - `macAddress`
+    - `publicId`
+    - `firmwareVersion`
+    - `secureState`
+    - `connectionState`
+    - `detail`
+- [厳守] 本 IF は対象機確認用であり、不可逆処理開始を意味しない。
+- [推奨] 対象機確認文言の再入力結果は `ProductionTool` 側ローカル状態または監査ログで保持する。
+
+### 6.6.3 dry-run IF
+- `POST /api/production/dry-run/start`
+  - 用途: 不可逆処理本体へ入らずに、`ProductionTool` の認証、対象機確認、事前条件確認、監査ログ、停止点を確認する。
+  - 最低入力:
+    - `targetDeviceName`
+    - `sessionId`
+    - `requestedOperation`
+  - 応答項目例:
+    - `result`
+    - `workflowId`
+    - `state`
+    - `detail`
+- `GET /api/production/workflows/{workflowId}`
+  - 用途: dry-run の進捗状態と結果を取得する。
+  - 応答項目例:
+    - `workflowId`
+    - `state`
+    - `result`
+    - `errorSummary`
+    - `updatedAt`
+- [厳守] dry-run は eFuse / Secure Boot / Flash Encryption の本実行手前で停止する。
+- [厳守] dry-run 応答に raw key、中間秘密、eFuse 実値、署名素材を含めない。
+
+### 6.6.4 `ProductionTool` 監査ログ IF
+- `GET /api/production/audit-logs`
+  - 用途: `ProductionTool` の起動、追加認証、対象機確認、dry-run、安全停止の監査ログを取得する。
+  - 応答項目例:
+    - `eventType`
+    - `operatorId`
+    - `targetDeviceName`
+    - `result`
+    - `errorCode`
+    - `loggedAt`
+- [厳守] 監査ログ IF は秘密値を返さない。
+- [重要] `ProductionTool` のログ保存先は `ProductionTool画面仕様書.md` の既定候補と整合させる。
+
 ## 7. 変更履歴
+- 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` と別ソフト・独立動作であることを追記。理由: AP 共通画面や基本機能 IF における名称統一と、共通化/分離の解釈ずれを防ぐため。
+- 2026-03-16: `6.6 ProductionTool 基本機能 IF` を追加。理由: `004-0008`〜`004-0010` の起動・追加認証・対象機確認・dry-run・監査ログ導線を、不可逆処理本体と分離して IF 契約として先に固定するため。
+- 2026-03-16: AP Pairing transport handshake IF（`POST /api/pairing/transport-handshake`）を追加。理由: `runPairingSession()` が secure transport の placeholder 交渉を越えて P-256 ECDH handshake まで進んだため。
+- 2026-03-16: AP Pairing transport session IF（`POST /api/pairing/transport-session`）を追加。理由: `runPairingSession()` が secure bundle 本体前の交渉状態を AP 側へ保持できる placeholder 段階へ進んだため。
+- 2026-03-16: AP Pairing bundle summary IF（`POST /api/pairing/bundle-summary`）を追加。理由: `runPairingSession()` が秘密本体を送らずに AP 側 `bundle_staged` 状態まで進む placeholder 段階へ進んだため。
+- 2026-03-16: AP Pairing session metadata IF（`POST /api/pairing/session`）を追加。理由: `runPairingSession()` が平文秘密を送らずに AP 側受理状態を保持し、`verifying` 手前まで進む placeholder 段階へ進んだため。
 - 2026-03-13: AP/管理者/サービス認証情報の「変更推奨運用」IFを追加し、変更APIおよび監査ログ必須項目を明記。理由: 初期パスワード方針変更を他パスワード類へ横展開し、実装・試験の参照先を統一するため。
 - 2026-03-12: `mqttUrlName` / `serverUrlName` / `otaUrlName` / `timeServerUrlName` / `keyDevice` の実装追従完了に合わせ、4.4 の「将来対応」表記を「反映済み」へ更新。理由: 仕様先行の注記を残すと実装状態と齟齬になるため。
 - 2026-03-12: MQTT payload全文暗号化（`k-device` / `A256GCM`）を必須条件へ昇格し、エンベロープキー（`security.mode` / `enc.*`）と運用モード（plain/compat/strict）を追記。理由: LocalServer-ESP32間の暗号化通信を実装・試験した内容をIF契約へ反映するため。

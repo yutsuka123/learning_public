@@ -25,10 +25,20 @@ import { deviceTransport } from "./deviceTransport";
 import { mqttGateway } from "./mqttGateway";
 import { SettingsStore } from "./settingsStore";
 import { keyService } from "./keyService";
-import { commandRequestBody, otaCommandRequestBody, rollbackTestCommandRequestBody, localServerSettings, genericCommandRequestBody } from "./types";
+import {
+  apConfigureRequestBody,
+  commandRequestBody,
+  otaCommandRequestBody,
+  pairingRequestedSettings,
+  pairingWorkflowStartRequestBody,
+  rollbackTestCommandRequestBody,
+  localServerSettings,
+  genericCommandRequestBody
+} from "./types";
 import { SecretCoreManager } from "./secretCoreManager";
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
 import { SecretCoreFacade } from "./secretCoreFacade";
+import { buildPairingWorkflowStartRequestBodyFromApConfigure, validatePairingWorkflowStartRequestBody } from "./pairingWorkflowInput";
 
 const config = loadConfig();
 const app = express();
@@ -141,40 +151,6 @@ interface apConnectRequestBody {
   ssid: string;
 }
 
-interface apConfigureRequestBody {
-  ssid: string;
-  wifiSsid: string;
-  wifiPass: string;
-  mqttUrl: string;
-  mqttUrlName?: string;
-  mqttUser: string;
-  mqttPass: string;
-  mqttPort: number;
-  mqttTls: boolean;
-  mqttTlsCaCertPem?: string;
-  mqttTlsCertIssueNo?: string;
-  mqttTlsCertSetAt?: string;
-  serverUrl?: string;
-  serverUrlName?: string;
-  serverUser?: string;
-  serverPass?: string;
-  serverPort?: number;
-  serverTls?: boolean;
-  otaUrl?: string;
-  otaUrlName?: string;
-  otaUser?: string;
-  otaPass?: string;
-  otaPort?: number;
-  otaTls?: boolean;
-  timeServerUrl?: string;
-  timeServerUrlName?: string;
-  timeServerPort?: number;
-  timeServerTls?: boolean;
-  targetDeviceName?: string;
-  keyDeviceBase64?: string;
-  requestReboot?: boolean;
-}
-
 interface apBatchNetworkSettings {
   wifiSsid: string;
   wifiPass: string;
@@ -262,13 +238,13 @@ const apBatchRunMap = new Map<string, apBatchRunResult>();
 
 /**
  * @description [003-0011][厳守] eFuse 操作 API 拒否。
- * eFuse / Secure Boot / Flash Encryption の書込みは Production 専用。LocalServer では提供しない。
+ * eFuse / Secure Boot / Flash Encryption の書込みは ProductionTool 専用。LocalServer では提供しない。
  * 理由: IF仕様書「eFuse 操作 API は LocalServer 側へ実装しない」を担保する。
  */
 app.all(/^\/api\/(admin\/efuse|commands\/efuse)/, (_request: Request, response: Response) => {
   response.status(404).json({
     result: "NG",
-    detail: "eFuse operations are Production-only. Not implemented in LocalServer."
+    detail: "eFuse operations are ProductionTool-only. Not implemented in LocalServer."
   });
 });
 
@@ -1368,6 +1344,40 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
 });
 
 /**
+ * @description Rust 側の Pairing workflow を開始するAPI。
+ * @remarks
+ * - [重要] 直接 `requestedSettings` を渡す正規経路と、既存 `ap/configure` 系入力からの移行経路の両方を受け付ける。
+ * - [厳守] `requestedSettings` の必須項目不足時は `SecretCore` を呼び出さない。
+ * - [進捗][2026-03-16] 現時点の `SecretCore` は workflow 骨格のみを返すため、本 API の主目的は TS 側入力境界の固定と状態取得経路の先行整備である。
+ */
+app.post("/api/workflows/pairing/start", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    if (!USE_SECRET_CORE) {
+      throw new Error("pairing workflow start failed. SecretCore is disabled.");
+    }
+    const requestBody = await resolvePairingWorkflowStartRequestBody(
+      request.body as Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+    );
+    const workflowStatus = await secretCoreFacade.runPairingSession(requestBody);
+    response.json({
+      result: "OK",
+      workflow: workflowStatus
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
  * @description Rust 側の OTA workflow を開始するAPI。
  * [重要] 初回実装は単一対象機のみを受け付ける。理由: workflow の完了判定と監査単位を明確にするため。
  */
@@ -1841,6 +1851,79 @@ function validateGenericCommandBody(commandName: string, requestBody: genericCom
   if (requestBody.subCommand === undefined || requestBody.subCommand === null || requestBody.subCommand.trim().length === 0) {
     throw new Error(`validateGenericCommandBody failed. commandName=${commandName} subCommand is required`);
   }
+}
+
+/**
+ * @description Pairing workflow 開始要求を正規化する。
+ * @remarks
+ * - [重要] `requestedSettings` を直接受ける正規経路を優先する。
+ * - [進捗][2026-03-16] 既存 `ap/configure` 系入力からの移行を容易にするため、同形式からの変換経路も許容する。
+ * - [重要] `keyDeviceBase64` が省略された場合は、既知機に限り LocalServer 保持情報から補完して workflow 入力を完成させる。
+ * @param rawRequestBody 受信した API 本文。
+ * @returns 正規化済み Pairing workflow 開始要求。
+ */
+async function resolvePairingWorkflowStartRequestBody(
+  rawRequestBody: Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+): Promise<pairingWorkflowStartRequestBody> {
+  if (rawRequestBody === undefined || rawRequestBody === null) {
+    throw new Error("resolvePairingWorkflowStartRequestBody failed. rawRequestBody is null.");
+  }
+
+  const normalizedRequestBody: pairingWorkflowStartRequestBody = {
+    targetDeviceId: String(rawRequestBody.targetDeviceId ?? "").trim(),
+    sessionId: String(rawRequestBody.sessionId ?? "").trim(),
+    keyVersion: String(rawRequestBody.keyVersion ?? "").trim(),
+    requestedSettings: (rawRequestBody.requestedSettings ?? null) as pairingRequestedSettings
+  };
+
+  if (rawRequestBody.requestedSettings !== undefined && rawRequestBody.requestedSettings !== null) {
+    validatePairingWorkflowStartRequestBody("resolvePairingWorkflowStartRequestBody", normalizedRequestBody);
+    return normalizedRequestBody;
+  }
+
+  const targetDeviceName = resolveTargetDeviceNameFromWorkflowTargetId(normalizedRequestBody.targetDeviceId);
+  let keyDeviceBase64 = String(rawRequestBody.keyDeviceBase64 ?? "").trim();
+  if (keyDeviceBase64.length === 0) {
+    keyDeviceBase64 = await localKeyService.getKDeviceBase64(targetDeviceName);
+  }
+
+  return buildPairingWorkflowStartRequestBodyFromApConfigure(
+    {
+      targetDeviceId: normalizedRequestBody.targetDeviceId,
+      sessionId: normalizedRequestBody.sessionId,
+      keyVersion: normalizedRequestBody.keyVersion
+    },
+    rawRequestBody as apConfigureRequestBody,
+    keyDeviceBase64
+  );
+}
+
+/**
+ * @description workflow 入力の `targetDeviceId` から LocalServer 内部の対象デバイス名を解決する。
+ * @remarks
+ * - [重要] 既知機は `deviceName` / `publicId` / `srcId` / `dstId` / `macAddr` の順で照合する。
+ * - [推奨] 未解決時は入力値をそのまま返し、`SecretCore` 側の正式実装で最終照合する。
+ * - [理由] 既存 `k-device` 取得経路は `targetDeviceName` 前提であり、IF 仕様の `targetDeviceId` と一時的に橋渡しする必要があるため。
+ * @param targetDeviceId workflow 入力の対象識別子。
+ * @returns k-device 解決に用いる対象デバイス名。
+ */
+function resolveTargetDeviceNameFromWorkflowTargetId(targetDeviceId: string): string {
+  const normalizedTargetDeviceId = String(targetDeviceId ?? "").trim();
+  if (normalizedTargetDeviceId.length === 0) {
+    throw new Error("resolveTargetDeviceNameFromWorkflowTargetId failed. targetDeviceId is empty.");
+  }
+
+  const matchedDevice = registry.listDevices().find((deviceStateItem) => {
+    return [
+      deviceStateItem.deviceName,
+      deviceStateItem.publicId,
+      deviceStateItem.srcId,
+      deviceStateItem.dstId,
+      deviceStateItem.macAddr
+    ].some((candidateValue) => candidateValue.trim() === normalizedTargetDeviceId);
+  });
+
+  return matchedDevice?.deviceName ?? normalizedTargetDeviceId;
 }
 
 /**

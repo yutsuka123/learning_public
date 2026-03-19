@@ -137,6 +137,110 @@ export interface otaCommandRequestBody extends commandRequestBody {
 }
 
 /**
+ * @description AP単体設定投入APIの要求パラメータ。
+ */
+export interface apConfigureRequestBody {
+  ssid: string;
+  wifiSsid: string;
+  wifiPass: string;
+  mqttUrl: string;
+  mqttUrlName?: string;
+  mqttUser: string;
+  mqttPass: string;
+  mqttPort: number;
+  mqttTls: boolean;
+  mqttTlsCaCertPem?: string;
+  mqttTlsCertIssueNo?: string;
+  mqttTlsCertSetAt?: string;
+  serverUrl?: string;
+  serverUrlName?: string;
+  serverUser?: string;
+  serverPass?: string;
+  serverPort?: number;
+  serverTls?: boolean;
+  otaUrl?: string;
+  otaUrlName?: string;
+  otaUser?: string;
+  otaPass?: string;
+  otaPort?: number;
+  otaTls?: boolean;
+  timeServerUrl?: string;
+  timeServerUrlName?: string;
+  timeServerPort?: number;
+  timeServerTls?: boolean;
+  targetDeviceName?: string;
+  keyDeviceBase64?: string;
+  requestReboot?: boolean;
+}
+
+/**
+ * @description Pairing workflow の Wi-Fi 設定入力。
+ */
+export interface pairingRequestedWifiSettings {
+  ssid: string;
+  username?: string;
+  password: string;
+}
+
+/**
+ * @description Pairing workflow の接続先設定入力。
+ */
+export interface pairingRequestedEndpointSettings {
+  host: string;
+  hostName?: string;
+  port: number;
+  tls: boolean;
+  username: string;
+  password: string;
+  caCertRef?: string;
+}
+
+/**
+ * @description Pairing workflow のサーバー接続設定入力。
+ */
+export interface pairingRequestedServerSettings {
+  host: string;
+  hostName?: string;
+  port: number;
+  tls: boolean;
+}
+
+/**
+ * @description Pairing workflow の認証情報入力。
+ */
+export interface pairingRequestedCredentials {
+  wifiUsername?: string;
+  wifiPassword: string;
+  mqttUsername: string;
+  mqttPassword: string;
+  otaUsername: string;
+  otaPassword: string;
+  keyDevice: string;
+}
+
+/**
+ * @description Pairing workflow の要求設定全体。
+ */
+export interface pairingRequestedSettings {
+  wifi: pairingRequestedWifiSettings;
+  mqtt: pairingRequestedEndpointSettings;
+  ota: pairingRequestedEndpointSettings;
+  credentials: pairingRequestedCredentials;
+  server?: pairingRequestedServerSettings;
+  ntp?: pairingRequestedServerSettings;
+}
+
+/**
+ * @description Pairing workflow 開始APIの要求パラメータ。
+ */
+export interface pairingWorkflowStartRequestBody {
+  targetDeviceId: string;
+  sessionId: string;
+  keyVersion: string;
+  requestedSettings: pairingRequestedSettings;
+}
+
+/**
  * @description rollback試験モード切替APIの要求パラメータ。
  */
 export interface rollbackTestCommandRequestBody extends commandRequestBody {

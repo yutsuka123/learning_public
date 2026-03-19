@@ -10,6 +10,7 @@ mod dpapi;
 mod key_manager;
 mod mqtt_transport;
 mod ota_workflow;
+mod pairing_workflow;
 
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
@@ -70,6 +71,10 @@ struct IpcSecurityContext {
     replay_cache: Mutex<HashMap<String, i64>>,
 }
 
+/// SecretCore の IPC サーバー本体を起動する。
+///
+/// 起動時に Pipe 名、IPC 保護鍵、MQTT 受信管理、workflow 管理器を初期化し、
+/// 以後は接続ごとに非同期タスクへ処理を委譲する。
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let ipc_security_context = Arc::new(IpcSecurityContext {
@@ -79,6 +84,7 @@ async fn main() -> io::Result<()> {
     });
     let mqtt_receiver_manager = Arc::new(mqtt_transport::MqttReceiverManager::new());
     let ota_workflow_manager = Arc::new(ota_workflow::OtaWorkflowManager::new());
+    let pairing_workflow_manager = Arc::new(pairing_workflow::PairingWorkflowManager::new());
     println!("SecretCore started. Listening on {}", ipc_security_context.pipe_name);
     if ipc_security_context.session_key.is_some() {
         println!("SecretCore IPC protection mode=secure");
@@ -120,6 +126,7 @@ async fn main() -> io::Result<()> {
         let ipc_security_context_clone = Arc::clone(&ipc_security_context);
         let mqtt_receiver_manager_clone = Arc::clone(&mqtt_receiver_manager);
         let ota_workflow_manager_clone = Arc::clone(&ota_workflow_manager);
+        let pairing_workflow_manager_clone = Arc::clone(&pairing_workflow_manager);
         // 各接続を別タスクで処理
         tokio::spawn(async move {
             if let Err(e) = handle_client(
@@ -128,6 +135,7 @@ async fn main() -> io::Result<()> {
                 ipc_security_context_clone,
                 mqtt_receiver_manager_clone,
                 ota_workflow_manager_clone,
+                pairing_workflow_manager_clone,
             )
             .await
             {
@@ -137,12 +145,16 @@ async fn main() -> io::Result<()> {
     }
 }
 
+/// 1 本の IPC 接続から要求を受け取り、コマンド実行と応答返却を繰り返す。
+///
+/// すべての high-risk workflow はこの入口で受理され、各 manager へ処理を委譲する。
 async fn handle_client(
     mut stream: tokio::net::windows::named_pipe::NamedPipeServer,
     key_mgr: Arc<KeyManager>,
     ipc_security_context: Arc<IpcSecurityContext>,
     mqtt_receiver_manager: Arc<mqtt_transport::MqttReceiverManager>,
     ota_workflow_manager: Arc<ota_workflow::OtaWorkflowManager>,
+    pairing_workflow_manager: Arc<pairing_workflow::PairingWorkflowManager>,
 ) -> io::Result<()> {
     let mut buf = [0u8; 8192];
     loop {
@@ -456,6 +468,35 @@ async fn handle_client(
                             }
                         }
                     },
+                    "run_pairing_session" => {
+                        if let Some(p) = req.payload {
+                            match serde_json::from_value::<pairing_workflow::PairingWorkflowStartRequest>(p) {
+                                Ok(pairing_request) => match pairing_workflow_manager.start_pairing_session(&key_mgr, pairing_request) {
+                                    Ok(workflow_status) => IpcResponse {
+                                        status: "ok".to_string(),
+                                        data: Some(serde_json::json!(workflow_status)),
+                                        error: None,
+                                    },
+                                    Err(e) => IpcResponse {
+                                        status: "error".to_string(),
+                                        data: None,
+                                        error: Some(format!("run_pairing_session failed. {}", e)),
+                                    },
+                                },
+                                Err(e) => IpcResponse {
+                                    status: "error".to_string(),
+                                    data: None,
+                                    error: Some(format!("run_pairing_session failed. invalid payload. {}", e)),
+                                },
+                            }
+                        } else {
+                            IpcResponse {
+                                status: "error".to_string(),
+                                data: None,
+                                error: Some("run_pairing_session failed. Missing payload".into()),
+                            }
+                        }
+                    },
                     "get_workflow_status" => {
                         if let Some(p) = req.payload {
                             let workflow_id = p.get("workflowId").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -465,10 +506,20 @@ async fn handle_client(
                                     data: Some(serde_json::json!(workflow_status)),
                                     error: None,
                                 },
-                                Err(e) => IpcResponse {
-                                    status: "error".to_string(),
-                                    data: None,
-                                    error: Some(format!("get_workflow_status failed. {}", e)),
+                                Err(ota_error) => match pairing_workflow_manager.get_workflow_status(workflow_id) {
+                                    Ok(workflow_status) => IpcResponse {
+                                        status: "ok".to_string(),
+                                        data: Some(serde_json::json!(workflow_status)),
+                                        error: None,
+                                    },
+                                    Err(pairing_error) => IpcResponse {
+                                        status: "error".to_string(),
+                                        data: None,
+                                        error: Some(format!(
+                                            "get_workflow_status failed. ota_error={} pairing_error={}",
+                                            ota_error, pairing_error
+                                        )),
+                                    },
                                 },
                             }
                         } else {
