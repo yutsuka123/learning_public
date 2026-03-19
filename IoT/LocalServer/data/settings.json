@@ -1,8 +1,8 @@
 {
-  "timeZone": "Asia/Tokyo",
-  "firmwareSource": "localPath",
-  "firmwareLocalPath": "C:\\mydata\\project\\myproject\\learning_public\\IoT\\ESP32\\.pio\\build\\esp32s3_secure\\firmware.bin",
-  "firmwareUploadedFileName": "",
-  "otaFirmwareVersion": "1.1.0-beta.5",
-  "wifiUsbInterfaceName": "Wi-Fi_lab"
+    "timeZone":  "Asia/Tokyo",
+    "firmwareSource":  "localPath",
+    "firmwareLocalPath":  "C:\\mydata\\project\\myproject\\learning_public\\IoT\\ESP32\\.pio\\build\\esp32s3_secure\\firmware.bin",
+    "firmwareUploadedFileName":  "",
+    "otaFirmwareVersion":  "1.1.0-beta.28",
+    "wifiUsbInterfaceName":  "Wi-Fi_lab"
 }

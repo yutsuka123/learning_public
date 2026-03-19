@@ -11,7 +11,7 @@
 
 ## 1. 適用範囲
 - 対象1: LocalServer 配下の OTA 配布 API（ESP32 が取得）
-- 対象2: AP メンテナンスモード Web API（ブラウザ/Production/LocalServer が利用）
+- 対象2: AP メンテナンスモード Web API（ブラウザ/ProductionTool/LocalServer が利用）
 - 対象3: 画像更新（単体/一括 ZIP）
 
 ## 2. 共通仕様
@@ -83,7 +83,7 @@
 ```
 
 #### 4.1.2 `POST /api/auth/production`
-- 目的: Production 追加認証
+- 目的: ProductionTool 追加認証
 - 要求:
 ```json
 {
@@ -92,7 +92,7 @@
 }
 ```
 
-- [厳守] AP共通パスワードと Production パスワードを分離する。
+- [厳守] AP共通パスワードと ProductionTool パスワードを分離する。
 - [厳守] AP認証ロール（`user`/`maintenance`/`admin`/`mfg`）を実装し、権限に応じて画面/API到達可否を制御する。
 - [重要] ロール別の画面項目・権限は `APメンテナンス画面仕様書.md` を正とする。
 
@@ -182,7 +182,7 @@
 - [厳守] 成否判定は再起動後 `status` topic で実施する（AP切断だけでは確定しない）
 
 ## 5. 複数台一括メンテナンス時のHTTP運用
-- [重要] LocalServer / Production は USB Wi-Fi で `AP-esp32lab-*` を探索し、1台ずつ処理する
+- [重要] LocalServer / ProductionTool は USB Wi-Fi で `AP-esp32lab-*` を探索し、1台ずつ処理する
 - 推奨シーケンス:
   1. AP探索
   2. AP接続

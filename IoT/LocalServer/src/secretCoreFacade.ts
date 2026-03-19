@@ -9,7 +9,7 @@
  */
 
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
-import { deviceState, otaProgressMessage, statusMessage, trhMessage } from "./types";
+import { deviceState, otaProgressMessage, pairingWorkflowStartRequestBody, statusMessage, trhMessage } from "./types";
 import { secureEchoMessage } from "./deviceTransport";
 
 /**
@@ -51,19 +51,23 @@ export interface secretCoreStatusRecoveryResult {
 }
 
 /**
- * @description OTA workflow 状態DTO。
+ * @description workflow 状態DTO。
+ * @remarks
+ * - [重要] OTA / Pairing / 将来の KeyRotation / ProductionTool を同じ最小DTOで扱うため、一部項目は optional とする。
+ * - [厳守] UI へ返すのは進捗表示と監査表示に必要な最小情報のみとし、中間秘密は含めない。
  */
 export interface secretCoreWorkflowStatusResult {
   workflowId: string;
   workflowType: string;
-  targetDeviceName: string;
+  targetDeviceName?: string;
+  targetDeviceId?: string;
   state: "queued" | "running" | "waiting_device" | "verifying" | "completed" | "failed";
   result?: string;
   errorSummary?: string;
   detail?: string;
   startedAt: string;
   updatedAt: string;
-  firmwareVersion: string;
+  firmwareVersion?: string;
 }
 
 /**
@@ -256,6 +260,18 @@ export class SecretCoreFacade {
       sha256: args.sha256,
       timeoutSeconds: args.timeoutSeconds
     });
+  }
+
+  /**
+   * @description Rust 側 Pairing workflow を開始する。
+   * @param requestBody Pairing workflow 開始要求。
+   * @returns workflow 初期状態。
+   * @remarks
+   * - [重要] TS 側では入力の完全性を確保した後に本メソッドを呼ぶ。
+   * - [進捗][2026-03-16] Rust 側は workflow 骨格を返す段階であり、AP モード通信本体は後続実装とする。
+   */
+  public async runPairingSession(requestBody: pairingWorkflowStartRequestBody): Promise<secretCoreWorkflowStatusResult> {
+    return await this.secretCoreIpcClient.sendRequest<secretCoreWorkflowStatusResult>("run_pairing_session", requestBody);
   }
 
   /**

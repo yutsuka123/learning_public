@@ -12,15 +12,20 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WebServer.h>
+#include <cstring>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/ctr_drbg.h>
+#include <mbedtls/ecdh.h>
+#include <mbedtls/ecp.h>
+#include <mbedtls/entropy.h>
 #include <mbedtls/sha256.h>
-#include <vector>
-
 #include "jsonService.h"
 #include "log.h"
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
+
+#include <vector>
 
 namespace {
 
@@ -51,6 +56,24 @@ constexpr const char* apAuthPasswordKeyUser = "role-user";
 constexpr const char* apAuthPasswordKeyMaint = "role-maint";
 constexpr const char* apAuthPasswordKeyAdmin = "role-admin";
 constexpr const char* apAuthPasswordKeyMfg = "role-mfg";
+String lastPairingSessionId = "";
+String lastPairingBundleId = "";
+String lastPairingState = "idle";
+String lastPairingTargetDeviceId = "";
+String lastPairingKeyVersion = "";
+String lastPairingPublicId = "";
+String lastPairingNonce = "";
+String lastPairingSignature = "";
+String lastPairingRequestedSettingsSha256 = "";
+String lastPairingAcceptedKeyAgreement = "";
+String lastPairingAcceptedBundleProtection = "";
+String lastPairingTransportSharedSecretFingerprint = "";
+String lastPairingTransportServerPublicKeyBase64 = "";
+String lastPairingSavedCurrentKeyVersion = "";
+String lastPairingPreviousKeyState = "none";
+String lastPairingDetail = "pairing state placeholder";
+String lastPairingResult = "";
+std::vector<uint8_t> lastPairingTransportSessionKeyBytes;
 
 roleCredential userRoleCredential = {String(SENSITIVE_AP_ROLE_USER_USERNAME), String(SENSITIVE_AP_ROLE_USER_PASSWORD)};
 roleCredential maintenanceRoleCredential = {String(SENSITIVE_AP_ROLE_MAINTENANCE_USERNAME), String(SENSITIVE_AP_ROLE_MAINTENANCE_PASSWORD)};
@@ -177,6 +200,25 @@ String toRoleText(maintenanceRole role) {
     default:
       return "none";
   }
+}
+
+/**
+ * @brief 現在APモードで扱っている対象デバイスIDを返す。
+ * @details
+ * - [重要] 現段階では AP SSID 末尾の compactMac を用いて `IoT_<compactMac>` を返す。
+ * - [将来対応] public_id や永続メタ情報と統合できる段階で、正式な targetDeviceId 解決へ差し替える。
+ * @return 対象デバイスID。解決できない場合は `pending`。
+ */
+String resolvePairingTargetDeviceId() {
+  const int separatorIndex = currentApSsid.lastIndexOf('-');
+  if (separatorIndex < 0 || separatorIndex + 1 >= currentApSsid.length()) {
+    return "pending";
+  }
+  const String compactMacText = currentApSsid.substring(separatorIndex + 1);
+  if (compactMacText.length() == 0) {
+    return "pending";
+  }
+  return String("IoT_") + compactMacText;
 }
 
 String toJsonSafeText(const String& value) {
@@ -357,6 +399,40 @@ bool decodeBase64TextForAp(const String& inputBase64, std::vector<uint8_t>* outp
 }
 
 /**
+ * @brief バイト列をBase64文字列へ変換する。
+ * @param inputBytes 入力バイト列。
+ * @param outputBase64Out 出力先。
+ * @return 変換成功時true。
+ */
+bool encodeBase64TextForAp(const std::vector<uint8_t>& inputBytes, String* outputBase64Out) {
+  if (outputBase64Out == nullptr) {
+    return false;
+  }
+  size_t outputLength = 0;
+  int probeResult = mbedtls_base64_encode(nullptr, 0, &outputLength, inputBytes.data(), inputBytes.size());
+  if (probeResult != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL && probeResult != 0) {
+    appLogError("encodeBase64TextForAp failed. probeResult=%d inputSize=%ld", probeResult, static_cast<long>(inputBytes.size()));
+    return false;
+  }
+  std::vector<uint8_t> outputBytes(outputLength + 1, 0);
+  int encodeResult = mbedtls_base64_encode(outputBytes.data(),
+                                           outputBytes.size(),
+                                           &outputLength,
+                                           inputBytes.data(),
+                                           inputBytes.size());
+  if (encodeResult != 0) {
+    appLogError("encodeBase64TextForAp failed. encodeResult=%d inputSize=%ld", encodeResult, static_cast<long>(inputBytes.size()));
+    return false;
+  }
+  outputBase64Out->remove(0);
+  outputBase64Out->reserve(outputLength);
+  for (size_t index = 0; index < outputLength; ++index) {
+    *outputBase64Out += static_cast<char>(outputBytes[index]);
+  }
+  return true;
+}
+
+/**
  * @brief APモード局所更新API向けに LittleFS 初期化状態を保証する。
  * @return 初期化済みならtrue。
  */
@@ -402,6 +478,216 @@ bool computeSha256HexForBytesForAp(const std::vector<uint8_t>& inputBytes, Strin
     snprintf(hashText + (index * 2), sizeof(hashText) - (index * 2), "%02x", hashBytes[index]);
   }
   *sha256HexOut = String(hashText);
+  return true;
+}
+
+/**
+ * @brief バイト列のSHA-256生値を計算する。
+ * @param inputBytes 入力バイト列。
+ * @param sha256BytesOut 出力先。
+ * @return 計算成功時true。
+ */
+bool computeSha256BytesForAp(const std::vector<uint8_t>& inputBytes, std::vector<uint8_t>* sha256BytesOut) {
+  if (sha256BytesOut == nullptr) {
+    return false;
+  }
+  uint8_t hashBytes[32] = {0};
+  mbedtls_sha256_context sha256Context;
+  mbedtls_sha256_init(&sha256Context);
+  int startResult = mbedtls_sha256_starts_ret(&sha256Context, 0);
+  int updateResult = 0;
+  if (!inputBytes.empty()) {
+    updateResult = mbedtls_sha256_update_ret(&sha256Context, inputBytes.data(), inputBytes.size());
+  }
+  int finishResult = mbedtls_sha256_finish_ret(&sha256Context, hashBytes);
+  mbedtls_sha256_free(&sha256Context);
+  if (startResult != 0 || updateResult != 0 || finishResult != 0) {
+    appLogError("computeSha256BytesForAp failed. start=%d update=%d finish=%d size=%ld",
+                startResult,
+                updateResult,
+                finishResult,
+                static_cast<long>(inputBytes.size()));
+    return false;
+  }
+  sha256BytesOut->assign(hashBytes, hashBytes + sizeof(hashBytes));
+  return true;
+}
+
+/**
+ * @brief P-256 ECDH の共有秘密から Pairing transport 用 32byte セッション鍵を導出する。
+ * @param sharedSecretBytes ECDH 共有秘密。
+ * @param sessionId セッションID。
+ * @param bundleId bundle ID。
+ * @param sessionKeyBytesOut 導出鍵出力先。
+ * @return 導出成功時true。
+ */
+bool derivePairingTransportSessionKeyForAp(const std::vector<uint8_t>& sharedSecretBytes,
+                                           const String& sessionId,
+                                           const String& bundleId,
+                                           std::vector<uint8_t>* sessionKeyBytesOut) {
+  if (sessionKeyBytesOut == nullptr) {
+    return false;
+  }
+  std::vector<uint8_t> materialBytes;
+  materialBytes.reserve(sharedSecretBytes.size() + sessionId.length() + bundleId.length() + 1);
+  materialBytes.insert(materialBytes.end(), sharedSecretBytes.begin(), sharedSecretBytes.end());
+  for (size_t index = 0; index < sessionId.length(); ++index) {
+    materialBytes.push_back(static_cast<uint8_t>(sessionId[index]));
+  }
+  materialBytes.push_back(static_cast<uint8_t>('|'));
+  for (size_t index = 0; index < bundleId.length(); ++index) {
+    materialBytes.push_back(static_cast<uint8_t>(bundleId[index]));
+  }
+  return computeSha256BytesForAp(materialBytes, sessionKeyBytesOut);
+}
+
+/**
+ * @brief Pairing transport の P-256 ECDH handshake を実行する。
+ * @param clientPublicKeyBase64 Rust 側公開鍵。
+ * @param sessionId セッションID。
+ * @param bundleId bundle ID。
+ * @param serverPublicKeyBase64Out ESP32 側公開鍵。
+ * @param sharedSecretFingerprintOut 導出済みセッション鍵 fingerprint。
+ * @return handshake 成功時true。
+ */
+bool performPairingTransportHandshakeForAp(const String& clientPublicKeyBase64,
+                                           const String& sessionId,
+                                           const String& bundleId,
+                                           String* serverPublicKeyBase64Out,
+                                           String* sharedSecretFingerprintOut) {
+  if (serverPublicKeyBase64Out == nullptr || sharedSecretFingerprintOut == nullptr) {
+    return false;
+  }
+  std::vector<uint8_t> clientPublicKeyBytes;
+  if (!decodeBase64TextForAp(clientPublicKeyBase64, &clientPublicKeyBytes)) {
+    appLogError("performPairingTransportHandshakeForAp failed. client public key decode failed.");
+    return false;
+  }
+  if (clientPublicKeyBytes.empty()) {
+    appLogError("performPairingTransportHandshakeForAp failed. client public key is empty.");
+    return false;
+  }
+
+  mbedtls_ecdh_context ecdhContext;
+  mbedtls_entropy_context entropyContext;
+  mbedtls_ctr_drbg_context ctrDrbgContext;
+  mbedtls_ecdh_init(&ecdhContext);
+  mbedtls_entropy_init(&entropyContext);
+  mbedtls_ctr_drbg_init(&ctrDrbgContext);
+  const char* personalizationText = "maintenanceApPairingTransport";
+  int seedResult = mbedtls_ctr_drbg_seed(&ctrDrbgContext,
+                                         mbedtls_entropy_func,
+                                         &entropyContext,
+                                         reinterpret_cast<const unsigned char*>(personalizationText),
+                                         strlen(personalizationText));
+  if (seedResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. ctr_drbg_seed result=%d", seedResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  int loadGroupResult = mbedtls_ecp_group_load(&ecdhContext.grp, MBEDTLS_ECP_DP_SECP256R1);
+  if (loadGroupResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. group_load result=%d", loadGroupResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  int generateKeyResult = mbedtls_ecdh_gen_public(&ecdhContext.grp,
+                                                  &ecdhContext.d,
+                                                  &ecdhContext.Q,
+                                                  mbedtls_ctr_drbg_random,
+                                                  &ctrDrbgContext);
+  if (generateKeyResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. gen_public result=%d", generateKeyResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  int readPeerKeyResult =
+      mbedtls_ecp_point_read_binary(&ecdhContext.grp, &ecdhContext.Qp, clientPublicKeyBytes.data(), clientPublicKeyBytes.size());
+  if (readPeerKeyResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. point_read_binary result=%d", readPeerKeyResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  int computeSharedResult = mbedtls_ecdh_compute_shared(&ecdhContext.grp,
+                                                        &ecdhContext.z,
+                                                        &ecdhContext.Qp,
+                                                        &ecdhContext.d,
+                                                        mbedtls_ctr_drbg_random,
+                                                        &ctrDrbgContext);
+  if (computeSharedResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. compute_shared result=%d", computeSharedResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+
+  std::vector<uint8_t> sharedSecretBytes(32, 0);
+  int sharedWriteResult = mbedtls_mpi_write_binary(&ecdhContext.z, sharedSecretBytes.data(), sharedSecretBytes.size());
+  if (sharedWriteResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. shared secret write result=%d", sharedWriteResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+
+  size_t publicKeyLength = 0;
+  std::vector<uint8_t> serverPublicKeyBytes(65, 0);
+  int publicWriteResult = mbedtls_ecp_point_write_binary(&ecdhContext.grp,
+                                                         &ecdhContext.Q,
+                                                         MBEDTLS_ECP_PF_UNCOMPRESSED,
+                                                         &publicKeyLength,
+                                                         serverPublicKeyBytes.data(),
+                                                         serverPublicKeyBytes.size());
+  if (publicWriteResult != 0) {
+    appLogError("performPairingTransportHandshakeForAp failed. public key write result=%d", publicWriteResult);
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  serverPublicKeyBytes.resize(publicKeyLength);
+
+  std::vector<uint8_t> sessionKeyBytes;
+  if (!derivePairingTransportSessionKeyForAp(sharedSecretBytes, sessionId, bundleId, &sessionKeyBytes)) {
+    appLogError("performPairingTransportHandshakeForAp failed. derive session key failed.");
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  String sessionKeyFingerprint;
+  if (!computeSha256HexForBytesForAp(sessionKeyBytes, &sessionKeyFingerprint)) {
+    appLogError("performPairingTransportHandshakeForAp failed. session key fingerprint failed.");
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+  String serverPublicKeyBase64;
+  if (!encodeBase64TextForAp(serverPublicKeyBytes, &serverPublicKeyBase64)) {
+    appLogError("performPairingTransportHandshakeForAp failed. public key base64 encode failed.");
+    mbedtls_ctr_drbg_free(&ctrDrbgContext);
+    mbedtls_entropy_free(&entropyContext);
+    mbedtls_ecdh_free(&ecdhContext);
+    return false;
+  }
+
+  lastPairingTransportSessionKeyBytes = sessionKeyBytes;
+  *serverPublicKeyBase64Out = serverPublicKeyBase64;
+  *sharedSecretFingerprintOut = sessionKeyFingerprint;
+  mbedtls_ctr_drbg_free(&ctrDrbgContext);
+  mbedtls_entropy_free(&entropyContext);
+  mbedtls_ecdh_free(&ecdhContext);
   return true;
 }
 
@@ -586,6 +872,365 @@ void handleManagedFileDeleteApi() {
 
 void handleHealthApi() {
   String responseText = "{\"result\":\"OK\",\"mode\":\"maintenance-ap\",\"ssid\":\"" + currentApSsid + "\"}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Pairing 状態を返すAPI。
+ * @details
+ * - [重要] `runPairingSession()` の Rust 側 workflow が AP 到達後に参照する状態受け口。
+ * - [進捗] 2026-03-16 時点では placeholder 実装として、対象デバイス識別子、`keyDevice` 有無、直近 session/bundle の枠のみ返す。
+ * - [将来対応] ECDH / bundle 検証 / NVS 保存完了後に `savedCurrentKeyVersion` と `previousKeyState` を実値で返す。
+ */
+void handlePairingStateApi() {
+  if (!isAuthorized(maintenanceRole::kMaintenance)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"unauthorized\"}");
+    return;
+  }
+  if (sensitiveDataServiceInstance == nullptr) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"sensitiveDataService is null\"}");
+    return;
+  }
+
+  String keyDevice;
+  if (!sensitiveDataServiceInstance->loadKeyDevice(&keyDevice)) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"load keyDevice failed\"}");
+    return;
+  }
+
+  const String targetDeviceId =
+      lastPairingTargetDeviceId.length() > 0 ? lastPairingTargetDeviceId : resolvePairingTargetDeviceId();
+  String responseText;
+  responseText.reserve(512);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(targetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"publicId\":\"" + toJsonSafeText(lastPairingPublicId) + "\",";
+  responseText += "\"keyVersion\":\"" + toJsonSafeText(lastPairingKeyVersion) + "\",";
+  responseText += "\"nonce\":\"" + toJsonSafeText(lastPairingNonce) + "\",";
+  responseText += "\"signature\":\"" + toJsonSafeText(lastPairingSignature) + "\",";
+  responseText += "\"requestedSettingsSha256\":\"" + toJsonSafeText(lastPairingRequestedSettingsSha256) + "\",";
+  responseText += "\"acceptedKeyAgreement\":\"" + toJsonSafeText(lastPairingAcceptedKeyAgreement) + "\",";
+  responseText += "\"acceptedBundleProtection\":\"" + toJsonSafeText(lastPairingAcceptedBundleProtection) + "\",";
+  responseText += "\"transportSharedSecretFingerprint\":\"" + toJsonSafeText(lastPairingTransportSharedSecretFingerprint) + "\",";
+  responseText += "\"transportServerPublicKeyBase64\":\"" + toJsonSafeText(lastPairingTransportServerPublicKeyBase64) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\",";
+  responseText += "\"savedCurrentKeyVersion\":\"" + toJsonSafeText(lastPairingSavedCurrentKeyVersion) + "\",";
+  responseText += "\"previousKeyState\":\"" + toJsonSafeText(lastPairingPreviousKeyState) + "\",";
+  responseText += "\"keyDevicePresent\":" + String(keyDevice.length() > 0 ? "true" : "false");
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Pairing workflow の session metadata を受理するAPI。
+ * @details
+ * - [重要] 現段階では秘密 payload 本文を受けず、`sessionId` / `bundleId` / `targetDeviceId` / `keyVersion` を受けて
+ *   AP 側状態を `bundle_received` へ更新する placeholder 実装とする。
+ * - [厳守] `runPairingSession()` の内部 helper 直公開を避けるため、bundle 本文や raw `k-device` は本APIで受け付けない。
+ * - [将来対応] ECDH・署名検証・復号・NVS 保存本体を実装したら、本関数で metadata 受理から本適用処理へ置き換える。
+ */
+void handlePairingSessionApi() {
+  if (!isAuthorized(maintenanceRole::kAdmin)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String targetDeviceId;
+  String sessionId;
+  String bundleId;
+  String keyVersion;
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "sessionId", &sessionId);
+  parseBodyStringValue(requestBody, "bundleId", &bundleId);
+  parseBodyStringValue(requestBody, "keyVersion", &keyVersion);
+  targetDeviceId.trim();
+  sessionId.trim();
+  bundleId.trim();
+  keyVersion.trim();
+  if (targetDeviceId.length() == 0 || sessionId.length() == 0 || bundleId.length() == 0 || keyVersion.length() == 0) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"targetDeviceId/sessionId/bundleId/keyVersion is required\"}");
+    return;
+  }
+
+  lastPairingTargetDeviceId = targetDeviceId;
+  lastPairingSessionId = sessionId;
+  lastPairingBundleId = bundleId;
+  lastPairingKeyVersion = keyVersion;
+  lastPairingState = "bundle_received";
+  lastPairingSavedCurrentKeyVersion = "";
+  lastPairingPreviousKeyState = "none";
+  lastPairingResult = "OK";
+  lastPairingDetail = String("pairing session metadata accepted. sessionId=") + sessionId + " bundleId=" + bundleId;
+
+  String responseText;
+  responseText.reserve(256);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(lastPairingTargetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Pairing bundle summary を受理するAPI。
+ * @details
+ * - [重要] 現段階では `createPairingBundle` の平文本体を送らず、bundle を識別・監査する最小 summary のみ受ける。
+ * - [厳守] `publicId` / `nonce` / `signature` / `requestedSettingsSha256` は受理状態の保持に使うだけで、
+ *   この段階では署名検証・復号・NVS 保存を実行しない。
+ * - [禁止] raw `k-device`、Wi-Fi/MQTT/OTA 認証情報、bundle 平文 JSON をこのAPIで受けない。
+ * - [将来対応] ECDH と secure bundle transport 実装後は、本APIまたは後継APIで summary ではなく暗号化済み本体を受理する。
+ */
+void handlePairingBundleSummaryApi() {
+  if (!isAuthorized(maintenanceRole::kAdmin)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String targetDeviceId;
+  String sessionId;
+  String bundleId;
+  String publicId;
+  String keyVersion;
+  String nonce;
+  String signature;
+  String requestedSettingsSha256;
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "sessionId", &sessionId);
+  parseBodyStringValue(requestBody, "bundleId", &bundleId);
+  parseBodyStringValue(requestBody, "publicId", &publicId);
+  parseBodyStringValue(requestBody, "keyVersion", &keyVersion);
+  parseBodyStringValue(requestBody, "nonce", &nonce);
+  parseBodyStringValue(requestBody, "signature", &signature);
+  parseBodyStringValue(requestBody, "requestedSettingsSha256", &requestedSettingsSha256);
+  targetDeviceId.trim();
+  sessionId.trim();
+  bundleId.trim();
+  publicId.trim();
+  keyVersion.trim();
+  nonce.trim();
+  signature.trim();
+  requestedSettingsSha256.trim();
+  if (targetDeviceId.length() == 0 || sessionId.length() == 0 || bundleId.length() == 0 || publicId.length() == 0 ||
+      keyVersion.length() == 0 || nonce.length() == 0 || signature.length() == 0 || requestedSettingsSha256.length() == 0) {
+    maintenanceWebServer.send(
+        400,
+        "application/json",
+        "{\"result\":\"NG\",\"detail\":\"targetDeviceId/sessionId/bundleId/publicId/keyVersion/nonce/signature/requestedSettingsSha256 is required\"}");
+    return;
+  }
+
+  if (lastPairingSessionId.length() > 0 && lastPairingSessionId != sessionId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing session mismatch\"}");
+    return;
+  }
+  if (lastPairingBundleId.length() > 0 && lastPairingBundleId != bundleId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing bundle mismatch\"}");
+    return;
+  }
+
+  lastPairingTargetDeviceId = targetDeviceId;
+  lastPairingSessionId = sessionId;
+  lastPairingBundleId = bundleId;
+  lastPairingPublicId = publicId;
+  lastPairingKeyVersion = keyVersion;
+  lastPairingNonce = nonce;
+  lastPairingSignature = signature;
+  lastPairingRequestedSettingsSha256 = requestedSettingsSha256;
+  lastPairingState = "bundle_staged";
+  lastPairingResult = "OK";
+  lastPairingDetail =
+      String("pairing bundle summary accepted. sessionId=") + sessionId + " bundleId=" + bundleId + " keyVersion=" + keyVersion;
+
+  String responseText;
+  responseText.reserve(384);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(lastPairingTargetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"publicId\":\"" + toJsonSafeText(lastPairingPublicId) + "\",";
+  responseText += "\"keyVersion\":\"" + toJsonSafeText(lastPairingKeyVersion) + "\",";
+  responseText += "\"requestedSettingsSha256\":\"" + toJsonSafeText(lastPairingRequestedSettingsSha256) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Pairing secure transport の placeholder 交渉状態を受理するAPI。
+ * @details
+ * - [重要] 現段階では ECDH や AES-GCM 本体をまだ実行せず、どの保護方式で secure bundle を送る想定かだけを固定する。
+ * - [厳守] このAPIで raw `k-device`、ECDH 共有秘密、暗号化済み bundle 本体を受けない。
+ * - [厳守] `requestedKeyAgreement` / `requestedBundleProtection` は placeholder 交渉値として扱い、実暗号処理成功を意味しない。
+ * - [将来対応] secure transport 実装後は、本APIの交渉結果に従って暗号化済み bundle を受ける後続APIへ接続する。
+ */
+void handlePairingTransportSessionApi() {
+  if (!isAuthorized(maintenanceRole::kAdmin)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String targetDeviceId;
+  String sessionId;
+  String bundleId;
+  String requestedKeyAgreement;
+  String requestedBundleProtection;
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "sessionId", &sessionId);
+  parseBodyStringValue(requestBody, "bundleId", &bundleId);
+  parseBodyStringValue(requestBody, "requestedKeyAgreement", &requestedKeyAgreement);
+  parseBodyStringValue(requestBody, "requestedBundleProtection", &requestedBundleProtection);
+  targetDeviceId.trim();
+  sessionId.trim();
+  bundleId.trim();
+  requestedKeyAgreement.trim();
+  requestedBundleProtection.trim();
+  if (targetDeviceId.length() == 0 || sessionId.length() == 0 || bundleId.length() == 0 ||
+      requestedKeyAgreement.length() == 0 || requestedBundleProtection.length() == 0) {
+    maintenanceWebServer.send(
+        400,
+        "application/json",
+        "{\"result\":\"NG\",\"detail\":\"targetDeviceId/sessionId/bundleId/requestedKeyAgreement/requestedBundleProtection is required\"}");
+    return;
+  }
+
+  if (lastPairingTargetDeviceId.length() > 0 && lastPairingTargetDeviceId != targetDeviceId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing targetDeviceId mismatch\"}");
+    return;
+  }
+  if (lastPairingSessionId.length() > 0 && lastPairingSessionId != sessionId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing session mismatch\"}");
+    return;
+  }
+  if (lastPairingBundleId.length() > 0 && lastPairingBundleId != bundleId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing bundle mismatch\"}");
+    return;
+  }
+
+  lastPairingTargetDeviceId = targetDeviceId;
+  lastPairingSessionId = sessionId;
+  lastPairingBundleId = bundleId;
+  lastPairingAcceptedKeyAgreement = requestedKeyAgreement;
+  lastPairingAcceptedBundleProtection = requestedBundleProtection;
+  lastPairingTransportSharedSecretFingerprint = "";
+  lastPairingTransportServerPublicKeyBase64 = "";
+  lastPairingTransportSessionKeyBytes.clear();
+  lastPairingState = "transport_prepared";
+  lastPairingResult = "OK";
+  lastPairingDetail = String("pairing transport placeholder prepared. sessionId=") + sessionId +
+                      " bundleId=" + bundleId + " keyAgreement=" + requestedKeyAgreement +
+                      " bundleProtection=" + requestedBundleProtection;
+
+  String responseText;
+  responseText.reserve(384);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(lastPairingTargetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"acceptedKeyAgreement\":\"" + toJsonSafeText(lastPairingAcceptedKeyAgreement) + "\",";
+  responseText += "\"acceptedBundleProtection\":\"" + toJsonSafeText(lastPairingAcceptedBundleProtection) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Pairing secure transport の P-256 ECDH handshake を受けるAPI。
+ * @details
+ * - [重要] Rust 側公開鍵を受けて ESP32 側公開鍵を返し、双方で共有秘密から 32byte transport 鍵を導出する。
+ * - [厳守] 導出した transport 鍵は AP プロセス内メモリにのみ保持し、NVS やレスポンスへ返さない。
+ * - [禁止] `LocalServer` や REST 応答へ raw ECDH 共有秘密を返さない。
+ * - [将来対応] 後続の encrypted bundle 受理APIで、本 handshake により導出した鍵を使って復号・検証する。
+ */
+void handlePairingTransportHandshakeApi() {
+  if (!isAuthorized(maintenanceRole::kAdmin)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String targetDeviceId;
+  String sessionId;
+  String bundleId;
+  String clientPublicKeyBase64;
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "sessionId", &sessionId);
+  parseBodyStringValue(requestBody, "bundleId", &bundleId);
+  parseBodyStringValue(requestBody, "clientPublicKeyBase64", &clientPublicKeyBase64);
+  targetDeviceId.trim();
+  sessionId.trim();
+  bundleId.trim();
+  clientPublicKeyBase64.trim();
+  if (targetDeviceId.length() == 0 || sessionId.length() == 0 || bundleId.length() == 0 || clientPublicKeyBase64.length() == 0) {
+    maintenanceWebServer.send(
+        400,
+        "application/json",
+        "{\"result\":\"NG\",\"detail\":\"targetDeviceId/sessionId/bundleId/clientPublicKeyBase64 is required\"}");
+    return;
+  }
+  if (lastPairingTargetDeviceId.length() > 0 && lastPairingTargetDeviceId != targetDeviceId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing targetDeviceId mismatch\"}");
+    return;
+  }
+  if (lastPairingSessionId.length() > 0 && lastPairingSessionId != sessionId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing session mismatch\"}");
+    return;
+  }
+  if (lastPairingBundleId.length() > 0 && lastPairingBundleId != bundleId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing bundle mismatch\"}");
+    return;
+  }
+  if (!lastPairingAcceptedKeyAgreement.equalsIgnoreCase("ecdh-p256-v1")) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing key agreement is not prepared\"}");
+    return;
+  }
+
+  String serverPublicKeyBase64;
+  String sharedSecretFingerprint;
+  if (!performPairingTransportHandshakeForAp(clientPublicKeyBase64,
+                                             sessionId,
+                                             bundleId,
+                                             &serverPublicKeyBase64,
+                                             &sharedSecretFingerprint)) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"transport handshake failed\"}");
+    return;
+  }
+
+  lastPairingTransportServerPublicKeyBase64 = serverPublicKeyBase64;
+  lastPairingTransportSharedSecretFingerprint = sharedSecretFingerprint;
+  lastPairingState = "transport_established";
+  lastPairingResult = "OK";
+  lastPairingDetail =
+      String("pairing transport handshake established. sessionId=") + sessionId + " bundleId=" + bundleId;
+
+  String responseText;
+  responseText.reserve(512);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(lastPairingTargetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"acceptedKeyAgreement\":\"" + toJsonSafeText(lastPairingAcceptedKeyAgreement) + "\",";
+  responseText += "\"acceptedBundleProtection\":\"" + toJsonSafeText(lastPairingAcceptedBundleProtection) + "\",";
+  responseText += "\"serverPublicKeyBase64\":\"" + toJsonSafeText(lastPairingTransportServerPublicKeyBase64) + "\",";
+  responseText += "\"sharedSecretFingerprint\":\"" + toJsonSafeText(lastPairingTransportSharedSecretFingerprint) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\"";
+  responseText += "}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }
 
@@ -903,8 +1548,13 @@ bool start(const String& apSsid, sensitiveDataService* sensitiveDataServiceOut) 
   maintenanceWebServer.on("/api/health", HTTP_GET, handleHealthApi);
   maintenanceWebServer.on("/api/auth/login", HTTP_POST, handleLoginApi);
   maintenanceWebServer.on("/api/auth/password/change", HTTP_POST, handleAuthPasswordChangeApi);
+  maintenanceWebServer.on("/api/pairing/session", HTTP_POST, handlePairingSessionApi);
+  maintenanceWebServer.on("/api/pairing/bundle-summary", HTTP_POST, handlePairingBundleSummaryApi);
+  maintenanceWebServer.on("/api/pairing/transport-session", HTTP_POST, handlePairingTransportSessionApi);
+  maintenanceWebServer.on("/api/pairing/transport-handshake", HTTP_POST, handlePairingTransportHandshakeApi);
   maintenanceWebServer.on("/api/settings/network", HTTP_GET, handleNetworkSettingsGetApi);
   maintenanceWebServer.on("/api/settings/network", HTTP_POST, handleNetworkSettingsApi);
+  maintenanceWebServer.on("/api/pairing/state", HTTP_GET, handlePairingStateApi);
   maintenanceWebServer.on("/api/files/upsert", HTTP_POST, handleManagedFileUpsertApi);
   maintenanceWebServer.on("/api/files/delete", HTTP_POST, handleManagedFileDeleteApi);
   maintenanceWebServer.on("/api/system/reboot", HTTP_POST, handleRebootApi);

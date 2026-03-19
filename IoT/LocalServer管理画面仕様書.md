@@ -6,7 +6,7 @@
 [厳守] 管理者画面への遷移はユーザー名/パスワード認証を必須とする。  
 理由: `k-user` 発行、`k-device` 発行、再起動指令など高リスク操作を保護するため。
 
-[厳守] eFuse 設定は `Production` ツールのみで実行し、LocalServer からは実行不可とする。  
+[厳守] eFuse 設定は `ProductionTool` ツールのみで実行し、LocalServer からは実行不可とする。  
 理由: 不可逆処理を通常運用画面から分離し、誤操作・不正操作を防止するため。
 
 ## 1. 対象画面
@@ -61,6 +61,7 @@
 - FWバージョン
 - FSバージョン
 - 書換進捗（OTA・設定適用進捗）
+- [重要][2026-03-16] `SecretCore` 有効時の OTA は単一対象機 workflow 状態（`queued` / `running` / `waiting_device` / `verifying` / `completed` / `failed`）を同一一覧へ表示する。
 - 最終更新時刻
 
 ### 3.6 MQTT経由メンテナンス再起動
@@ -79,7 +80,8 @@
 
 ## 5. API対応方針
 - [厳守] 管理者画面系APIは管理者セッション必須とする。
-- [厳守][003-0001] OTA実行API（`POST /api/commands/ota`）は管理者トークン（`Authorization: Bearer <token>`）必須とする。同一セッション内3時間有効、sessionStorage使用でブラウザ終了時に失効。
+- [厳守][003-0001] OTA実行系API（`POST /api/commands/ota`、`POST /api/workflows/signed-ota/start`、`GET /api/workflows/{workflowId}`）は管理者トークン（`Authorization: Bearer <token>`）必須とする。同一セッション内3時間有効、sessionStorage使用でブラウザ終了時に失効。
+- [厳守][2026-03-16] Web UI の signed OTA は単一対象機のみ対応とし、「全体」一括実行は未対応表示とする。理由: Stage7 workflow が単一対象機前提のため。
 - [厳守] AP一括設定APIは「対象一覧」「処理状態」「結果要約」を返す。
 - [推奨] 一覧APIは AP / MQTT を統合して返す。
 - [重要] MQTT通信は「トピック平文 + payload全文暗号化（k-device/A256GCM）」を標準とし、管理画面からのコマンド送信も同方式を使用する。  
@@ -88,6 +90,7 @@
   理由: 誤操作で平文運用へ戻る事故を防ぐため。
 
 ## 6. 変更履歴
+- 2026-03-16: [003-0012] `index.html` を signed OTA workflow UI へ接続し、単一対象機の workflow 状態表示を一覧へ追加。`otaAllButton` は未対応表示へ変更。理由: Rust 側 Stage7 実装済み workflow を UI まで貫通し、TS 側が逐次手順を持たない構成へ近づけるため。
 - 2026-03-14: [003-0001] OTA再認証を実装。server.ts: /api/commands/ota に requireAdminSession を追加。index.html: OTA実行前に管理者認証モーダルを表示、トークン送信、401時は再ログインを促す。同一セッション内3時間有効、sessionStorageでブラウザ終了時に失効。理由: OTA実行の誤操作・不正実行を防止するため。
 - 2026-03-14: [003-0011] eFuse 実行不可の担保。server.ts で `/api/admin/efuse`, `/api/commands/efuse` を 404 で明示拒否。admin.html / index.html に「[禁止] eFuse 実行ボタン・UIを追加しない」コメントを追加。理由: IF仕様書「eFuse 操作 API は LocalServer 側へ実装しない」を担保するため。
 - 2026-03-14: [003-0008] AP Web手動遷移を実装。index.html 操作列に apWebUrl 時「Webページへ移動」、admin.html AP探索横に同ボタン、管理対象一覧に AP機体の Webリンクを追加。理由: 実機保守時の手動設定導線を明確化するため。

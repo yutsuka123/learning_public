@@ -1,15 +1,13 @@
 <#
-  [重要] ESP32書込み前の版数更新を自動化するスクリプト。
-  概要:
-    - `IoT/ESP32/header/version.h` の `kFirmwareVersion` を更新する。
-    - `IoT/LocalServer/.env` の `OTA_FIRMWARE_VERSION` を同じ値へ同期する。
-  主な仕様:
-    - `-NextVersion` 未指定時は `x.y.z-beta.N` の `N` を +1 する。
-    - `-NextVersion` 指定時は指定値を検証してその値を適用する。
-    - `-DryRun` 指定時はファイルを書き換えずに結果だけ表示する。
-  制限事項:
-    - 対応版数形式は `x.y.z-beta.N` のみ。
-    - `version.h` と `.env` の該当キーが存在しない場合は失敗終了する。
+  Update ESP32 beta version before rebuild.
+  Targets:
+    - IoT/ESP32/header/version.h
+    - IoT/LocalServer/.env
+    - IoT/LocalServer/data/settings.json (if exists)
+  Rules:
+    - If -NextVersion is omitted, increment x.y.z-beta.N by +1.
+    - Only x.y.z-beta.N format is supported.
+    - If -DryRun is used, do not write files.
 #>
 
 param(
@@ -21,24 +19,30 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 function Write-InfoMessage {
-  param(
-    [string]$message
-  )
+  param([string]$message)
   Write-Host "[INFO] $message"
 }
 
-function Parse-BetaVersion {
+function Write-Utf8Text {
   param(
-    [string]$versionText
+    [string]$path,
+    [string]$text
   )
+  $utf8Encoding = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText($path, $text, $utf8Encoding)
+}
+
+function Get-BetaVersionInfo {
+  param([string]$versionText)
   $versionPattern = '^(?<prefix>\d+\.\d+\.\d+-beta\.)(?<betaNumber>\d+)$'
   $matchResult = [regex]::Match($versionText, $versionPattern)
   if (-not $matchResult.Success) {
-    throw "Parse-BetaVersion failed. versionText='$versionText' は 'x.y.z-beta.N' 形式ではありません。"
+    throw "Get-BetaVersionInfo failed. versionText='$versionText' is not in x.y.z-beta.N format."
   }
+
   return @{
-    prefix = $matchResult.Groups["prefix"].Value
-    betaNumber = [int]$matchResult.Groups["betaNumber"].Value
+    prefix = $matchResult.Groups['prefix'].Value
+    betaNumber = [int]$matchResult.Groups['betaNumber'].Value
   }
 }
 
@@ -48,12 +52,12 @@ function Resolve-NextVersion {
     [string]$requestedVersionText
   )
   if ([string]::IsNullOrWhiteSpace($requestedVersionText)) {
-    $parsedVersion = Parse-BetaVersion -versionText $currentVersionText
+    $parsedVersion = Get-BetaVersionInfo -versionText $currentVersionText
     $nextBetaNumber = $parsedVersion.betaNumber + 1
     return "$($parsedVersion.prefix)$nextBetaNumber"
   }
 
-  $null = Parse-BetaVersion -versionText $requestedVersionText
+  $null = Get-BetaVersionInfo -versionText $requestedVersionText
   return $requestedVersionText
 }
 
@@ -67,7 +71,7 @@ function Update-VersionHeader {
   $headerPattern = 'kFirmwareVersion\s*=\s*"(?<version>[^"]+)"'
   $headerMatch = [regex]::Match($headerText, $headerPattern)
   if (-not $headerMatch.Success) {
-    throw "Update-VersionHeader failed. kFirmwareVersion が見つかりません。path='$versionHeaderPath'"
+    throw "Update-VersionHeader failed. kFirmwareVersion was not found. path='$versionHeaderPath'"
   }
 
   $currentVersionText = $headerMatch.Groups["version"].Value
@@ -80,7 +84,7 @@ function Update-VersionHeader {
   )
 
   if (-not $isDryRun) {
-    Set-Content -Path $versionHeaderPath -Value $updatedHeaderText -Encoding UTF8
+    Write-Utf8Text -path $versionHeaderPath -text $updatedHeaderText
   }
 
   return $currentVersionText
@@ -96,7 +100,7 @@ function Update-LocalServerEnv {
   $envPattern = '(?m)^OTA_FIRMWARE_VERSION=.*$'
   $envMatch = [regex]::Match($envText, $envPattern)
   if (-not $envMatch.Success) {
-    throw "Update-LocalServerEnv failed. OTA_FIRMWARE_VERSION が見つかりません。path='$localServerEnvPath'"
+    throw "Update-LocalServerEnv failed. OTA_FIRMWARE_VERSION was not found. path='$localServerEnvPath'"
   }
 
   $updatedEnvText = [regex]::Replace(
@@ -108,7 +112,36 @@ function Update-LocalServerEnv {
   )
 
   if (-not $isDryRun) {
-    Set-Content -Path $localServerEnvPath -Value $updatedEnvText -Encoding UTF8
+    Write-Utf8Text -path $localServerEnvPath -text $updatedEnvText
+  }
+}
+
+function Update-LocalServerSettingsJson {
+  param(
+    [string]$settingsJsonPath,
+    [string]$newVersionText,
+    [bool]$isDryRun
+  )
+
+  if (-not (Test-Path -Path $settingsJsonPath -PathType Leaf)) {
+    Write-InfoMessage "Skip settings.json update because the file does not exist. path='$settingsJsonPath'"
+    return
+  }
+
+  $settingsText = Get-Content -Path $settingsJsonPath -Raw -Encoding UTF8
+  $settingsObject = $settingsText | ConvertFrom-Json
+  if ($null -eq $settingsObject.PSObject.Properties['otaFirmwareVersion']) {
+    throw "Update-LocalServerSettingsJson failed. otaFirmwareVersion was not found. path='$settingsJsonPath'"
+  }
+
+  $settingsObject.otaFirmwareVersion = $newVersionText
+  $updatedSettingsText = $settingsObject | ConvertTo-Json -Depth 10
+  if (-not $updatedSettingsText.EndsWith("`n")) {
+    $updatedSettingsText += "`n"
+  }
+
+  if (-not $isDryRun) {
+    Write-Utf8Text -path $settingsJsonPath -text $updatedSettingsText
   }
 }
 
@@ -117,12 +150,13 @@ try {
   $iotDirectoryPath = (Resolve-Path (Join-Path $scriptDirectoryPath "..\..")).Path
   $versionHeaderPath = Join-Path $iotDirectoryPath "ESP32\header\version.h"
   $localServerEnvPath = Join-Path $iotDirectoryPath "LocalServer\.env"
+  $localServerSettingsJsonPath = Join-Path $iotDirectoryPath "LocalServer\data\settings.json"
 
   if (-not (Test-Path -Path $versionHeaderPath -PathType Leaf)) {
-    throw "version.h が存在しません。path='$versionHeaderPath'"
+    throw "version.h does not exist. path='$versionHeaderPath'"
   }
   if (-not (Test-Path -Path $localServerEnvPath -PathType Leaf)) {
-    throw ".env が存在しません。path='$localServerEnvPath'"
+    throw ".env does not exist. path='$localServerEnvPath'"
   }
 
   $currentVersionText = Update-VersionHeader -versionHeaderPath $versionHeaderPath -newVersionText "__TEMP__" -isDryRun $true
@@ -130,14 +164,16 @@ try {
 
   $null = Update-VersionHeader -versionHeaderPath $versionHeaderPath -newVersionText $resolvedVersionText -isDryRun $dryRun
   Update-LocalServerEnv -localServerEnvPath $localServerEnvPath -newVersionText $resolvedVersionText -isDryRun $dryRun
+  Update-LocalServerSettingsJson -settingsJsonPath $localServerSettingsJsonPath -newVersionText $resolvedVersionText -isDryRun $dryRun
 
   if ($dryRun) {
-    Write-InfoMessage "DryRun: version は更新していません。"
+    Write-InfoMessage "DryRun: files were not modified."
   }
   Write-InfoMessage "version updated: $currentVersionText -> $resolvedVersionText"
   Write-InfoMessage "updated files:"
   Write-InfoMessage "  - $versionHeaderPath"
   Write-InfoMessage "  - $localServerEnvPath"
+  Write-InfoMessage "  - $localServerSettingsJsonPath"
 }
 catch {
   Write-Error "bump-esp32-beta-version.ps1 failed. message=$($_.Exception.Message)"

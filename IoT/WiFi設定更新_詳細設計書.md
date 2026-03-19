@@ -114,7 +114,7 @@
 - [重要] APモード中のLED/LCD表示、認証ロール、画面仕様は `APメンテナンス画面仕様書.md` を正とする。
 
 ### 9.1.2 APメンテナンス一括処理（PC側自動運用）
-- [重要] LocalServer / Production は、PC側の指定したUSB Wi-Fiインタフェースで `AP-esp32lab-<MAC(no colon)>` を探索対象にする。
+- [重要] LocalServer / ProductionTool は、PC側の指定したUSB Wi-Fiインタフェースで `AP-esp32lab-<MAC(no colon)>` を探索対象にする。
 - [重要] 一括処理は以下の順序で行う。
   1. AP一覧探索（未処理個体の抽出）
   2. 1台へ接続

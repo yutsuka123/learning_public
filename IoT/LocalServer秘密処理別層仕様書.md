@@ -21,8 +21,8 @@
 - [補足] 同一PC侵害は運用PC管理者責任の範囲として扱う。
 
 ### 1.3 責任範囲の親定義
-- [厳守] `LocalServer` / `SecretCore` / `Production` / `ESP32` の責任境界は `モジュール仕様書.md` を親定義とする。
-- [厳守] 本書はそのうち `LocalServer` と `SecretCore` の境界を詳細化する文書とし、`Production` の製造責務を取り込まない。
+- [厳守] `LocalServer` / `SecretCore` / `ProductionTool` / `ESP32` の責任境界は `モジュール仕様書.md` を親定義とする。
+- [厳守] 本書はそのうち `LocalServer` と `SecretCore` の境界を詳細化する文書とし、`ProductionTool` の製造責務を取り込まない。
 
 ## 2. アーキテクチャ概要
 ```text
@@ -88,6 +88,7 @@ TPM
 - [進捗][2026-03-15] `mqttGateway` の Rust モードでは `deviceStateUpdated` による `offline timeout` 更新も受け取り、TS 側ローカル timeout 判定を無効化した。
 - [進捗][2026-03-15] `waitForStatusRecoveryByDevice()` は Rust モード時 `SecretCoreFacade -> wait_for_status_recovery` を使い、TS 側 polling ループを通さずに online 復帰待機を行う構成へ更新した。
 - [進捗][2026-03-15] `/api/workflows/signed-ota/start` と `GET /api/workflows/:workflowId` は Rust workflow を呼ぶ薄い窓口として追加し、TS 側は OTA 開始後の逐次手順を保持しない構成へ移行開始した。
+- [進捗][2026-03-16] `LocalServer/public/index.html` は `/api/workflows/signed-ota/start` と `GET /api/workflows/{workflowId}` を用いて、単一対象機の OTA workflow 状態を一覧表示・定期取得する構成へ更新した。
 - [重要][2026-03-15] 起動時は `SecretCore` readiness を確認後に `gateway.connect()` する。理由: pipe 生成前に strict 復号要求が先行し、起動直後の受信失敗ノイズが出るため。
 
 ### 4.1 TypeScript 本体（LocalServer）担当
@@ -100,18 +101,28 @@ TPM
 - Rust モード時の `deviceStateUpdated` 受信と画面反映
 - Rust モード時の `wait_for_status_recovery` 呼び出し
 - Rust 側 workflow 開始API / 状態取得API の公開
+- Rust 側 workflow 状態の定期取得と一覧UI反映（進捗表示のみ）
 - OTA 配布エンドポイント提供（HTTPS） [旧仕様][2026-03-15 時点]
 - 公開設定管理
 - `SecretCoreFacade` 経由での IPC 依頼送信と結果受信
-- AP 共通トップ画面、Production 追加認証前の通常画面制御
+- AP 共通トップ画面、ProductionTool 追加認証前の通常画面制御
 - 高リスクワークフロー実行前の入力検証、進行状態管理、監査表示
 - `public_id`、`keyVersion`、再ペアリング状態などのメタ情報管理
-- `POST /api/workflows/pairing/start`
-- `POST /api/workflows/key-rotation/start`
-- `POST /api/workflows/production/start`
+- [進捗][2026-03-16] `POST /api/workflows/pairing/start`
+- [将来対応] `POST /api/workflows/key-rotation/start`
+- [将来対応] `POST /api/workflows/production/start`
 - `POST /api/workflows/signed-ota/start`
 - `GET /api/workflows/{workflowId}`
 - [厳守] 上記 REST API は workflow 開始要求と状態取得のみを公開し、秘密処理の内部 helper を外部公開しない。
+- [重要][2026-03-16] `pairing/start` は TS 側の REST 窓口と事前検証、および Rust 側の workflow 骨格（`queued -> running -> waiting_device -> verifying -> failed(placeholder)`）まで実装済みである。
+- [重要][2026-03-16] `SecretCore` の `runPairingSession()` は現時点で `createPairingBundle` 相当の内部生成と、AP モード `/api/auth/login` / `GET /api/settings/network` による到達・認証 precheck まで実装済みである。
+- [重要][2026-03-16] さらに ESP32 AP 側 `GET /api/pairing/state` placeholder を読み、`targetDeviceId` / `state` / `keyDevicePresent` を Rust 側 workflow 詳細へ反映できる。
+- [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/session` placeholder へ `sessionId` / `bundleId` / `targetDeviceId` / `keyVersion` を登録し、Rust 側 workflow を `verifying` 手前まで進められる。
+- [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/bundle-summary` placeholder へ `publicId` / `nonce` / `signature` / `requestedSettingsSha256` を登録し、秘密本体未送達のまま AP 側 `bundle_staged` 状態まで進められる。
+- [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/transport-session` placeholder へ `requestedKeyAgreement` / `requestedBundleProtection` を登録し、secure transport 本体未実装のまま AP 側 `transport_prepared` 状態まで進められる。
+- [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/transport-handshake` で P-256 ECDH handshake を実行し、Rust / ESP32 双方が transport session key をセッション内メモリだけに保持できる。
+- [重要][2026-03-16] encrypted bundle 本体送達 / ESP32 側復号 / NVS 完了判定は継続実装中である。
+- [重要][2026-03-16] end-to-end で完了確認済みの公開 API は `POST /api/workflows/signed-ota/start` と `GET /api/workflows/{workflowId}` のみであり、`pairing` / `key-rotation` / `production` は段階的に到達させる。
 
 ### 4.2 SecretCore（Rust）担当
 - `S_random` の生成
@@ -142,7 +153,7 @@ TPM
 - [厳守] `LocalServer` は raw `k-user`、raw `k-device`、ECDH 共有秘密、`k-pairing-session` を保持しない。
 - [厳守] `LocalServer` は高リスク処理の逐次通信手順を保持せず、開始要求と進捗表示のみを行う。
 - [厳守] `SecretCore` は通常運用 UI、MQTT 状態表示、SQLite 保存、製造画面制御を担当しない。
-- [厳守] `Production` に属する eFuse 最終有効化、製造ログ主記録、工場内セキュア化主体は本書の対象外とする。
+- [厳守] `ProductionTool` に属する eFuse 最終有効化、製造ログ主記録、工場内セキュア化主体は本書の対象外とする。
 - [厳守] `SecretCoreIpcClient` は low-level 実装とし、業務コードから直接 `sendRequest()` を呼ばない。必ず `SecretCoreFacade` を経由する。
 - [厳守] `SecretCoreFacade` の戻り値は fingerprint、status、workflow 状態、暗号化済み payload などの最小DTOに限定する。
 - [禁止] Web UI / REST handler が low-level IPC コマンド名や payload 形式を直接知る構成。
@@ -210,7 +221,7 @@ DACL:
 | `isInitialized` | `wrapped_secret` の有無と利用可否確認 | bool |
 | `runPairingSession` | AP モード初回投入/再ペアリングを開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `runKeyRotationSession` | `k-user` 再発行後の鍵切替ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
-| `runProductionSecureFlow` | Production 高リスク処理を開始し、完了判定まで実行 | workflowId + 初期状態 |
+| `runProductionSecureFlow` | ProductionTool 高リスク処理を開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `runSignedOtaCommand` | 署名付き OTA 開始ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `getWorkflowStatus` | workflow の進捗状態と結果を取得 | 状態、結果、エラー要約 |
 | `issue_k_user` | k-user 発行状態を保証し fingerprint を返す | `isIssued` `keyFingerprint` `source` |
@@ -239,6 +250,15 @@ DACL:
 - [厳守] REST 応答は `workflowId`、`state`、`result`、`errorSummary`、監査表示向け最小情報に限定する。
 - [厳守] `LocalServer` は `SecretCore` の内部 helper を REST 公開しない。
 
+### 7.1.2 `ProductionTool` 基本機能フェーズの境界
+- [重要] `ProductionTool` 基本機能安定化フェーズ（`004-0008`〜`004-0010`）では、`SecretCore` の共通部を再利用してよい。
+- [厳守] 上記の「共通部を再利用」とは、`LocalServer` 側で整備した `SecretCore` 共通ライブラリや関連モジュールを `ProductionTool` でも利用する意味であり、`LocalServer` と `ProductionTool` を単一ソフトへ統合する意味ではない。
+- [厳守] `ProductionTool` は `LocalServer` と別ソフト、別実行物、別インストーラとして独立動作させる。
+- [厳守] ただし、この段階で許可するのは起動時初期化確認、追加認証後の状態取得、対象機確認、dry-run、監査ログ取得までとする。
+- [厳守] 不可逆処理本体は `runProductionSecureFlow()` の最終実行として後続フェーズへ分離し、基本機能フェーズで完了扱いにしない。
+- [厳守] `ProductionTool` は `LocalServer` の通常 REST を流用して高リスク処理へ入らず、専用入口またはローカル専用 IF を持つ。
+- [厳守] `ProductionTool` の戻り値も `workflowId`、`state`、`result`、`errorSummary`、監査表示向け最小情報に限定し、raw key、中間秘密、eFuse 実値を UI へ返さない。
+
 ### 7.2 禁止 API
 - [禁止] `getUserKey()`
 - [禁止] `getDeviceKey()`
@@ -253,6 +273,7 @@ DACL:
 - [厳守] `LocalServer` は必須入力を検証したうえで workflow を開始する。
 - [厳守] workflow 開始後の対ESP32通信、検証、再試行、完了判定は `SecretCore` が責任を持つ。
 - [厳守] workflow 経由の返却値に raw `k-device`、`k-pairing-session`、中間署名素材を含めない。
+- [厳守] `ProductionTool` 基本機能フェーズの dry-run でも、上記と同じく raw `k-device`、`k-pairing-session`、中間署名素材、eFuse 実値を返却しない。
 
 ### 7.4 `runPairingSession` 制約
 - [厳守] 入力は少なくとも `targetDeviceId` `sessionId` `keyVersion` `requestedSettings` を含む。
@@ -367,6 +388,17 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-03-16: `ProductionTool` へ名称統一し、`SecretCore` 共通化は `LocalServer` 側共通部の再利用を意味し、ソフト自体は分離・独立動作させる前提を追記。理由: `ProductionTool` の名称統一と、共通化/分離の解釈ずれを防ぐため。
+- 2026-03-16: `7.1.2 ProductionTool 基本機能フェーズの境界` を追加し、`SecretCore` 共通部の再利用範囲と、不可逆処理本体をまだ分離する前提を追記。理由: `ProductionTool画面仕様書.md` と `IF仕様書.md` で追加した起動・追加認証・dry-run 導線を、別層仕様でも安全側に固定するため。
+- 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-handshake` と、Rust 側 workflow の P-256 ECDH handshake を追記。理由: `runPairingSession()` の責務移行が transport negotiation placeholder から実ハンドシェイク段階へ進んだことを別層仕様へ正確に反映するため。
+- 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-session` placeholder と、Rust 側 workflow の secure transport negotiation を追記。理由: `runPairingSession()` の責務移行が「bundle summary staging」からさらに一段進んだことを別層仕様へ正確に反映するため。
+- 2026-03-16: ESP32 AP 側 `POST /api/pairing/bundle-summary` placeholder と、Rust 側 workflow の bundle summary staging を追記。理由: `runPairingSession()` の責務移行が「session metadata 受理」からさらに一段進んだことを別層仕様へ正確に反映するため。
+- 2026-03-16: ESP32 AP 側 `POST /api/pairing/session` placeholder と、Rust 側 workflow の session metadata 登録後 `verifying` 手前までの到達点を追記。理由: `runPairingSession()` の責務移行がどこまで進んだかを別層仕様へ正確に反映するため。
+- 2026-03-16: ESP32 AP 側 `GET /api/pairing/state` placeholder と、Rust 側 precheck からの参照を追記。理由: `waiting_device` 以降の監視導線がどこまで整ったかを別層仕様で追えるようにするため。
+- 2026-03-16: Pairing workflow が AP モード `/api/auth/login` / `GET /api/settings/network` による到達・認証 precheck を Rust 側で実行する段階へ進んだことを追記。理由: 通信開始責務の Rust 移行がどこまで進んだかを別層仕様で追跡できるようにするため。
+- 2026-03-16: `runPairingSession()` が `createPairingBundle` 相当の内部 helper 生成と `waiting_device` までの遷移を持つ段階へ進んだことを追記。理由: Pairing workflow の現在地を「受理のみ」ではなく「内部成果物生成済み」として正確に残すため。
+- 2026-03-16: `SecretCore` に `run_pairing_session` placeholder workflow 骨格を追加したことに合わせ、`pairing/start` の現段階を「TS 窓口 + Rust 骨格実装済み」へ更新。理由: unknown-command 解消後の現在地を責任分担仕様へ正確に反映するため。
+- 2026-03-16: `POST /api/workflows/pairing/start` を [進捗] へ更新し、TS 側 REST 窓口と事前検証実装済み、`SecretCore` 本体継続中の段階であることを追記。理由: 実装済みコードと責任分担仕様の説明が食い違わないようにするため。
 - 2026-03-15: Stage7 の OTA workflow（`run_signed_ota_command` / `get_workflow_status`）と TS 側薄い窓口化を追記。理由: `003-0012` の高リスク通信workflow移行開始を文書へ同期するため。
 - 2026-03-15: Stage6 の `wait_for_status_recovery` IPC と TS wait ループ委譲を追記。理由: `003-0012` の完了判定監視責務移行を文書へ同期するため。
 - 2026-03-15: Stage5 の Rust `offline timeout` 判定と `deviceStateUpdated` を追記。理由: `003-0012` の状態遷移責務移行を文書へ同期するため。

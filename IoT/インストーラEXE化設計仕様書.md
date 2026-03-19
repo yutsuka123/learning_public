@@ -1,6 +1,6 @@
 # IoT インストーラ EXE 化設計仕様書
 
-[重要] 本書は 009 以降の LocalServer / ProductionSoft 向けインストーラ・アンインストーラの EXE 化設計を定義する。  
+[重要] 本書は 009 以降の `LocalServer` / `ProductionTool` 向けインストーラ・アンインストーラの EXE 化設計を定義する。  
 理由: 本番・客先環境の導入要件を最小化し、Python 不要で単体 EXE 配布可能にするため。
 
 [厳守] 顧客・工場端末への導入時に「Node.js や Python を別途インストールする」手間を極力省く。  
@@ -17,7 +17,7 @@
 | 対象 | 用途 | 配布形式（ユーザーへ渡すもの） |
 |------|------|------------------------------|
 | LocalServer | 顧客向け通常運用（監視・OTA・AP メンテ） | インストーラ EXE 1 本のみ |
-| ProductionSoft | 工場端末向け製造・eFuse 実行 | インストーラ EXE 1 本のみ |
+| `ProductionTool` | 工場端末向け製造・eFuse 実行 | インストーラ EXE 1 本のみ |
 
 - アンインストーラはインストール時にインストーラが自動作成する。別途配布しない。
 
@@ -37,12 +37,13 @@
   - **方針 B**: Node.js の Single Executable Applications (SEA) で `dist/server.js` を単体 EXE にパッケージする（Node.js v25.5+ の `--build-sea` 利用）。
 - [推奨] 方針 B を優先検証する。ネイティブモジュール非依存であれば配布が最もシンプルになる。
 
-### 2.3 ProductionSoft の実行形式
+### 2.3 `ProductionTool` の実行形式
 
-- [重要] ProductionSoft は Windows ネイティブアプリ（Rust または .NET）を想定する。
+- [重要] `ProductionTool` は Windows ネイティブアプリ（Rust または .NET）を想定する。
   - **Rust**: `cargo build --release` で単体 EXE 生成。追加ランタイム不要。
   - **.NET**: `dotnet publish -r win-x64 --self-contained` で単体 EXE 生成。.NET ランタイム不要。
-- [厳守] ProductionSoft の GUI はブラウザではなく Windows アプリとする（モジュール仕様書に準拠）。
+- [厳守] `ProductionTool` の GUI はブラウザではなく Windows アプリとする（モジュール仕様書に準拠）。
+- [厳守] Rust 共通化は `LocalServer` 側 `SecretCore` 共通部の再利用を意味し、`ProductionTool` 自体を `LocalServer` と統合する意味ではない。
 
 ## 3. インストーラ EXE 仕様
 
@@ -69,7 +70,7 @@
 | 処理内容 | プロセス停止、Task Scheduler 解除、ファイアウォールルールの削除、機密ファイル上書き消去、監査ログ出力 |
 | [厳守] | 安全消去ポリシー 4.1 に準拠し、keyStore.json / securityState.json / settings.json / logs / uploads / certs を上書き消去 |
 
-### 3.3 ProductionSoft インストーラ / アンインストーラ
+### 3.3 `ProductionTool` インストーラ / アンインストーラ
 
 - LocalServer と同様に Inno Setup で EXE 化する。
 - [厳守] LocalServer 環境への混在インストールを禁止するチェックをインストーラに含める。
@@ -99,7 +100,7 @@
 1. **009-1020**: LocalServer 用 Inno Setup スクリプト作成（.iss）、インストーラ EXE ビルド手順をコマンド仕様書へ追記。
 2. **009-1021**: LocalServer アンインストーラの安全消去処理を Inno Setup の [UninstallRun] 等で実装（または起動用ヘルパー EXE を同梱）。
 3. **009-1022**: Node.js 同梱 or SEA 化の方針を確定し、インストーラに反映する。
-4. **009-1023**: ProductionSoft 用 Inno Setup スクリプト作成（ProductionSoft 実装開始後）。
+4. **009-1023**: `ProductionTool` 用 Inno Setup スクリプト作成（`ProductionTool` 実装開始後）。
 
 ## 6. 関連文書
 
@@ -108,5 +109,6 @@
 - `環境仕様書.md`: 対象 OS・ツール要件。
 
 ## 7. 変更履歴
+- 2026-03-16: `ProductionTool` へ名称統一し、Rust 共通化は `LocalServer` 側共通部再利用であってソフト統合ではないことを追記。理由: 配布設計でも名称と分離方針を一致させるため。
 
 - 2026-03-15: 新規作成。009 以降向け EXE インストーラ設計。Inno Setup 採用、Python 不要、導入要件最小化を定義。理由: 本番・客先環境の導入負荷低減のため。
