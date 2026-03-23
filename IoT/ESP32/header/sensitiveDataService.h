@@ -189,6 +189,18 @@ class sensitiveDataService {
    */
   bool loadKeyDevice(String* keyDeviceBase64Out);
 
+  /**
+   * @brief Pairing / KeyRotation 用の current / previous 鍵スロットを更新する。
+   * @details
+   * - [重要] 既存 current がある場合は previous へ退避し、新しい current を保存する。
+   * - [重要] 退避済み previous がある場合でも、直近の current を previous として上書きする。
+   * - [厳守] 直後状態は「旧鍵あり=grace / 旧鍵なし=none」で保存する。
+   * @param nextKeyDeviceBase64 新 current にする k-device。
+   * @param nextKeyVersion 新 current にする keyVersion。
+   * @return 保存成功時true、失敗時false。
+   */
+  bool savePairingKeySlots(const String& nextKeyDeviceBase64, const String& nextKeyVersion);
+
  private:
   /**
    * @brief 設定データが存在しない場合にデフォルトJSONを生成する。

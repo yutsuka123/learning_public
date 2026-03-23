@@ -241,6 +241,68 @@ export interface pairingWorkflowStartRequestBody {
 }
 
 /**
+ * @description KeyRotation workflow 開始APIの要求パラメータ。
+ * @remarks
+ * - [重要] 現段階では Pairing と同じ設定入力を再利用し、新 `keyVersion` への切替対象を表す。
+ * - [厳守] raw key を含めず、必要設定と識別子のみを渡す。
+ */
+export interface keyRotationWorkflowStartRequestBody {
+  targetDeviceId: string;
+  sessionId: string;
+  keyVersion: string;
+  requestedSettings: pairingRequestedSettings;
+}
+
+/**
+ * @description Production workflow の事前チェック観測値。
+ * @remarks
+ * - [重要] `ProductionTool` の 8 項目事前チェックを TS から Rust へ最小DTOで渡すための型。
+ * - [厳守] 秘密値や eFuse 実値は含めず、可否判定と補助測定値のみを扱う。
+ */
+export interface productionWorkflowPrecheckSnapshot {
+  targetDeviceMatched?: boolean;
+  powerStable?: boolean;
+  firmwareVersionApproved?: boolean;
+  keyIdVerified?: boolean;
+  unsecuredStateConfirmed?: boolean;
+  operatorAuthenticated?: boolean;
+  stackMarginOk?: boolean;
+  heapMarginOk?: boolean;
+  measuredFreeHeapBytes?: number;
+  measuredMinStackMarginBytes?: number;
+}
+
+/**
+ * @description Production workflow の実行設定。
+ * @remarks
+ * - [重要] 高リスク本体は Rust 側で段階実行するため、TS 側は設定値と dry-run 意図だけを渡す。
+ * - [禁止] eFuse 実値や中間秘密をここへ含めない。
+ */
+export interface productionWorkflowSettings {
+  dryRun: boolean;
+  stepPlan?: string[];
+  operatorComment?: string;
+  expectedSerial?: string;
+  expectedMac?: string;
+  expectedFirmwareVersion?: string;
+  minimumFreeHeapBytes?: number;
+  minimumStackMarginBytes?: number;
+  apBaseUrl?: string;
+  apUsername?: string;
+  apPassword?: string;
+  precheckSnapshot?: productionWorkflowPrecheckSnapshot;
+}
+
+/**
+ * @description Production workflow 開始APIの要求パラメータ。
+ */
+export interface productionWorkflowStartRequestBody {
+  targetDeviceId: string;
+  runId: string;
+  productionSettings: productionWorkflowSettings;
+}
+
+/**
  * @description rollback試験モード切替APIの要求パラメータ。
  */
 export interface rollbackTestCommandRequestBody extends commandRequestBody {

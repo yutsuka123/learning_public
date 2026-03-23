@@ -1,25 +1,19 @@
-; [重要] ESP32-S3向けPlatformIO設定ひな形
-; 理由: ビルド再現性を維持し、依存差異を排除するため
-; [禁止] このファイルに認証実値を直接記載しないこと
-
-[platformio]
-default_envs = esp32s3_dev
-
-[env:esp32s3_dev]
-platform = espressif32@6.9.0
-board = esp32-s3-devkitc-1
-framework = espidf
-monitor_speed = 115200
-
-; [厳守] 依存ライブラリはバージョン固定
-lib_deps =
-  knolleary/PubSubClient@2.8
-  bblanchon/ArduinoJson@7.0.4
-
-build_flags =
-  -D APP_TARGET_ESP32S3=1
-  -D MQTT_TOPIC_PREFIX=\"iot\"
-  -D MQTT_TLS_REQUIRED=1
-  -D MQTT_AUTH_REQUIRED=1
-
-; [推奨] 環境ごとの差異は追加envで吸収する
+; ==============================================================================
+; [重要] 本ファイルは「ESP32 ビルド設定の入口案内」です。実体の PlatformIO 設定は次を正とします。
+;   IoT/ESP32/platformio.ini
+; [理由] 旧ひな形（esp-idf / PubSubClient のみ）と現行実装（Arduino-ESP32 2.0.17 / esp32s3_secure）が乖離していたため、
+;        迷子を防ぐため入口を一本化する。
+; [厳守] 認証実値・COM 番号の固定を本ファイルに書かないこと。
+; ==============================================================================
+;
+; ビルド・書込（標準環境名: esp32s3_secure）:
+;   cd IoT/ESP32
+;   python -m platformio run -e esp32s3_secure
+;   python -m platformio run -e esp32s3_secure -t upload
+;     （必要時）--upload-port COMx
+;
+; Pairing（009-0019）実機確認前に、上記で FW を書き込み、PC を AP（例: 192.168.4.1）に接続したうえで
+;   IoT/LocalServer の `.env` で AP_HTTP_BASE_URL / AP_ROLE_ADMIN_* を実機と一致させ、
+;   SecretCore 同梱で LocalServer 起動後 `npm run test:7082` を実施する。
+;
+; 詳細は `環境仕様書.md`・`コマンド仕様書.md`（11章 Pairing）・`ESP32/platformio.ini` を参照。

@@ -56,14 +56,19 @@
 - `GET /api/devices`
 - `POST /api/commands/status` body: `{ "targetNames": "all" }` または `{ "targetNames": ["IoT_xxx"] }`
 - `POST /api/commands/ota` body: `{ "targetNames": "all" }` または `{ "targetNames": ["IoT_xxx"] }`（[003-0001] `Authorization: Bearer <adminToken>` 必須）
-- [重要][2026-03-16] 完了確認まで到達している workflow API は次の 2 つ。
+- [重要][2026-03-16] 完了確認まで到達している workflow API は次のとおり。
 - `POST /api/workflows/signed-ota/start`
+- `POST /api/workflows/pairing/start`
 - `GET /api/workflows/{workflowId}`
 - [進捗][2026-03-16] `POST /api/workflows/pairing/start`
   - TS 側の REST 窓口、`requestedSettings` 直接検証、`ap/configure` 系入力からの変換 helper 呼び出しを実装済み
-  - Rust 側の workflow 骨格（`queued -> running -> waiting_device -> verifying -> failed(placeholder)`）、`createPairingBundle` 相当の内部生成、AP モード到達・認証 precheck、ESP32 `GET /api/pairing/state` 参照、`POST /api/pairing/session` による session metadata 登録、`POST /api/pairing/bundle-summary` による非秘密 bundle summary staging、`POST /api/pairing/transport-session` による transport 準備、`POST /api/pairing/transport-handshake` による P-256 ECDH handshake は実装済み
-  - [将来対応] `SecretCore` の encrypted bundle 本体送達 / ESP32 側復号 / NVS 完了判定を追加後に end-to-end 有効化する
-- [将来対応] `POST /api/workflows/key-rotation/start`
+  - Rust 側は `createPairingBundle` 相当、AP 到達・認証 precheck、`GET /api/pairing/state`、`POST /api/pairing/session` / `bundle-summary` / `transport-session` / `transport-handshake`、`POST /api/pairing/secure-bundle`（AES-256-GCM 暗号 bundle 送達）まで実装済み
+  - 成功時 workflow は `completed` / `OK`、ESP32 は `state=applied` と `savedCurrentKeyVersion` を返す（実機・`.env` の `AP_HTTP_BASE_URL` / `AP_ROLE_ADMIN_*` 必須）
+  - 半自動試験: `npm run test:7082`（実機未接続時は失敗し得る。緩和のみ `--allowPairingFailed`）
+- [進捗][2026-03-21] `POST /api/workflows/key-rotation/start`
+  - TS 側は新 `k-user` を先行発行し、新系統 `k-device` を再導出した request を workflow へ渡す
+  - Rust 側 `runKeyRotationSession()` は Pairing と同じ secure bundle 送達・`state=applied` 完了判定経路を再利用する
+  - 半自動試験: `npm run test:7040 -- --targetDeviceId <ID> --wifiSsid <SSID> --wifiPass <PASS>`（実機状態を変更するため対象機確認必須）
 - [将来対応] `POST /api/workflows/production/start`
 - `POST /api/admin/auth/login`
 - `POST /api/admin/auth/logout`
@@ -81,6 +86,7 @@
 - [厳守] `ProductionTool` 専用の eFuse 最終有効化機能は、本READMEの通常運用スコープへ含めない。
 
 ## 9. 変更履歴
+- 2026-03-21: `key-rotation/start` を [進捗] へ更新し、新 `k-user` 発行 + 新 `k-device` 再導出 + Pairing secure bundle 再利用、および `npm run test:7040` を追記。理由: README 上の workflow 現在地を最新実装へ合わせるため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` とは別ソフト・独立動作であることを追記。理由: 通常運用 README でも名称統一と責務分離を明確化するため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-handshake` と、Rust 側 P-256 ECDH handshake を README へ反映。理由: Pairing workflow が secure transport の実ハンドシェイクまで進み、残課題が encrypted bundle 本体送達以降へ絞られたため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-session` placeholder と、Rust 側 secure transport negotiation を README へ反映。理由: Pairing workflow が summary staging の次に transport 交渉枠まで持てる段階へ進んだことを README でも追えるようにするため。
@@ -91,7 +97,7 @@
 - 2026-03-16: `createPairingBundle` 相当の Rust 内部 helper 追加に合わせ、`POST /api/workflows/pairing/start` の現在地を更新。理由: Pairing workflow が「受理のみ」ではなく「内部 bundle 生成済み」へ進んだことを README でも共有するため。
 - 2026-03-16: `SecretCore` の Pairing workflow 骨格追加に合わせ、`POST /api/workflows/pairing/start` の現状を「TS 窓口 + Rust placeholder workflow 実装済み」へ更新。理由: README 上も unknown-command 解消後の現在地を正確に共有するため。
 - 2026-03-16: `POST /api/workflows/pairing/start` を [進捗] へ更新し、TS 側 REST 窓口と事前検証の実装済み、`SecretCore` 本体は継続中であることを追記。理由: code 上は route が追加された一方、README で [将来対応] のままだと実装現況と矛盾するため。
-- 2026-03-16: workflow API 一覧を実装現況へ合わせ、`signed-ota/start` と `GET /api/workflows/{workflowId}` のみを実装済み、`pairing` / `key-rotation` / `production` を [将来対応] へ整理。理由: README だけを見ると未実装 API まで既に使えるように見える矛盾を解消するため。
+- 2026-03-16: `POST /api/workflows/pairing/start` を実装済み workflow 一覧へ追加し、`secure-bundle` 送達〜`completed/OK` までの現状を記載（従来の「`signed-ota/start` のみ実装済み」記載は撤回）。`key-rotation` / `production` は [将来対応] のまま。理由: `009-0019` 実装と README の矛盾を解消するため。
 - 2026-03-14: [003-0015] インストール/アンインストール（5節）を追加。コマンド仕様書 4.1 参照を記載。理由: 安全消去付き運用を README から辿れるようにするため。
 - 2026-03-11: 管理者画面認証、鍵発行、AP一括設定、統合一覧、メンテナンス再起動、eFuse分離方針を追記。理由: LocalServer 管理画面要件を README で即参照可能にするため。
 - 2026-03-09: workflow 公開 API（`/api/workflows/...`）と `createPairingBundle` 直公開禁止を追記。理由: 公開 API と内部 helper の境界を README でも明確化するため。

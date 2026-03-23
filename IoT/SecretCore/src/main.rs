@@ -7,6 +7,7 @@
 // [旧仕様] 環境変数未指定の手動起動時のみ、互換の平文IPCを許可する。
 // 変更日: 2026-03-15 IPC 保護を追加。理由: 003-0014 対応のため。
 mod dpapi;
+mod generic_workflow;
 mod key_manager;
 mod mqtt_transport;
 mod ota_workflow;
@@ -85,6 +86,7 @@ async fn main() -> io::Result<()> {
     let mqtt_receiver_manager = Arc::new(mqtt_transport::MqttReceiverManager::new());
     let ota_workflow_manager = Arc::new(ota_workflow::OtaWorkflowManager::new());
     let pairing_workflow_manager = Arc::new(pairing_workflow::PairingWorkflowManager::new());
+    let production_workflow_manager = Arc::new(generic_workflow::ProductionWorkflowManager::new());
     println!("SecretCore started. Listening on {}", ipc_security_context.pipe_name);
     if ipc_security_context.session_key.is_some() {
         println!("SecretCore IPC protection mode=secure");
@@ -127,6 +129,7 @@ async fn main() -> io::Result<()> {
         let mqtt_receiver_manager_clone = Arc::clone(&mqtt_receiver_manager);
         let ota_workflow_manager_clone = Arc::clone(&ota_workflow_manager);
         let pairing_workflow_manager_clone = Arc::clone(&pairing_workflow_manager);
+        let production_workflow_manager_clone = Arc::clone(&production_workflow_manager);
         // 各接続を別タスクで処理
         tokio::spawn(async move {
             if let Err(e) = handle_client(
@@ -136,6 +139,7 @@ async fn main() -> io::Result<()> {
                 mqtt_receiver_manager_clone,
                 ota_workflow_manager_clone,
                 pairing_workflow_manager_clone,
+                production_workflow_manager_clone,
             )
             .await
             {
@@ -155,6 +159,7 @@ async fn handle_client(
     mqtt_receiver_manager: Arc<mqtt_transport::MqttReceiverManager>,
     ota_workflow_manager: Arc<ota_workflow::OtaWorkflowManager>,
     pairing_workflow_manager: Arc<pairing_workflow::PairingWorkflowManager>,
+    production_workflow_manager: Arc<generic_workflow::ProductionWorkflowManager>,
 ) -> io::Result<()> {
     let mut buf = [0u8; 8192];
     loop {
@@ -204,16 +209,24 @@ async fn handle_client(
                         error: None,
                     },
                     "issue_k_user" => {
-                        let source = key_mgr.get_k_user_source();
-                        let key_fingerprint = key_mgr.get_k_user_fingerprint();
-                        IpcResponse {
-                            status: "ok".to_string(),
-                            data: Some(serde_json::json!({
-                                "isIssued": true,
-                                "source": source,
-                                "keyFingerprint": key_fingerprint
-                            })),
-                            error: None,
+                        match key_mgr.issue_new_k_user() {
+                            Ok(key_fingerprint) => {
+                                let source = key_mgr.get_k_user_source();
+                                IpcResponse {
+                                    status: "ok".to_string(),
+                                    data: Some(serde_json::json!({
+                                        "isIssued": true,
+                                        "source": source,
+                                        "keyFingerprint": key_fingerprint
+                                    })),
+                                    error: None,
+                                }
+                            }
+                            Err(e) => IpcResponse {
+                                status: "error".to_string(),
+                                data: None,
+                                error: Some(format!("issue_k_user failed. {}", e)),
+                            },
                         }
                     },
                     "get_k_user_status" => {
@@ -497,6 +510,64 @@ async fn handle_client(
                             }
                         }
                     },
+                    "run_key_rotation_session" => {
+                        if let Some(p) = req.payload {
+                            match serde_json::from_value::<pairing_workflow::PairingWorkflowStartRequest>(p) {
+                                Ok(key_rotation_request) => match pairing_workflow_manager.start_key_rotation_session(&key_mgr, key_rotation_request) {
+                                    Ok(workflow_status) => IpcResponse {
+                                        status: "ok".to_string(),
+                                        data: Some(serde_json::json!(workflow_status)),
+                                        error: None,
+                                    },
+                                    Err(e) => IpcResponse {
+                                        status: "error".to_string(),
+                                        data: None,
+                                        error: Some(format!("run_key_rotation_session failed. {}", e)),
+                                    },
+                                },
+                                Err(e) => IpcResponse {
+                                    status: "error".to_string(),
+                                    data: None,
+                                    error: Some(format!("run_key_rotation_session failed. invalid payload. {}", e)),
+                                },
+                            }
+                        } else {
+                            IpcResponse {
+                                status: "error".to_string(),
+                                data: None,
+                                error: Some("run_key_rotation_session failed. Missing payload".into()),
+                            }
+                        }
+                    },
+                    "run_production_secure_flow" => {
+                        if let Some(p) = req.payload {
+                            match serde_json::from_value::<generic_workflow::ProductionWorkflowStartRequest>(p) {
+                                Ok(production_request) => match production_workflow_manager.start_production_secure_flow(production_request) {
+                                    Ok(workflow_status) => IpcResponse {
+                                        status: "ok".to_string(),
+                                        data: Some(serde_json::json!(workflow_status)),
+                                        error: None,
+                                    },
+                                    Err(e) => IpcResponse {
+                                        status: "error".to_string(),
+                                        data: None,
+                                        error: Some(format!("run_production_secure_flow failed. {}", e)),
+                                    },
+                                },
+                                Err(e) => IpcResponse {
+                                    status: "error".to_string(),
+                                    data: None,
+                                    error: Some(format!("run_production_secure_flow failed. invalid payload. {}", e)),
+                                },
+                            }
+                        } else {
+                            IpcResponse {
+                                status: "error".to_string(),
+                                data: None,
+                                error: Some("run_production_secure_flow failed. Missing payload".into()),
+                            }
+                        }
+                    },
                     "get_workflow_status" => {
                         if let Some(p) = req.payload {
                             let workflow_id = p.get("workflowId").and_then(|v| v.as_str()).unwrap_or("").trim();
@@ -512,13 +583,20 @@ async fn handle_client(
                                         data: Some(serde_json::json!(workflow_status)),
                                         error: None,
                                     },
-                                    Err(pairing_error) => IpcResponse {
-                                        status: "error".to_string(),
-                                        data: None,
-                                        error: Some(format!(
-                                            "get_workflow_status failed. ota_error={} pairing_error={}",
-                                            ota_error, pairing_error
-                                        )),
+                                    Err(pairing_error) => match production_workflow_manager.get_workflow_status(workflow_id) {
+                                        Ok(workflow_status) => IpcResponse {
+                                            status: "ok".to_string(),
+                                            data: Some(serde_json::json!(workflow_status)),
+                                            error: None,
+                                        },
+                                        Err(production_error) => IpcResponse {
+                                            status: "error".to_string(),
+                                            data: None,
+                                            error: Some(format!(
+                                                "get_workflow_status failed. ota_error={} pairing_error={} production_error={}",
+                                                ota_error, pairing_error, production_error
+                                            )),
+                                        },
                                     },
                                 },
                             }
