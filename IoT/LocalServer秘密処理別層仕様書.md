@@ -109,20 +109,24 @@ TPM
 - 高リスクワークフロー実行前の入力検証、進行状態管理、監査表示
 - `public_id`、`keyVersion`、再ペアリング状態などのメタ情報管理
 - [進捗][2026-03-16] `POST /api/workflows/pairing/start`
-- [将来対応] `POST /api/workflows/key-rotation/start`
-- [将来対応] `POST /api/workflows/production/start`
+- [進捗][2026-03-21] `POST /api/workflows/key-rotation/start`
+- [進捗][2026-03-21] `POST /api/workflows/production/start`
 - `POST /api/workflows/signed-ota/start`
 - `GET /api/workflows/{workflowId}`
 - [厳守] 上記 REST API は workflow 開始要求と状態取得のみを公開し、秘密処理の内部 helper を外部公開しない。
-- [重要][2026-03-16] `pairing/start` は TS 側の REST 窓口と事前検証、および Rust 側の workflow 骨格（`queued -> running -> waiting_device -> verifying -> failed(placeholder)`）まで実装済みである。
+- [重要][2026-03-21] `pairing/start` は TS 側の REST 窓口と事前検証、および Rust 側の workflow 完了系（`queued -> running -> waiting_device -> verifying -> completed(OK)`）まで実装済みである。
 - [重要][2026-03-16] `SecretCore` の `runPairingSession()` は現時点で `createPairingBundle` 相当の内部生成と、AP モード `/api/auth/login` / `GET /api/settings/network` による到達・認証 precheck まで実装済みである。
 - [重要][2026-03-16] さらに ESP32 AP 側 `GET /api/pairing/state` placeholder を読み、`targetDeviceId` / `state` / `keyDevicePresent` を Rust 側 workflow 詳細へ反映できる。
 - [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/session` placeholder へ `sessionId` / `bundleId` / `targetDeviceId` / `keyVersion` を登録し、Rust 側 workflow を `verifying` 手前まで進められる。
 - [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/bundle-summary` placeholder へ `publicId` / `nonce` / `signature` / `requestedSettingsSha256` を登録し、秘密本体未送達のまま AP 側 `bundle_staged` 状態まで進められる。
 - [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/transport-session` placeholder へ `requestedKeyAgreement` / `requestedBundleProtection` を登録し、secure transport 本体未実装のまま AP 側 `transport_prepared` 状態まで進められる。
 - [重要][2026-03-16] さらに ESP32 AP 側 `POST /api/pairing/transport-handshake` で P-256 ECDH handshake を実行し、Rust / ESP32 双方が transport session key をセッション内メモリだけに保持できる。
-- [重要][2026-03-16] encrypted bundle 本体送達 / ESP32 側復号 / NVS 完了判定は継続実装中である。
-- [重要][2026-03-16] end-to-end で完了確認済みの公開 API は `POST /api/workflows/signed-ota/start` と `GET /api/workflows/{workflowId}` のみであり、`pairing` / `key-rotation` / `production` は段階的に到達させる。
+- [重要][2026-03-21] encrypted bundle 本体送達 / ESP32 側復号 / NVS 完了判定は Pairing workflow で end-to-end 完了確認済みである。
+- [重要][2026-03-21] `key-rotation/start` は TS 側で新 `k-user` を先行発行し、その値から再導出した `k-device` を含む request を Rust workflow へ渡す。Rust 側 `runKeyRotationSession()` は Pairing と同じ secure bundle 送達・AP `state=applied` 完了判定経路を再利用する。理由: TS 側が逐次通信手順を持たないまま、鍵系統だけを切替対象へ更新するため。
+- [重要][2026-03-22] `production/start` は TS 側 REST 窓口、入力検証、`precheckSnapshot` を含む最小DTO検証、IPC 受理まで実装済みである。Rust 側 workflow は dry-run 限定で `queued -> running(precheck) -> waiting_device(lock/stage_prepare) -> verifying(readback/final_judgement) -> completed(OK)` の骨格を返し、明示 NG の事前チェックや `dryRun=false` は `failed` で停止する。理由: TS 側が高リスク手順を保持しない境界を維持したまま、段階進行と安全停止の責務を Rust 側へ寄せるため。
+- [進捗][2026-03-22] `production/start` は `apBaseUrl` / `apUsername` / `apPassword` が与えられた場合、Rust 側で ESP32 AP へログインし `POST /api/production/precheck` から firmware版数、MAC、free heap、stack margin を取得して precheck 判定へ取り込める。ESP32 側は `GET /api/production/state` で直近の precheck 観測状態のみ返し、不可逆処理本体はまだ公開しない。理由: TS 側に高リスク通信手順を戻さず、ESP32 観測値の取得経路だけを先に Rust workflow へ寄せるため。
+- [進捗][2026-03-22] `production/start` は `POST /api/production/precheck` の直後に Rust 側で `GET /api/production/state` も確認し、`runId` / `targetDeviceId` / `state=precheck_collected` の整合が崩れた場合は workflow を `failed` で停止する。理由: Production workflow の AP 状態確認責務も TS ではなく Rust 側へ寄せ、dry-run の end-to-end 整合を段階的に高めるため。
+- [重要][2026-03-21] end-to-end で完了確認済みの公開 API は `POST /api/workflows/signed-ota/start`、`POST /api/workflows/pairing/start`、`GET /api/workflows/{workflowId}` である。`key-rotation` は同等の実装経路まで到達したが 7040 実試験が未了、`production` は開始 API と状態取得のみ実装済みで本体は継続実装である。
 
 ### 4.2 SecretCore（Rust）担当
 - `S_random` の生成
@@ -388,8 +392,10 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-03-22: ESP32 AP 側 `POST /api/production/precheck` / `GET /api/production/state` と、Rust 側 workflow の AP ログイン経由 precheck 自動取得を追記。理由: `runProductionSecureFlow()` の dry-run 段階で、TS 側へ高リスク通信手順を戻さずに ESP32 実測値の取得経路を固定するため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`SecretCore` 共通化は `LocalServer` 側共通部の再利用を意味し、ソフト自体は分離・独立動作させる前提を追記。理由: `ProductionTool` の名称統一と、共通化/分離の解釈ずれを防ぐため。
 - 2026-03-16: `7.1.2 ProductionTool 基本機能フェーズの境界` を追加し、`SecretCore` 共通部の再利用範囲と、不可逆処理本体をまだ分離する前提を追記。理由: `ProductionTool画面仕様書.md` と `IF仕様書.md` で追加した起動・追加認証・dry-run 導線を、別層仕様でも安全側に固定するため。
+- 2026-03-21: `key-rotation/start` が新 `k-user` 発行と新 `k-device` 再導出の後に Pairing secure bundle 経路を再利用する実装へ進んだこと、および `production/start` は骨格段階のままであることを反映。理由: `003-0012` の現在地を「pairing 完了、key-rotation は実装経路到達・実試験待ち、production は継続実装」へ正確に更新するため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-handshake` と、Rust 側 workflow の P-256 ECDH handshake を追記。理由: `runPairingSession()` の責務移行が transport negotiation placeholder から実ハンドシェイク段階へ進んだことを別層仕様へ正確に反映するため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-session` placeholder と、Rust 側 workflow の secure transport negotiation を追記。理由: `runPairingSession()` の責務移行が「bundle summary staging」からさらに一段進んだことを別層仕様へ正確に反映するため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/bundle-summary` placeholder と、Rust 側 workflow の bundle summary staging を追記。理由: `runPairingSession()` の責務移行が「session metadata 受理」からさらに一段進んだことを別層仕様へ正確に反映するため。

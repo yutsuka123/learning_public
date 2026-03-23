@@ -32,6 +32,12 @@ constexpr const char* serverRootKey = "server";
 constexpr const char* otaRootKey = "ota";
 constexpr const char* timeServerRootKey = "timeServer";
 constexpr const char* credentialsRootKey = "credentials";
+constexpr const char* currentKeyVersionKey = "currentKeyVersion";
+constexpr const char* previousKeyDeviceKey = "previousKeyDevice";
+constexpr const char* previousKeyVersionKey = "previousKeyVersion";
+constexpr const char* previousKeyStateKey = "previousKeyState";
+constexpr const char* graceActiveRuntimeMinutesKey = "graceActiveRuntimeMinutes";
+constexpr const char* retainedRuntimeMinutesKey = "retainedRuntimeMinutes";
 constexpr const char* legacyTimeServerUserKey = "timeServerUser";
 constexpr const char* legacyTimeServerPassKey = "timeServerPass";
 constexpr const char* mqttTlsCaCertKey = "mqttTlsCaCertPem";
@@ -1249,6 +1255,74 @@ bool sensitiveDataService::loadKeyDevice(String* keyDeviceBase64Out) {
   *keyDeviceBase64Out = keyDeviceItem->valuestring;
   cJSON_Delete(rootObject);
   return true;
+}
+
+bool sensitiveDataService::savePairingKeySlots(const String& nextKeyDeviceBase64, const String& nextKeyVersion) {
+  constexpr const char* functionName = "sensitiveDataService::savePairingKeySlots";
+  if (nextKeyDeviceBase64.length() == 0 || nextKeyVersion.length() == 0) {
+    appLogError("%s failed. next key slot values are empty. keyDeviceLength=%d keyVersionLength=%d",
+                functionName,
+                nextKeyDeviceBase64.length(),
+                nextKeyVersion.length());
+    return false;
+  }
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(rootObject, credentialsRootKey);
+  if (credentialsObject == nullptr || !cJSON_IsObject(credentialsObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, credentialsRootKey);
+    credentialsObject = cJSON_AddObjectToObject(rootObject, credentialsRootKey);
+    if (credentialsObject == nullptr) {
+      appLogError("%s failed. create credentials object key=%s", functionName, credentialsRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+
+  const char* currentKeyDeviceChars =
+      cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice));
+  const char* currentKeyVersionChars = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, currentKeyVersionKey));
+  const String currentKeyDevice = currentKeyDeviceChars == nullptr ? "" : String(currentKeyDeviceChars);
+  const String currentKeyVersion = currentKeyVersionChars == nullptr ? "" : String(currentKeyVersionChars);
+  const bool hasCurrentKeySlot = currentKeyDevice.length() > 0;
+  const String nextPreviousKeyState = hasCurrentKeySlot ? "grace" : "none";
+
+  bool updateResult = true;
+  updateResult = updateResult &&
+                 setStringItem(credentialsObject, previousKeyDeviceKey, hasCurrentKeySlot ? currentKeyDevice : "", functionName) &&
+                 setStringItem(credentialsObject, previousKeyVersionKey, hasCurrentKeySlot ? currentKeyVersion : "", functionName) &&
+                 setStringItem(credentialsObject, previousKeyStateKey, nextPreviousKeyState, functionName) &&
+                 setNumberItem(credentialsObject, graceActiveRuntimeMinutesKey, 0, functionName) &&
+                 setNumberItem(credentialsObject, retainedRuntimeMinutesKey, 0, functionName) &&
+                 setStringItem(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice, nextKeyDeviceBase64, functionName) &&
+                 setStringItem(credentialsObject, currentKeyVersionKey, nextKeyVersion, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  const bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
 }
 
 bool sensitiveDataService::ensureDefaultFileExists() {

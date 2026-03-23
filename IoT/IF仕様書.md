@@ -302,6 +302,33 @@
 - [厳守] 本 IF は transport session key 導出までを担当し、encrypted bundle の復号成功や NVS 保存成功を意味しない。
 - [将来対応] 後続の encrypted bundle 受理 IF で、本 handshake により導出した transport session key を利用する。
 
+### 4.7.0.4 AP Pairing secure bundle apply IF
+- 目的: `runPairingSession()` が導出済み transport session key を使って encrypted bundle 本体を送達し、ESP32 側で復号・NVS 保存を完了させる。
+- HTTP:
+  - `POST /api/pairing/secure-bundle`
+- 要求項目:
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `keyVersion`
+  - `ivBase64`（12byte nonce）
+  - `cipherBase64`（AES-256-GCM 暗号文）
+  - `tagBase64`（16byte GCM tag）
+  - `payloadSha256`（復号平文の SHA-256）
+- 応答項目例:
+  - `result`
+  - `state`（`applied`）
+  - `targetDeviceId`
+  - `sessionId`
+  - `bundleId`
+  - `savedCurrentKeyVersion`
+  - `previousKeyState`
+  - `detail`
+- [厳守] 復号 AAD は `pairing-secure-bundle-v1|targetDeviceId|sessionId|bundleId|keyVersion` で固定し、IF 改変時は送受双方を同時改修する。
+- [厳守] `state=transport_established` かつ transport session key 保持時のみ本 IF を受理する。
+- [厳守] 復号平文および transport session key の raw 値をログ・REST 応答に出力しない。
+- [禁止] payload identity（`targetDeviceId/sessionId/bundleId/keyVersion`）不一致時に保存処理を継続しない。
+
 ### 4.7.1 workflow 状態 IF
 - 応答項目例:
   - `workflowId`
@@ -511,6 +538,7 @@
 - [重要] `ProductionTool` のログ保存先は `ProductionTool画面仕様書.md` の既定候補と整合させる。
 
 ## 7. 変更履歴
+- 2026-03-16: AP Pairing secure bundle apply IF（`POST /api/pairing/secure-bundle`）を追加。理由: `009-0019` の encrypted bundle 本体送達 / 復号 / NVS 保存実装に合わせ、送受信契約（AES-256-GCM + 固定AAD + payloadSha256）を IF として固定するため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` と別ソフト・独立動作であることを追記。理由: AP 共通画面や基本機能 IF における名称統一と、共通化/分離の解釈ずれを防ぐため。
 - 2026-03-16: `6.6 ProductionTool 基本機能 IF` を追加。理由: `004-0008`〜`004-0010` の起動・追加認証・対象機確認・dry-run・監査ログ導線を、不可逆処理本体と分離して IF 契約として先に固定するため。
 - 2026-03-16: AP Pairing transport handshake IF（`POST /api/pairing/transport-handshake`）を追加。理由: `runPairingSession()` が secure transport の placeholder 交渉を越えて P-256 ECDH handshake まで進んだため。

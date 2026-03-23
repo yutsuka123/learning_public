@@ -133,6 +133,17 @@ impl KeyManager {
         k_user
     }
 
+    /// 新しい k-user をランダム生成し、DPAPI 保護で永続化する。
+    ///
+    /// [重要] 既存値が存在しても上書きし、以後の k-device 導出は新しい k-user 系統に切り替わる。
+    /// [厳守] 平文 k-user は戻り値へ含めず、fingerprint のみ返す。
+    pub fn issue_new_k_user(&self) -> Result<String, String> {
+        let mut k_user_bytes = [0u8; 32];
+        rand::rng().fill_bytes(&mut k_user_bytes);
+        self.import_k_user(&k_user_bytes)?;
+        Ok(Self::create_fingerprint_hex(&k_user_bytes))
+    }
+
     /// 外部から k-user (Base64) を受け取り、DPAPI 保護して永続化する。
     /// ランタイムの k-user も即時更新する。
     pub fn import_k_user(&self, k_user_bytes: &[u8]) -> Result<(), String> {

@@ -9,7 +9,15 @@
  */
 
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
-import { deviceState, otaProgressMessage, pairingWorkflowStartRequestBody, statusMessage, trhMessage } from "./types";
+import {
+  deviceState,
+  keyRotationWorkflowStartRequestBody,
+  otaProgressMessage,
+  pairingWorkflowStartRequestBody,
+  productionWorkflowStartRequestBody,
+  statusMessage,
+  trhMessage
+} from "./types";
 import { secureEchoMessage } from "./deviceTransport";
 
 /**
@@ -272,6 +280,28 @@ export class SecretCoreFacade {
    */
   public async runPairingSession(requestBody: pairingWorkflowStartRequestBody): Promise<secretCoreWorkflowStatusResult> {
     return await this.secretCoreIpcClient.sendRequest<secretCoreWorkflowStatusResult>("run_pairing_session", requestBody);
+  }
+
+  /**
+   * @description Rust 側 KeyRotation workflow を開始する。
+   * @param requestBody KeyRotation workflow 開始要求。
+   * @returns workflow 初期状態。
+   */
+  public async runKeyRotationSession(
+    requestBody: keyRotationWorkflowStartRequestBody
+  ): Promise<secretCoreWorkflowStatusResult> {
+    return await this.secretCoreIpcClient.sendRequest<secretCoreWorkflowStatusResult>("run_key_rotation_session", requestBody);
+  }
+
+  /**
+   * @description Rust 側 Production workflow を開始する。
+   * @param requestBody Production workflow 開始要求。
+   * @returns workflow 初期状態。
+   */
+  public async runProductionSecureFlow(
+    requestBody: productionWorkflowStartRequestBody
+  ): Promise<secretCoreWorkflowStatusResult> {
+    return await this.secretCoreIpcClient.sendRequest<secretCoreWorkflowStatusResult>("run_production_secure_flow", requestBody);
   }
 
   /**

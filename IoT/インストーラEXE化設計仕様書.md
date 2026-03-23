@@ -76,6 +76,24 @@
 - [厳守] LocalServer 環境への混在インストールを禁止するチェックをインストーラに含める。
 - アンインストーラは安全消去ポリシー 4.2 に準拠する。
 
+### 3.4 `ProductionTool` 配布前提（003-0016 / 009-1021 確定値）
+
+| 項目 | 確定値 |
+|------|--------|
+| 対象端末 | 工場端末（Windows 11 x64）。最小構成: 本番端末 1 台 + 予備端末 1 台 |
+| インストール先 | `C:\\Program Files\\IoT\\ProductionTool\\` |
+| 監査ログ保存先 | `C:\\ProgramData\\IoT\\ProductionTool\\logs\\audit\\` |
+| 作業一時領域 | `C:\\ProgramData\\IoT\\ProductionTool\\work\\` |
+| 鍵素材作業領域 | `C:\\ProgramData\\IoT\\ProductionTool\\keys\\`（平文鍵の恒久保存禁止） |
+| アンインストール監査ログ | `C:\\ProgramData\\IoT\\InstallerAudit\\ProductionTool\\uninstall-YYYYMMDD-HHMMSS.json` |
+| 権限要件 | UAC 管理者権限必須 |
+| 混在インストール制約 | `LocalServer` 既存導入端末では `ProductionTool` セットアップを中断し、専用端末へ導線を案内する |
+
+- [厳守] `ProductionTool` インストーラは、`LocalServer` の既存導入痕跡（既定インストール先、サービス/タスク、設定マーカー）を検知した場合、インストールを継続しない。
+- [厳守] `ProductionTool` アンインストーラは `安全消去ポリシー.md` 4.2 の対象（鍵素材、実行履歴、一時ファイル）を上書き消去し、成否を監査ログへ残す。
+- [重要] これらの確定値は `004-0010` 再判定時の「工場端末配布前提が崩れていないこと」の判定基準として扱う。
+- [進捗][2026-03-22] 実装骨格として `ProductionTool/installer/ProductionTool.iss`、`ProductionTool/scripts/build-production-tool-installer.ps1`、`ProductionTool/scripts/uninstall-production-tool.ps1` を追加した。未完了項目は EXE ビルド実施、混在インストール実機確認、7090 による安全消去確認である。
+
 ## 4. 導入要件の最小化
 
 ### 4.1 顧客・工場端末で不要にしたいもの
@@ -97,10 +115,17 @@
 
 ## 5. 実装順序（009 以降）
 
-1. **009-1020**: LocalServer 用 Inno Setup スクリプト作成（.iss）、インストーラ EXE ビルド手順をコマンド仕様書へ追記。
-2. **009-1021**: LocalServer アンインストーラの安全消去処理を Inno Setup の [UninstallRun] 等で実装（または起動用ヘルパー EXE を同梱）。
-3. **009-1022**: Node.js 同梱 or SEA 化の方針を確定し、インストーラに反映する。
-4. **009-1023**: `ProductionTool` 用 Inno Setup スクリプト作成（`ProductionTool` 実装開始後）。
+| ID | 正式タスク | 役割 |
+|----|------------|------|
+| 009-1020 | LocalServer 用インストーラ/アンインストーラ EXE 化 | LocalServer 配布と安全消去を実装する |
+| 009-1021 | ProductionTool 用インストーラ/アンインストーラ EXE 化 | ProductionTool 配布と混在インストール防止を実装する |
+| 009-1022 | LocalServer Node.js 同梱 or SEA 化方針確定 | 顧客端末の追加ランタイム要求を最小化する |
+| 009-1023 | ProductionTool 用 Inno Setup スクリプト確定 | ProductionTool 側のビルド/配布手順を固定する |
+
+1. **009-1020**: LocalServer 用 Inno Setup スクリプト作成（.iss）と、アンインストーラ安全消去（[UninstallRun] 等）を実装し、EXE ビルド手順を `コマンド仕様書.md` へ追記。
+2. **009-1021**: `ProductionTool` 用 Inno Setup スクリプト作成（.iss）と、アンインストーラ安全消去、`LocalServer` 環境との混在防止チェックを実装。
+3. **009-1022**: LocalServer 向け Node.js 同梱 or SEA 化の方針を確定し、インストーラへ反映。
+4. **009-1023**: ProductionTool 向け配布手順（署名、インストール先、監査ログ保存先、アンインストール検証）を確定。
 
 ## 6. 関連文書
 
@@ -109,6 +134,9 @@
 - `環境仕様書.md`: 対象 OS・ツール要件。
 
 ## 7. 変更履歴
+- 2026-03-22: `ProductionTool` 用の Inno Setup スクリプトとビルド/アンインストール補助を実装骨格として追加した旨を追記。理由: `003-0016` / `009-1021` の現在地を設計書から辿れるようにするため。
+- 2026-03-19: 第3.4節に `ProductionTool` 配布前提の確定値（対象端末、インストール先、監査ログ保存先、作業領域、混在インストール制約、安全消去監査ログ）を追加。理由: `003-0016` / `009-1021` の方針確定を `004-0010` 再判定に使える形へ固定するため。
+- 2026-03-19: `009-1021` の意味を `todo.md` に合わせて `ProductionTool` 用 EXE 化へ統一。`009-1020` は LocalServer の安全消去を含むタスクとして整理し、ID対応表を追加。理由: 同一IDの意味衝突を解消し、ゲート判定時の誤判定を防ぐため。
 - 2026-03-16: `ProductionTool` へ名称統一し、Rust 共通化は `LocalServer` 側共通部再利用であってソフト統合ではないことを追記。理由: 配布設計でも名称と分離方針を一致させるため。
 
 - 2026-03-15: 新規作成。009 以降向け EXE インストーラ設計。Inno Setup 採用、Python 不要、導入要件最小化を定義。理由: 本番・客先環境の導入負荷低減のため。

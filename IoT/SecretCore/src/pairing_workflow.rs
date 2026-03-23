@@ -8,6 +8,8 @@
 // 理由: `runPairingSession()` の内部 helper 境界を先に固定し、以後の実装が TS 側へ漏れないようにするため。
 
 use crate::key_manager::KeyManager;
+use aes_gcm::aead::{AeadInPlace, KeyInit};
+use aes_gcm::{Aes256Gcm, Nonce};
 use base64::prelude::*;
 use hmac::{Hmac, Mac};
 use p256::ecdh::EphemeralSecret;
@@ -280,6 +282,18 @@ struct MaintenanceApTransportHandshakeResult {
     transport_session: PairingTransportSession,
 }
 
+/// AP 側 Pairing secure bundle 適用結果。
+struct MaintenanceApSecureBundleApplyResult {
+    /// AP 側 Pairing 状態。
+    pairing_state: String,
+    /// AP 側対象デバイス識別子。
+    target_device_id: String,
+    /// AP 側へ保存した current key version。
+    saved_current_key_version: String,
+    /// AP 側が返した previous key state。
+    previous_key_state: String,
+}
+
 /// Pairing workflow 中に保持する transport session。
 ///
 /// [厳守] transport 鍵は workflow 実行中の Rust メモリだけに保持し、IPC 応答やログへ raw 値を出さない。
@@ -360,6 +374,49 @@ impl PairingWorkflowManager {
             detail: Some(format!(
                 "pairing workflow queued. bundle_id={} public_id={}",
                 pairing_bundle.bundle_id, pairing_bundle.public_id
+            )),
+            started_at: started_at.clone(),
+            updated_at: started_at,
+        };
+        self.update_workflow_status(initial_status.clone())?;
+
+        let workflow_manager = Arc::clone(self);
+        tokio::spawn(async move {
+            workflow_manager
+                .execute_pairing_workflow_placeholder(workflow_id, request)
+                .await;
+        });
+
+        Ok(initial_status)
+    }
+
+    /// KeyRotation workflow を開始する。
+    ///
+    /// [重要] 現段階では secure bundle の送達・検証経路を Pairing workflow と共通化し、
+    /// `workflowType=key-rotation` として状態管理だけを分離する。
+    /// [厳守] TS 側は逐次手順を持たず、開始要求と結果表示のみを担当する。
+    pub fn start_key_rotation_session(
+        self: &Arc<Self>,
+        key_manager: &Arc<KeyManager>,
+        request: PairingWorkflowStartRequest,
+    ) -> Result<PairingWorkflowStatusDto, String> {
+        validate_pairing_workflow_start_request(&request)?;
+
+        let workflow_id = create_pairing_workflow_id();
+        let pairing_bundle = create_pairing_bundle(key_manager.as_ref(), &request)?;
+        self.store_pairing_bundle(&workflow_id, pairing_bundle.clone())?;
+
+        let started_at = chrono::Utc::now().to_rfc3339();
+        let initial_status = PairingWorkflowStatusDto {
+            workflow_id: workflow_id.clone(),
+            workflow_type: "key-rotation".to_string(),
+            target_device_id: request.target_device_id.clone(),
+            state: "queued".to_string(),
+            result: None,
+            error_summary: None,
+            detail: Some(format!(
+                "key rotation workflow queued. bundle_id={} public_id={} key_version={}",
+                pairing_bundle.bundle_id, pairing_bundle.public_id, request.key_version
             )),
             started_at: started_at.clone(),
             updated_at: started_at,
@@ -547,19 +604,35 @@ impl PairingWorkflowManager {
 
         sleep(Duration::from_millis(250)).await;
 
+        let secure_bundle_apply_result =
+            apply_pairing_secure_bundle_to_maintenance_ap(&pairing_bundle, &transport_handshake.transport_session).await;
+        let secure_bundle_apply = match secure_bundle_apply_result {
+            Ok(result) => result,
+            Err(apply_error) => {
+                let _ = self.update_state(
+                    &workflow_id,
+                    "failed",
+                    Some("NG".to_string()),
+                    Some(apply_error),
+                    Some("pairing secure bundle apply failed".to_string()),
+                );
+                return;
+            }
+        };
+
         let _ = self.update_state(
             &workflow_id,
-            "failed",
-            Some("NG".to_string()),
-            Some(
-                "run_pairing_session placeholder. AP auth precheck, session registration, bundle summary staging, and P-256 transport handshake passed, but encrypted bundle transport / NVS verification are not implemented yet."
-                    .to_string(),
-            ),
+            "completed",
+            Some("OK".to_string()),
+            None,
             Some(format!(
-                "pairing workflow placeholder stop after transport handshake. bundle_id={} session_id={} ap_target_device_id={} transport_fingerprint={}",
+                "pairing secure bundle applied. bundle_id={} session_id={} ap_target_device_id={} ap_state={} saved_current_key_version={} previous_key_state={} transport_fingerprint={}",
                 pairing_bundle.bundle_id,
                 pairing_bundle.session_id,
-                transport_handshake.target_device_id,
+                secure_bundle_apply.target_device_id,
+                secure_bundle_apply.pairing_state,
+                secure_bundle_apply.saved_current_key_version,
+                secure_bundle_apply.previous_key_state,
                 transport_handshake.shared_secret_fingerprint
             )),
         );
@@ -704,7 +777,7 @@ fn create_pairing_bundle_signature(
     let signature_payload_json = serde_json::to_string(signature_payload)
         .map_err(|e| format!("create_pairing_bundle_signature failed. serialize error={}", e))?;
     let k_user = key_manager.get_k_user();
-    let mut direct_hmac = HmacSha256::new_from_slice(&k_user)
+    let mut direct_hmac = <HmacSha256 as Mac>::new_from_slice(&k_user)
         .map_err(|e| format!("create_pairing_bundle_signature failed. hmac init error={}", e))?;
     direct_hmac.update(signature_payload_json.as_bytes());
     let signature_bytes = direct_hmac.finalize().into_bytes();
@@ -1269,6 +1342,163 @@ async fn perform_pairing_transport_handshake(
         shared_secret_fingerprint,
         transport_session,
     })
+}
+
+/// AP 側へ暗号化済み Pairing bundle を送達し、復号・保存状態を確認する。
+///
+/// [厳守] 送達 payload は AES-256-GCM で保護し、平文設定は Rust 内メモリでのみ扱う。
+async fn apply_pairing_secure_bundle_to_maintenance_ap(
+    pairing_bundle: &PairingBundle,
+    transport_session: &PairingTransportSession,
+) -> Result<MaintenanceApSecureBundleApplyResult, String> {
+    let maintenance_ap_config = load_maintenance_ap_config_from_env()?;
+    let http_client = Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|e| format!("apply_pairing_secure_bundle_to_maintenance_ap failed. http client build error={}", e))?;
+    let login_response = login_to_maintenance_ap(&http_client, &maintenance_ap_config).await?;
+    let payload_plain_bytes = create_pairing_secure_bundle_payload_json_bytes(pairing_bundle)?;
+    let payload_sha256 = create_sha256_hex(payload_plain_bytes.as_slice());
+    let aad_bytes = create_pairing_secure_bundle_aad(pairing_bundle);
+    let (iv_base64, cipher_base64, tag_base64) = encrypt_pairing_secure_bundle_payload(
+        &transport_session.session_key_bytes,
+        payload_plain_bytes.as_slice(),
+        aad_bytes.as_slice(),
+    )?;
+
+    let apply_url = format!(
+        "{}/api/pairing/secure-bundle",
+        maintenance_ap_config.base_url.trim_end_matches('/')
+    );
+    let apply_response = http_client
+        .post(apply_url)
+        .header("Authorization", format!("Bearer {}", login_response.token))
+        .json(&serde_json::json!({
+            "targetDeviceId": pairing_bundle.target_device_id,
+            "sessionId": pairing_bundle.session_id,
+            "bundleId": pairing_bundle.bundle_id,
+            "keyVersion": pairing_bundle.key_version,
+            "ivBase64": iv_base64,
+            "cipherBase64": cipher_base64,
+            "tagBase64": tag_base64,
+            "payloadSha256": payload_sha256
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("apply_pairing_secure_bundle_to_maintenance_ap failed. send error={}", e))?;
+    let apply_status_code = apply_response.status();
+    let apply_body_text = apply_response
+        .text()
+        .await
+        .map_err(|e| format!("apply_pairing_secure_bundle_to_maintenance_ap failed. body read error={}", e))?;
+    if !apply_status_code.is_success() {
+        return Err(format!(
+            "apply_pairing_secure_bundle_to_maintenance_ap failed. status={} body={}",
+            apply_status_code.as_u16(),
+            apply_body_text
+        ));
+    }
+
+    let pairing_state_json =
+        get_maintenance_ap_pairing_state(&http_client, &maintenance_ap_config.base_url, &login_response.token).await?;
+    let target_device_id = pairing_state_json
+        .get("targetDeviceId")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let pairing_state = pairing_state_json
+        .get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let saved_current_key_version = pairing_state_json
+        .get("savedCurrentKeyVersion")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let previous_key_state = pairing_state_json
+        .get("previousKeyState")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !pairing_state.eq_ignore_ascii_case("applied") {
+        return Err(format!(
+            "apply_pairing_secure_bundle_to_maintenance_ap failed. unexpected state={} targetDeviceId={}",
+            pairing_state, target_device_id
+        ));
+    }
+    if saved_current_key_version != pairing_bundle.key_version {
+        return Err(format!(
+            "apply_pairing_secure_bundle_to_maintenance_ap failed. savedCurrentKeyVersion mismatch. expected={} actual={}",
+            pairing_bundle.key_version, saved_current_key_version
+        ));
+    }
+
+    Ok(MaintenanceApSecureBundleApplyResult {
+        pairing_state,
+        target_device_id,
+        saved_current_key_version,
+        previous_key_state,
+    })
+}
+
+/// Pairing secure bundle payload の JSON bytes を生成する。
+fn create_pairing_secure_bundle_payload_json_bytes(pairing_bundle: &PairingBundle) -> Result<Vec<u8>, String> {
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PairingSecureBundlePayload<'a> {
+        target_device_id: &'a str,
+        session_id: &'a str,
+        bundle_id: &'a str,
+        key_version: &'a str,
+        requested_settings: &'a PairingRequestedSettings,
+    }
+
+    let payload = PairingSecureBundlePayload {
+        target_device_id: pairing_bundle.target_device_id.as_str(),
+        session_id: pairing_bundle.session_id.as_str(),
+        bundle_id: pairing_bundle.bundle_id.as_str(),
+        key_version: pairing_bundle.key_version.as_str(),
+        requested_settings: &pairing_bundle.requested_settings,
+    };
+    serde_json::to_vec(&payload)
+        .map_err(|e| format!("create_pairing_secure_bundle_payload_json_bytes failed. serialize error={}", e))
+}
+
+/// Pairing secure bundle の AAD を生成する。
+fn create_pairing_secure_bundle_aad(pairing_bundle: &PairingBundle) -> Vec<u8> {
+    format!(
+        "pairing-secure-bundle-v1|{}|{}|{}|{}",
+        pairing_bundle.target_device_id, pairing_bundle.session_id, pairing_bundle.bundle_id, pairing_bundle.key_version
+    )
+    .into_bytes()
+}
+
+/// AES-256-GCM で Pairing secure bundle payload を暗号化する。
+fn encrypt_pairing_secure_bundle_payload(
+    session_key_bytes: &[u8; 32],
+    payload_plain_bytes: &[u8],
+    aad_bytes: &[u8],
+) -> Result<(String, String, String), String> {
+    let aes256gcm = Aes256Gcm::new_from_slice(session_key_bytes)
+        .map_err(|e| format!("encrypt_pairing_secure_bundle_payload failed. cipher init error={}", e))?;
+    let mut nonce_bytes = [0u8; 12];
+    rand::rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+    let mut cipher_bytes = payload_plain_bytes.to_vec();
+    let tag = aes256gcm
+        .encrypt_in_place_detached(nonce, aad_bytes, &mut cipher_bytes)
+        .map_err(|e| format!("encrypt_pairing_secure_bundle_payload failed. encrypt error={}", e))?;
+
+    Ok((
+        BASE64_STANDARD.encode(nonce_bytes),
+        BASE64_STANDARD.encode(cipher_bytes),
+        BASE64_STANDARD.encode(tag),
+    ))
 }
 
 /// `requestedSettings` の canonical JSON から SHA-256（16進小文字）を生成する。

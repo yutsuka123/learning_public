@@ -12,18 +12,23 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <WebServer.h>
+#include <cctype>
 #include <cstring>
 #include <esp_system.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/ecdh.h>
 #include <mbedtls/ecp.h>
 #include <mbedtls/entropy.h>
+#include <mbedtls/gcm.h>
 #include <mbedtls/sha256.h>
 #include "jsonService.h"
 #include "log.h"
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
+#include "version.h"
 
 #include <vector>
 
@@ -74,6 +79,14 @@ String lastPairingPreviousKeyState = "none";
 String lastPairingDetail = "pairing state placeholder";
 String lastPairingResult = "";
 std::vector<uint8_t> lastPairingTransportSessionKeyBytes;
+String lastProductionRunId = "";
+String lastProductionState = "idle";
+String lastProductionResult = "";
+String lastProductionDetail = "production state placeholder";
+String lastProductionObservedFirmwareVersion = "";
+String lastProductionObservedMac = "";
+uint32_t lastProductionObservedFreeHeapBytes = 0;
+uint32_t lastProductionObservedStackMarginBytes = 0;
 
 roleCredential userRoleCredential = {String(SENSITIVE_AP_ROLE_USER_USERNAME), String(SENSITIVE_AP_ROLE_USER_PASSWORD)};
 roleCredential maintenanceRoleCredential = {String(SENSITIVE_AP_ROLE_MAINTENANCE_USERNAME), String(SENSITIVE_AP_ROLE_MAINTENANCE_PASSWORD)};
@@ -219,6 +232,45 @@ String resolvePairingTargetDeviceId() {
     return "pending";
   }
   return String("IoT_") + compactMacText;
+}
+
+String resolveCompactMacFromApSsid() {
+  const int separatorIndex = currentApSsid.lastIndexOf('-');
+  if (separatorIndex < 0 || separatorIndex + 1 >= currentApSsid.length()) {
+    return "";
+  }
+  String compactMacText = currentApSsid.substring(separatorIndex + 1);
+  compactMacText.trim();
+  compactMacText.toUpperCase();
+  return compactMacText;
+}
+
+String formatCompactMacAsColonSeparated(const String& compactMacText) {
+  if (compactMacText.length() != 12) {
+    return compactMacText;
+  }
+  String formattedMacText;
+  formattedMacText.reserve(17);
+  for (size_t index = 0; index < compactMacText.length(); ++index) {
+    if (index > 0 && (index % 2) == 0) {
+      formattedMacText += ':';
+    }
+    formattedMacText += static_cast<char>(toupper(compactMacText[index]));
+  }
+  return formattedMacText;
+}
+
+String normalizeMacTextForComparison(const String& rawMacText) {
+  String normalizedText;
+  normalizedText.reserve(rawMacText.length());
+  for (size_t index = 0; index < rawMacText.length(); ++index) {
+    const char currentChar = rawMacText[index];
+    if ((currentChar >= '0' && currentChar <= '9') || (currentChar >= 'a' && currentChar <= 'f') ||
+        (currentChar >= 'A' && currentChar <= 'F')) {
+      normalizedText += static_cast<char>(toupper(currentChar));
+    }
+  }
+  return normalizedText;
 }
 
 String toJsonSafeText(const String& value) {
@@ -539,6 +591,90 @@ bool derivePairingTransportSessionKeyForAp(const std::vector<uint8_t>& sharedSec
     materialBytes.push_back(static_cast<uint8_t>(bundleId[index]));
   }
   return computeSha256BytesForAp(materialBytes, sessionKeyBytesOut);
+}
+
+/**
+ * @brief Pairing secure bundle の AAD を生成する。
+ * @param targetDeviceId 対象デバイスID。
+ * @param sessionId セッションID。
+ * @param bundleId bundle ID。
+ * @param keyVersion 鍵バージョン。
+ * @param aadBytesOut AAD出力先。
+ * @return 生成成功時true。
+ */
+bool createPairingSecureBundleAadForAp(const String& targetDeviceId,
+                                       const String& sessionId,
+                                       const String& bundleId,
+                                       const String& keyVersion,
+                                       std::vector<uint8_t>* aadBytesOut) {
+  if (aadBytesOut == nullptr) {
+    return false;
+  }
+  const String aadText = String("pairing-secure-bundle-v1|") + targetDeviceId + "|" + sessionId + "|" + bundleId + "|" + keyVersion;
+  aadBytesOut->clear();
+  aadBytesOut->reserve(aadText.length());
+  for (size_t index = 0; index < aadText.length(); ++index) {
+    aadBytesOut->push_back(static_cast<uint8_t>(aadText[index]));
+  }
+  return true;
+}
+
+/**
+ * @brief AES-256-GCM で暗号ペイロードを復号する。
+ * @param keyBytes 32byte 鍵。
+ * @param ivBytes 12byte nonce。
+ * @param cipherBytes 暗号文。
+ * @param tagBytes 16byte GCM tag。
+ * @param aadBytes AAD。
+ * @param plainBytesOut 復号平文出力先。
+ * @return 復号成功時true。
+ */
+bool decryptAes256GcmForAp(const std::vector<uint8_t>& keyBytes,
+                           const std::vector<uint8_t>& ivBytes,
+                           const std::vector<uint8_t>& cipherBytes,
+                           const std::vector<uint8_t>& tagBytes,
+                           const std::vector<uint8_t>& aadBytes,
+                           std::vector<uint8_t>* plainBytesOut) {
+  if (plainBytesOut == nullptr) {
+    return false;
+  }
+  plainBytesOut->clear();
+  if (keyBytes.size() != 32 || ivBytes.size() != 12 || tagBytes.size() != 16) {
+    appLogError("decryptAes256GcmForAp failed. invalid size. key=%ld iv=%ld tag=%ld",
+                static_cast<long>(keyBytes.size()),
+                static_cast<long>(ivBytes.size()),
+                static_cast<long>(tagBytes.size()));
+    return false;
+  }
+  plainBytesOut->resize(cipherBytes.size());
+  if (!cipherBytes.empty()) {
+    memcpy(plainBytesOut->data(), cipherBytes.data(), cipherBytes.size());
+  }
+  mbedtls_gcm_context gcmContext;
+  mbedtls_gcm_init(&gcmContext);
+  int keyResult = mbedtls_gcm_setkey(&gcmContext, MBEDTLS_CIPHER_ID_AES, keyBytes.data(), 256);
+  if (keyResult != 0) {
+    appLogError("decryptAes256GcmForAp failed. mbedtls_gcm_setkey result=%d", keyResult);
+    mbedtls_gcm_free(&gcmContext);
+    return false;
+  }
+  int decryptResult = mbedtls_gcm_auth_decrypt(&gcmContext,
+                                               plainBytesOut->size(),
+                                               ivBytes.data(),
+                                               ivBytes.size(),
+                                               aadBytes.empty() ? nullptr : aadBytes.data(),
+                                               aadBytes.size(),
+                                               tagBytes.data(),
+                                               tagBytes.size(),
+                                               cipherBytes.data(),
+                                               plainBytesOut->data());
+  mbedtls_gcm_free(&gcmContext);
+  if (decryptResult != 0) {
+    appLogError("decryptAes256GcmForAp failed. mbedtls_gcm_auth_decrypt result=%d", decryptResult);
+    plainBytesOut->clear();
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -880,7 +1016,7 @@ void handleHealthApi() {
  * @details
  * - [重要] `runPairingSession()` の Rust 側 workflow が AP 到達後に参照する状態受け口。
  * - [進捗] 2026-03-16 時点では placeholder 実装として、対象デバイス識別子、`keyDevice` 有無、直近 session/bundle の枠のみ返す。
- * - [将来対応] ECDH / bundle 検証 / NVS 保存完了後に `savedCurrentKeyVersion` と `previousKeyState` を実値で返す。
+ * - [進捗][2026-03-21] `savedCurrentKeyVersion` と `previousKeyState` は Pairing / KeyRotation 直後の実保存結果を返す。
  */
 void handlePairingStateApi() {
   if (!isAuthorized(maintenanceRole::kMaintenance)) {
@@ -1234,6 +1370,443 @@ void handlePairingTransportHandshakeApi() {
   maintenanceWebServer.send(200, "application/json", responseText);
 }
 
+/**
+ * @brief Pairing secure bundle（暗号化済み）を受理し、復号後にNVSへ反映するAPI。
+ * @details
+ * - [重要] Rust 側で AES-256-GCM 暗号化された payload を受け取り、AP で復号して `sensitiveDataService` へ保存する。
+ * - [厳守] 復号対象の AAD は `pairing-secure-bundle-v1|target|session|bundle|keyVersion` で固定する。
+ * - [厳守] raw transport session key / 復号済み平文はログに出力しない。
+ * - [禁止] handshake 未完了状態での適用実行を許可しない。
+ */
+void handlePairingSecureBundleApplyApi() {
+  if (!isAuthorized(maintenanceRole::kAdmin)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
+    return;
+  }
+  if (sensitiveDataServiceInstance == nullptr) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"sensitiveDataService is null\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String targetDeviceId;
+  String sessionId;
+  String bundleId;
+  String keyVersion;
+  String ivBase64;
+  String cipherBase64;
+  String tagBase64;
+  String payloadSha256;
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "sessionId", &sessionId);
+  parseBodyStringValue(requestBody, "bundleId", &bundleId);
+  parseBodyStringValue(requestBody, "keyVersion", &keyVersion);
+  parseBodyStringValue(requestBody, "ivBase64", &ivBase64);
+  parseBodyStringValue(requestBody, "cipherBase64", &cipherBase64);
+  parseBodyStringValue(requestBody, "tagBase64", &tagBase64);
+  parseBodyStringValue(requestBody, "payloadSha256", &payloadSha256);
+  targetDeviceId.trim();
+  sessionId.trim();
+  bundleId.trim();
+  keyVersion.trim();
+  ivBase64.trim();
+  cipherBase64.trim();
+  tagBase64.trim();
+  payloadSha256.trim();
+  if (targetDeviceId.length() == 0 || sessionId.length() == 0 || bundleId.length() == 0 || keyVersion.length() == 0 ||
+      ivBase64.length() == 0 || cipherBase64.length() == 0 || tagBase64.length() == 0 || payloadSha256.length() == 0) {
+    maintenanceWebServer.send(
+        400,
+        "application/json",
+        "{\"result\":\"NG\",\"detail\":\"targetDeviceId/sessionId/bundleId/keyVersion/ivBase64/cipherBase64/tagBase64/payloadSha256 is required\"}");
+    return;
+  }
+  if (lastPairingState != "transport_established") {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing transport is not established\"}");
+    return;
+  }
+  if (lastPairingTargetDeviceId.length() > 0 && lastPairingTargetDeviceId != targetDeviceId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing targetDeviceId mismatch\"}");
+    return;
+  }
+  if (lastPairingSessionId.length() > 0 && lastPairingSessionId != sessionId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing session mismatch\"}");
+    return;
+  }
+  if (lastPairingBundleId.length() > 0 && lastPairingBundleId != bundleId) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing bundle mismatch\"}");
+    return;
+  }
+  if (!lastPairingAcceptedBundleProtection.equalsIgnoreCase("aes-256-gcm-v1")) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing bundle protection is not prepared\"}");
+    return;
+  }
+  if (lastPairingTransportSessionKeyBytes.size() != 32) {
+    maintenanceWebServer.send(409, "application/json", "{\"result\":\"NG\",\"detail\":\"pairing transport session key is not ready\"}");
+    return;
+  }
+
+  std::vector<uint8_t> ivBytes;
+  std::vector<uint8_t> cipherBytes;
+  std::vector<uint8_t> tagBytes;
+  if (!decodeBase64TextForAp(ivBase64, &ivBytes) || ivBytes.size() != 12) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"invalid ivBase64\"}");
+    return;
+  }
+  if (!decodeBase64TextForAp(cipherBase64, &cipherBytes) || cipherBytes.empty()) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"invalid cipherBase64\"}");
+    return;
+  }
+  if (!decodeBase64TextForAp(tagBase64, &tagBytes) || tagBytes.size() != 16) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"invalid tagBase64\"}");
+    return;
+  }
+
+  std::vector<uint8_t> aadBytes;
+  if (!createPairingSecureBundleAadForAp(targetDeviceId, sessionId, bundleId, keyVersion, &aadBytes)) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"create AAD failed\"}");
+    return;
+  }
+  std::vector<uint8_t> plainPayloadBytes;
+  if (!decryptAes256GcmForAp(lastPairingTransportSessionKeyBytes, ivBytes, cipherBytes, tagBytes, aadBytes, &plainPayloadBytes)) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"secure bundle decrypt failed\"}");
+    return;
+  }
+  String actualPayloadSha256;
+  if (!computeSha256HexForBytesForAp(plainPayloadBytes, &actualPayloadSha256)) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"payload sha256 calculation failed\"}");
+    return;
+  }
+  if (!actualPayloadSha256.equalsIgnoreCase(payloadSha256)) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"payload sha256 mismatch\"}");
+    return;
+  }
+
+  String plainPayloadJson;
+  plainPayloadJson.reserve(plainPayloadBytes.size());
+  for (size_t index = 0; index < plainPayloadBytes.size(); ++index) {
+    plainPayloadJson += static_cast<char>(plainPayloadBytes[index]);
+  }
+  String payloadTargetDeviceId;
+  String payloadSessionId;
+  String payloadBundleId;
+  String payloadKeyVersion;
+  parseBodyStringValue(plainPayloadJson, "targetDeviceId", &payloadTargetDeviceId);
+  parseBodyStringValue(plainPayloadJson, "sessionId", &payloadSessionId);
+  parseBodyStringValue(plainPayloadJson, "bundleId", &payloadBundleId);
+  parseBodyStringValue(plainPayloadJson, "keyVersion", &payloadKeyVersion);
+  payloadTargetDeviceId.trim();
+  payloadSessionId.trim();
+  payloadBundleId.trim();
+  payloadKeyVersion.trim();
+  if (payloadTargetDeviceId != targetDeviceId || payloadSessionId != sessionId || payloadBundleId != bundleId || payloadKeyVersion != keyVersion) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"payload identity mismatch\"}");
+    return;
+  }
+
+  String wifiSsid;
+  String wifiPassword;
+  String mqttHost;
+  String mqttHostName;
+  String mqttUsername;
+  String mqttPassword;
+  String otaHost;
+  String otaHostName;
+  String otaUsername;
+  String otaPassword;
+  String keyDeviceBase64;
+  bool mqttTls = false;
+  bool otaTls = false;
+  long mqttPort = 0;
+  long otaPort = 0;
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.wifi.ssid", &wifiSsid);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.wifi.password", &wifiPassword);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.mqtt.host", &mqttHost);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.mqtt.hostName", &mqttHostName);
+  parseBodyLongValue(plainPayloadJson, "requestedSettings.mqtt.port", &mqttPort);
+  parseBodyBoolValue(plainPayloadJson, "requestedSettings.mqtt.tls", &mqttTls);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.mqtt.username", &mqttUsername);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.mqtt.password", &mqttPassword);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ota.host", &otaHost);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ota.hostName", &otaHostName);
+  parseBodyLongValue(plainPayloadJson, "requestedSettings.ota.port", &otaPort);
+  parseBodyBoolValue(plainPayloadJson, "requestedSettings.ota.tls", &otaTls);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ota.username", &otaUsername);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ota.password", &otaPassword);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.credentials.keyDevice", &keyDeviceBase64);
+  wifiSsid.trim();
+  wifiPassword.trim();
+  mqttHost.trim();
+  mqttHostName.trim();
+  mqttUsername.trim();
+  mqttPassword.trim();
+  otaHost.trim();
+  otaHostName.trim();
+  otaUsername.trim();
+  otaPassword.trim();
+  keyDeviceBase64.trim();
+  if (wifiSsid.length() == 0 || wifiPassword.length() == 0 || mqttHost.length() == 0 || mqttUsername.length() == 0 || mqttPassword.length() == 0 ||
+      otaHost.length() == 0 || otaUsername.length() == 0 || otaPassword.length() == 0 || keyDeviceBase64.length() == 0 ||
+      mqttPort <= 0 || otaPort <= 0) {
+    maintenanceWebServer.send(
+        400,
+        "application/json",
+        "{\"result\":\"NG\",\"detail\":\"secure payload required fields are missing\"}");
+    return;
+  }
+
+  String previousKeyDevice;
+  const bool previousKeyLoadResult = sensitiveDataServiceInstance->loadKeyDevice(&previousKeyDevice);
+  const String previousKeyState = (previousKeyLoadResult && previousKeyDevice.length() > 0) ? "grace" : "none";
+
+  bool saveResult = true;
+  saveResult = saveResult && sensitiveDataServiceInstance->saveWifiCredentials(wifiSsid, wifiPassword);
+  saveResult = saveResult && sensitiveDataServiceInstance->saveMqttConfig(
+                                 mqttHost,
+                                 mqttHostName.length() > 0 ? mqttHostName : mqttHost,
+                                 mqttUsername,
+                                 mqttPassword,
+                                 static_cast<int32_t>(mqttPort),
+                                 mqttTls);
+  saveResult = saveResult && sensitiveDataServiceInstance->saveOtaConfig(
+                                 otaHost,
+                                 otaHostName.length() > 0 ? otaHostName : otaHost,
+                                 otaUsername,
+                                 otaPassword,
+                                 static_cast<int32_t>(otaPort),
+                                 otaTls);
+  saveResult = saveResult && sensitiveDataServiceInstance->savePairingKeySlots(keyDeviceBase64, keyVersion);
+
+  String serverHost;
+  String serverHostName;
+  long serverPort = 0;
+  bool serverTls = false;
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.server.host", &serverHost);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.server.hostName", &serverHostName);
+  parseBodyLongValue(plainPayloadJson, "requestedSettings.server.port", &serverPort);
+  parseBodyBoolValue(plainPayloadJson, "requestedSettings.server.tls", &serverTls);
+  serverHost.trim();
+  serverHostName.trim();
+  if (serverHost.length() > 0 && serverPort > 0) {
+    String currentServerUrl;
+    String currentServerUrlName;
+    String currentServerUser;
+    String currentServerPass;
+    int32_t currentServerPort = 443;
+    bool currentServerTls = true;
+    if (!sensitiveDataServiceInstance->loadServerConfig(&currentServerUrl,
+                                                        &currentServerUrlName,
+                                                        &currentServerUser,
+                                                        &currentServerPass,
+                                                        &currentServerPort,
+                                                        &currentServerTls)) {
+      saveResult = false;
+    } else {
+      saveResult = saveResult && sensitiveDataServiceInstance->saveServerConfig(
+                                     serverHost,
+                                     serverHostName.length() > 0 ? serverHostName : serverHost,
+                                     currentServerUser,
+                                     currentServerPass,
+                                     static_cast<int32_t>(serverPort),
+                                     serverTls);
+    }
+  }
+
+  String ntpHost;
+  String ntpHostName;
+  long ntpPort = 0;
+  bool ntpTls = false;
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ntp.host", &ntpHost);
+  parseBodyStringValue(plainPayloadJson, "requestedSettings.ntp.hostName", &ntpHostName);
+  parseBodyLongValue(plainPayloadJson, "requestedSettings.ntp.port", &ntpPort);
+  parseBodyBoolValue(plainPayloadJson, "requestedSettings.ntp.tls", &ntpTls);
+  ntpHost.trim();
+  ntpHostName.trim();
+  if (ntpHost.length() > 0 && ntpPort > 0) {
+    saveResult = saveResult && sensitiveDataServiceInstance->saveTimeServerConfig(
+                                   ntpHost,
+                                   ntpHostName.length() > 0 ? ntpHostName : ntpHost,
+                                   static_cast<int32_t>(ntpPort),
+                                   ntpTls);
+  }
+
+  if (!saveResult) {
+    lastPairingResult = "NG";
+    lastPairingState = "failed";
+    lastPairingDetail = String("pairing secure bundle apply failed. sessionId=") + sessionId + " bundleId=" + bundleId;
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"secure bundle persistence failed\"}");
+    return;
+  }
+
+  lastPairingTargetDeviceId = targetDeviceId;
+  lastPairingSessionId = sessionId;
+  lastPairingBundleId = bundleId;
+  lastPairingKeyVersion = keyVersion;
+  lastPairingSavedCurrentKeyVersion = keyVersion;
+  lastPairingPreviousKeyState = previousKeyState;
+  lastPairingState = "applied";
+  lastPairingResult = "OK";
+  lastPairingDetail = String("pairing secure bundle applied. sessionId=") + sessionId + " bundleId=" + bundleId;
+  lastPairingTransportSessionKeyBytes.clear();
+
+  String responseText;
+  responseText.reserve(512);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastPairingState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(lastPairingTargetDeviceId) + "\",";
+  responseText += "\"sessionId\":\"" + toJsonSafeText(lastPairingSessionId) + "\",";
+  responseText += "\"bundleId\":\"" + toJsonSafeText(lastPairingBundleId) + "\",";
+  responseText += "\"savedCurrentKeyVersion\":\"" + toJsonSafeText(lastPairingSavedCurrentKeyVersion) + "\",";
+  responseText += "\"previousKeyState\":\"" + toJsonSafeText(lastPairingPreviousKeyState) + "\",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastPairingDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Production secure flow の直近状態を返すAPI。
+ * @details
+ * - [重要] 不可逆処理はまだ実行せず、precheck 収集結果と観測値のみ返す。
+ * - [厳守] `mfg` ロール認証済みの場合のみ参照を許可する。
+ */
+void handleProductionStateApi() {
+  if (!isAuthorized(maintenanceRole::kMfg)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"mfg authorization required\"}");
+    return;
+  }
+
+  String responseText;
+  responseText.reserve(512);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"runId\":\"" + toJsonSafeText(lastProductionRunId) + "\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastProductionState) + "\",";
+  responseText += "\"resultLabel\":\"" + toJsonSafeText(lastProductionResult) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(resolvePairingTargetDeviceId()) + "\",";
+  responseText += "\"observedFirmwareVersion\":\"" + toJsonSafeText(lastProductionObservedFirmwareVersion) + "\",";
+  responseText += "\"observedMac\":\"" + toJsonSafeText(lastProductionObservedMac) + "\",";
+  responseText += "\"measuredFreeHeapBytes\":" + String(static_cast<long>(lastProductionObservedFreeHeapBytes)) + ",";
+  responseText += "\"measuredMinStackMarginBytes\":" + String(static_cast<long>(lastProductionObservedStackMarginBytes)) + ",";
+  responseText += "\"detail\":\"" + toJsonSafeText(lastProductionDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
+/**
+ * @brief Production secure flow 用の事前チェック観測値を返すAPI。
+ * @details
+ * - [重要] 現段階では不可逆処理を実行せず、firmware/MAC/heap/stack の観測値だけを返す。
+ * - [厳守] 閾値比較が必要な項目は、要求で与えられた期待値がある場合のみ OK/NG を返す。
+ * - [禁止] eFuse 実値や秘密鍵素材をレスポンスへ含めない。
+ */
+void handleProductionPrecheckApi() {
+  if (!isAuthorized(maintenanceRole::kMfg)) {
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"mfg authorization required\"}");
+    return;
+  }
+  if (sensitiveDataServiceInstance == nullptr) {
+    maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"sensitiveDataService is null\"}");
+    return;
+  }
+
+  const String requestBody = maintenanceWebServer.arg("plain");
+  String runId;
+  String targetDeviceId;
+  String expectedFirmwareVersion;
+  String expectedMac;
+  long minimumFreeHeapBytes = 0;
+  long minimumStackMarginBytes = 0;
+  const bool hasMinimumFreeHeapBytes = parseBodyLongValue(requestBody, "minimumFreeHeapBytes", &minimumFreeHeapBytes);
+  const bool hasMinimumStackMarginBytes = parseBodyLongValue(requestBody, "minimumStackMarginBytes", &minimumStackMarginBytes);
+  parseBodyStringValue(requestBody, "runId", &runId);
+  parseBodyStringValue(requestBody, "targetDeviceId", &targetDeviceId);
+  parseBodyStringValue(requestBody, "expectedFirmwareVersion", &expectedFirmwareVersion);
+  parseBodyStringValue(requestBody, "expectedMac", &expectedMac);
+  runId.trim();
+  targetDeviceId.trim();
+  expectedFirmwareVersion.trim();
+  expectedMac.trim();
+  if ((hasMinimumFreeHeapBytes && minimumFreeHeapBytes < 0) || (hasMinimumStackMarginBytes && minimumStackMarginBytes < 0)) {
+    maintenanceWebServer.send(400, "application/json", "{\"result\":\"NG\",\"detail\":\"minimumFreeHeapBytes/minimumStackMarginBytes must be non-negative\"}");
+    return;
+  }
+
+  const String observedTargetDeviceId = resolvePairingTargetDeviceId();
+  const String observedCompactMac = resolveCompactMacFromApSsid();
+  const String observedMac = formatCompactMacAsColonSeparated(observedCompactMac);
+  const String observedFirmwareVersion = String(appVersion::kFirmwareVersion);
+  const uint32_t measuredFreeHeapBytes = ESP.getFreeHeap();
+  const UBaseType_t stackHighWaterMarkWords = uxTaskGetStackHighWaterMark(nullptr);
+  const uint32_t measuredMinStackMarginBytes = static_cast<uint32_t>(stackHighWaterMarkWords * sizeof(StackType_t));
+  String keyDeviceBase64;
+  const bool loadKeyDeviceResult = sensitiveDataServiceInstance->loadKeyDevice(&keyDeviceBase64);
+  const bool keyDevicePresent = loadKeyDeviceResult && keyDeviceBase64.length() > 0;
+
+  const bool hasTargetDeviceId = targetDeviceId.length() > 0;
+  const bool hasExpectedFirmwareVersion = expectedFirmwareVersion.length() > 0;
+  const bool hasExpectedMac = expectedMac.length() > 0;
+  const bool macMatched = hasExpectedMac
+                              ? normalizeMacTextForComparison(expectedMac) == normalizeMacTextForComparison(observedMac)
+                              : false;
+  bool targetDeviceMatched = false;
+  bool hasTargetDeviceMatched = false;
+  if (hasTargetDeviceId || hasExpectedMac) {
+    hasTargetDeviceMatched = true;
+    targetDeviceMatched = true;
+    if (hasTargetDeviceId) {
+      targetDeviceMatched = targetDeviceMatched && targetDeviceId == observedTargetDeviceId;
+    }
+    if (hasExpectedMac) {
+      targetDeviceMatched = targetDeviceMatched && macMatched;
+    }
+  }
+  const bool firmwareVersionApproved = hasExpectedFirmwareVersion ? expectedFirmwareVersion == observedFirmwareVersion : false;
+  const bool heapMarginOk =
+      hasMinimumFreeHeapBytes ? measuredFreeHeapBytes >= static_cast<uint32_t>(minimumFreeHeapBytes) : false;
+  const bool stackMarginOk =
+      hasMinimumStackMarginBytes ? measuredMinStackMarginBytes >= static_cast<uint32_t>(minimumStackMarginBytes) : false;
+
+  lastProductionRunId = runId;
+  lastProductionState = "precheck_collected";
+  lastProductionResult = "OK";
+  lastProductionObservedFirmwareVersion = observedFirmwareVersion;
+  lastProductionObservedMac = observedMac;
+  lastProductionObservedFreeHeapBytes = measuredFreeHeapBytes;
+  lastProductionObservedStackMarginBytes = measuredMinStackMarginBytes;
+  lastProductionDetail = String("production precheck collected. targetDeviceId=") + observedTargetDeviceId +
+                         " firmwareVersion=" + observedFirmwareVersion +
+                         " keyDevicePresent=" + (keyDevicePresent ? "true" : "false");
+
+  String responseText;
+  responseText.reserve(1024);
+  responseText += "{";
+  responseText += "\"result\":\"OK\",";
+  responseText += "\"runId\":\"" + toJsonSafeText(runId) + "\",";
+  responseText += "\"state\":\"" + toJsonSafeText(lastProductionState) + "\",";
+  responseText += "\"targetDeviceId\":\"" + toJsonSafeText(observedTargetDeviceId) + "\",";
+  responseText += "\"observedFirmwareVersion\":\"" + toJsonSafeText(observedFirmwareVersion) + "\",";
+  responseText += "\"observedMac\":\"" + toJsonSafeText(observedMac) + "\",";
+  responseText += "\"keyDevicePresent\":" + String(keyDevicePresent ? "true" : "false") + ",";
+  responseText += "\"measuredFreeHeapBytes\":" + String(static_cast<long>(measuredFreeHeapBytes)) + ",";
+  responseText += "\"measuredMinStackMarginBytes\":" + String(static_cast<long>(measuredMinStackMarginBytes)) + ",";
+  if (hasTargetDeviceMatched) {
+    responseText += "\"targetDeviceMatched\":" + String(targetDeviceMatched ? "true" : "false") + ",";
+  }
+  if (hasExpectedFirmwareVersion) {
+    responseText += "\"firmwareVersionApproved\":" + String(firmwareVersionApproved ? "true" : "false") + ",";
+  }
+  if (hasMinimumStackMarginBytes) {
+    responseText += "\"stackMarginOk\":" + String(stackMarginOk ? "true" : "false") + ",";
+  }
+  if (hasMinimumFreeHeapBytes) {
+    responseText += "\"heapMarginOk\":" + String(heapMarginOk ? "true" : "false") + ",";
+  }
+  responseText += "\"detail\":\"" + toJsonSafeText(lastProductionDetail) + "\"";
+  responseText += "}";
+  maintenanceWebServer.send(200, "application/json", responseText);
+}
+
 void handleLoginApi() {
   const String requestBody = maintenanceWebServer.arg("plain");
   String username;
@@ -1552,6 +2125,9 @@ bool start(const String& apSsid, sensitiveDataService* sensitiveDataServiceOut) 
   maintenanceWebServer.on("/api/pairing/bundle-summary", HTTP_POST, handlePairingBundleSummaryApi);
   maintenanceWebServer.on("/api/pairing/transport-session", HTTP_POST, handlePairingTransportSessionApi);
   maintenanceWebServer.on("/api/pairing/transport-handshake", HTTP_POST, handlePairingTransportHandshakeApi);
+  maintenanceWebServer.on("/api/pairing/secure-bundle", HTTP_POST, handlePairingSecureBundleApplyApi);
+  maintenanceWebServer.on("/api/production/precheck", HTTP_POST, handleProductionPrecheckApi);
+  maintenanceWebServer.on("/api/production/state", HTTP_GET, handleProductionStateApi);
   maintenanceWebServer.on("/api/settings/network", HTTP_GET, handleNetworkSettingsGetApi);
   maintenanceWebServer.on("/api/settings/network", HTTP_POST, handleNetworkSettingsApi);
   maintenanceWebServer.on("/api/pairing/state", HTTP_GET, handlePairingStateApi);

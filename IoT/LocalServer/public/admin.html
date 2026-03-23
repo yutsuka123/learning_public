@@ -1,0 +1,1258 @@
+<!--
+  @file admin.html
+  @description LocalServer管理者画面（認証、k-user発行、k-device発行、secure-ping試験）を提供する。
+  @important [重要] 本画面は管理者トークンを使って `/api/admin/*` を操作する。
+  @strict [厳守] 認証トークンは `sessionStorage` のみに保持し、画面閉鎖時に再ログインを要求する。
+  @forbidden [禁止] パスワードや生鍵を画面へ表示しない。
+  @forbidden [禁止][003-0011] eFuse 実行ボタン・UIを追加しない。eFuse は ProductionTool専用。
+-->
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>IoT LocalServer 管理者画面</title>
+    <style>
+      body {
+        font-family: "Segoe UI", sans-serif;
+        margin: 16px;
+        color: #1f2937;
+      }
+      h1 {
+        margin-bottom: 8px;
+      }
+      .toolbar {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 16px;
+        flex-wrap: wrap;
+      }
+      .card {
+        border: 1px solid #d1d5db;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
+      .fieldRow {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 10px;
+        margin-bottom: 10px;
+        align-items: center;
+      }
+      .passwordFieldContainer {
+        display: flex;
+        gap: 6px;
+        align-items: center;
+      }
+      input[type="text"],
+      input[type="password"],
+      input[type="number"] {
+        width: 100%;
+        padding: 6px;
+        box-sizing: border-box;
+      }
+      .eyeToggleButton {
+        min-width: 36px;
+        padding: 6px 8px;
+        font-size: 15px;
+        line-height: 1;
+      }
+      button {
+        border: 1px solid #9ca3af;
+        border-radius: 6px;
+        padding: 6px 12px;
+        background-color: #f9fafb;
+        cursor: pointer;
+      }
+      #deviceListArea,
+      #logArea {
+        margin-top: 8px;
+        border: 1px solid #d1d5db;
+        padding: 8px;
+        background: #fafafa;
+        white-space: pre-wrap;
+      }
+      #logArea {
+        min-height: 150px;
+      }
+      .muted {
+        color: #6b7280;
+        font-size: 12px;
+      }
+      .ok {
+        color: #0f766e;
+      }
+      .ng {
+        color: #b91c1c;
+      }
+      .hidden {
+        display: none;
+      }
+      .apWebLink {
+        margin-left: 8px;
+        padding: 6px 12px;
+        border: 1px solid #9ca3af;
+        border-radius: 6px;
+        background: #f9fafb;
+        color: #1f2937;
+        text-decoration: none;
+        font-size: 14px;
+      }
+      .apWebLink:hover {
+        background: #f3f4f6;
+      }
+      .statusTextOk {
+        color: #0f766e;
+      }
+      .statusTextBusy {
+        color: #1d4ed8;
+      }
+      .statusTextNg {
+        color: #b91c1c;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>IoT LocalServer 管理者画面</h1>
+    <div class="toolbar">
+      <button id="backToSettingsButton">設定へ戻る</button>
+      <button id="backToIndexButton">一覧へ戻る</button>
+      <button id="clearTokenButton">トークンクリア</button>
+      <span id="authStateText" class="muted">未認証</span>
+    </div>
+
+    <div class="card" id="loginCard">
+      <h2>管理者ログイン</h2>
+      <div class="fieldRow">
+        <label for="usernameInput">ユーザー名</label>
+        <input id="usernameInput" type="text" autocomplete="off" />
+      </div>
+      <div class="fieldRow">
+        <label for="passwordInput">パスワード</label>
+        <div class="passwordFieldContainer">
+          <input id="passwordInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+          <button id="passwordToggleButton" type="button" class="eyeToggleButton" aria-label="パスワード表示切替" title="パスワード表示切替">&#128065;</button>
+        </div>
+      </div>
+      <button id="loginButton">ログイン</button>
+      <button id="logoutButton">ログアウト</button>
+      <div class="muted">[重要] 管理者機能はログイン後に表示されます。</div>
+    </div>
+
+    <div class="card hidden" id="adminActionsCard">
+      <h2>鍵操作</h2>
+      <div class="fieldRow">
+        <label>k-user</label>
+        <div>
+          <button id="issueKUserButton">k-user発行</button>
+          <span id="kUserIssuedStatusText" class="muted">発行状態: (未取得)</span>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label for="kDeviceTargetInput">k-device対象デバイス名</label>
+        <input id="kDeviceTargetInput" type="text" value="IoT_TEST_DEVICE" />
+      </div>
+      <div class="fieldRow">
+        <label for="pushToDeviceInput">ESP32へ同時投入</label>
+        <div><input id="pushToDeviceInput" type="checkbox" checked /></div>
+      </div>
+      <button id="issueKDeviceButton">k-device発行</button>
+    </div>
+
+    <div class="card hidden" id="wifiUsbCard">
+      <h2>AP探索用 Wi-Fi USB 選択</h2>
+      <div class="fieldRow">
+        <label for="wifiUsbSelect">インタフェース名</label>
+        <select id="wifiUsbSelect"></select>
+      </div>
+      <div class="fieldRow">
+        <label>現在選択</label>
+        <div id="selectedWifiUsbText">(未取得)</div>
+      </div>
+      <button id="reloadWifiUsbButton">候補再取得</button>
+      <button id="saveWifiUsbButton">選択保存</button>
+      <div class="muted">[重要] APモード探索/接続処理はこの選択値を参照します。</div>
+    </div>
+
+    <div class="card hidden" id="apWorkflowCard">
+      <h2>AP探索・接続・設定投入</h2>
+      <div class="fieldRow">
+        <label for="apSsidSelect">探索したAP機体</label>
+        <select id="apSsidSelect"></select>
+        <a id="apWebLinkButton" href="#" target="_blank" rel="noopener noreferrer" class="apWebLink hidden" title="選択APのWebページを開く">Webページへ移動</a>
+      </div>
+      <div class="fieldRow">
+        <label for="apTargetDeviceNameInput">k-device対象デバイス名</label>
+        <input id="apTargetDeviceNameInput" type="text" value="IoT_TEST_DEVICE" />
+      </div>
+      <div class="fieldRow">
+        <label for="apWifiSsidInput">投入Wi-Fi SSID</label>
+        <input id="apWifiSsidInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label for="apWifiPassInput">投入Wi-Fi パスワード</label>
+        <div class="passwordFieldContainer">
+          <input id="apWifiPassInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+          <button type="button" class="eyeToggleButton" aria-label="パスワード表示切替" title="パスワード表示切替">&#128065;</button>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttUrlInput">投入MQTT URL</label>
+        <input id="apMqttUrlInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttUrlNameInput">投入MQTT URL Name</label>
+        <input id="apMqttUrlNameInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttUserInput">投入MQTT ユーザー</label>
+        <input id="apMqttUserInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttPassInput">投入MQTT パスワード</label>
+        <div class="passwordFieldContainer">
+          <input id="apMqttPassInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+          <button type="button" class="eyeToggleButton" aria-label="パスワード表示切替" title="パスワード表示切替">&#128065;</button>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttPortInput">投入MQTT ポート</label>
+        <input id="apMqttPortInput" type="number" value="8883" />
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttTlsInput">投入MQTT TLS</label>
+        <div><input id="apMqttTlsInput" type="checkbox" checked /></div>
+      </div>
+      <div class="fieldRow">
+        <label>MQTT証明書状態</label>
+        <div id="apMqttCertStatusText">(未取得)</div>
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttCertIssueNoInput">投入MQTT証明書 発行No</label>
+        <input id="apMqttCertIssueNoInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttTlsCaCertPemInput">投入MQTT証明書 PEM</label>
+        <textarea id="apMqttTlsCaCertPemInput" rows="6" placeholder="-----BEGIN CERTIFICATE----- ..."></textarea>
+      </div>
+      <div class="fieldRow">
+        <label for="apMqttCertFileInput">MQTT証明書ファイル</label>
+        <input id="apMqttCertFileInput" type="file" accept=".pem,.crt,.cer,.txt" />
+      </div>
+      <div class="fieldRow">
+        <label>証明書ファイル操作</label>
+        <div>
+          <button id="loadApMqttCertFileButton" type="button">ローカルファイル読込</button>
+          <button id="clearApMqttCertFileButton" type="button">証明書入力クリア</button>
+          <span id="apMqttCertFileNameText" class="muted">(未選択)</span>
+        </div>
+      </div>
+      <h3>投入Server設定</h3>
+      <div class="fieldRow">
+        <label for="apServerUrlInput">投入Server URL</label>
+        <input id="apServerUrlInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URLをMQTTと同じ</label>
+        <div><input id="sameServerUrlAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apServerUrlNameInput">投入Server URL Name</label>
+        <input id="apServerUrlNameInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URL NameをMQTTと同じ</label>
+        <div><input id="sameServerUrlNameAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apServerUserInput">投入Server ユーザー</label>
+        <input id="apServerUserInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>ユーザーをMQTTと同じ</label>
+        <div><input id="sameServerUserAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apServerPassInput">投入Server パスワード</label>
+        <div class="passwordFieldContainer">
+          <input id="apServerPassInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+          <button type="button" class="eyeToggleButton" aria-label="パスワード表示切替" title="パスワード表示切替">&#128065;</button>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label>パスワードをMQTTと同じ</label>
+        <div><input id="sameServerPassAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apServerPortInput">投入Server ポート</label>
+        <input id="apServerPortInput" type="number" value="443" />
+      </div>
+      <div class="fieldRow">
+        <label>ポートをMQTTと同じ</label>
+        <div><input id="sameServerPortAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apServerTlsInput">投入Server TLS</label>
+        <div><input id="apServerTlsInput" type="checkbox" checked /></div>
+      </div>
+      <div class="fieldRow">
+        <label>TLSをMQTTと同じ</label>
+        <div><input id="sameServerTlsAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <h3>投入OTA設定</h3>
+      <div class="fieldRow">
+        <label for="apOtaUrlInput">投入OTA URL</label>
+        <input id="apOtaUrlInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URLをMQTTと同じ</label>
+        <div><input id="sameOtaUrlAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apOtaUrlNameInput">投入OTA URL Name</label>
+        <input id="apOtaUrlNameInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URL NameをMQTTと同じ</label>
+        <div><input id="sameOtaUrlNameAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apOtaUserInput">投入OTA ユーザー</label>
+        <input id="apOtaUserInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>ユーザーをMQTTと同じ</label>
+        <div><input id="sameOtaUserAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apOtaPassInput">投入OTA パスワード</label>
+        <div class="passwordFieldContainer">
+          <input id="apOtaPassInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+          <button type="button" class="eyeToggleButton" aria-label="パスワード表示切替" title="パスワード表示切替">&#128065;</button>
+        </div>
+      </div>
+      <div class="fieldRow">
+        <label>パスワードをMQTTと同じ</label>
+        <div><input id="sameOtaPassAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apOtaPortInput">投入OTA ポート</label>
+        <input id="apOtaPortInput" type="number" value="443" />
+      </div>
+      <div class="fieldRow">
+        <label>ポートをMQTTと同じ</label>
+        <div><input id="sameOtaPortAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apOtaTlsInput">投入OTA TLS</label>
+        <div><input id="apOtaTlsInput" type="checkbox" checked /></div>
+      </div>
+      <div class="fieldRow">
+        <label>TLSをMQTTと同じ</label>
+        <div><input id="sameOtaTlsAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <h3>投入NTP設定</h3>
+      <div class="fieldRow">
+        <label for="apNtpUrlInput">投入NTP URL</label>
+        <input id="apNtpUrlInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URLをMQTTと同じ</label>
+        <div><input id="sameNtpUrlAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apNtpUrlNameInput">投入NTP URL Name</label>
+        <input id="apNtpUrlNameInput" type="text" />
+      </div>
+      <div class="fieldRow">
+        <label>URL NameをMQTTと同じ</label>
+        <div><input id="sameNtpUrlNameAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apNtpPortInput">投入NTP ポート</label>
+        <input id="apNtpPortInput" type="number" value="123" />
+      </div>
+      <div class="fieldRow">
+        <label>ポートをMQTTと同じ</label>
+        <div><input id="sameNtpPortAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="apNtpTlsInput">投入NTP TLS</label>
+        <div><input id="apNtpTlsInput" type="checkbox" /></div>
+      </div>
+      <div class="fieldRow">
+        <label>TLSをMQTTと同じ</label>
+        <div><input id="sameNtpTlsAsMqttCheck" type="checkbox" /></div>
+      </div>
+      <button id="scanApButton">AP探索</button>
+      <button id="connectApButton">AP接続</button>
+      <button id="loadApSettingsButton">ESP32現在値読込</button>
+      <button id="diagnoseConnectivityButton">MQTT/NTP診断</button>
+      <button id="applyApConfigButton">設定投入 + 再起動要求</button>
+      <div class="fieldRow" style="margin-top: 10px">
+        <label>AP作業ステータス</label>
+        <div id="apWorkflowStatusText" class="muted">待機中</div>
+      </div>
+    </div>
+
+    <div class="card hidden" id="securePingCard">
+      <h2>暗号化MQTT相互通信試験</h2>
+      <div class="fieldRow">
+        <label for="securePingTargetInput">対象デバイス名</label>
+        <input id="securePingTargetInput" type="text" value="IoT_TEST_DEVICE" />
+      </div>
+      <div class="fieldRow">
+        <label for="securePingTextInput">平文メッセージ</label>
+        <input id="securePingTextInput" type="text" value="from-admin-page" />
+      </div>
+      <div class="fieldRow">
+        <label for="securePingTimeoutInput">タイムアウト(ms)</label>
+        <input id="securePingTimeoutInput" type="number" value="10000" />
+      </div>
+      <button id="securePingButton">secure-ping実行</button>
+    </div>
+
+    <div class="card hidden" id="deviceListCard">
+      <h2>管理対象デバイス一覧</h2>
+      <button id="loadDevicesButton">一覧取得</button>
+      <div id="deviceListArea">(未取得)</div>
+    </div>
+
+    <div id="logArea"></div>
+
+    <script>
+      const adminTokenStorageKey = "localserverAdminToken";
+
+      /**
+       * @description ログ欄へテキストを追記する。
+       * @param {string} text 出力文字列。
+       * @param {"ok"|"ng"|"info"} level 表示レベル。
+       */
+      function appendLog(text, level = "info") {
+        const nowText = new Date().toISOString();
+        const logArea = document.getElementById("logArea");
+        const line = document.createElement("div");
+        if (level === "ok") {
+          line.className = "ok";
+        } else if (level === "ng") {
+          line.className = "ng";
+        }
+        line.textContent = `[${nowText}] ${text}`;
+        logArea.appendChild(line);
+      }
+
+      /**
+       * @description AP探索/接続/読込/書込の作業ステータス表示を更新する。
+       * @param {"ok"|"busy"|"ng"|"info"} level 表示レベル。
+       * @param {string} text 表示文字列。
+       */
+      function setApWorkflowStatus(level, text) {
+        const statusElement = document.getElementById("apWorkflowStatusText");
+        if (statusElement === null) {
+          return;
+        }
+        statusElement.classList.remove("muted", "statusTextOk", "statusTextBusy", "statusTextNg");
+        if (level === "ok") {
+          statusElement.classList.add("statusTextOk");
+        } else if (level === "busy") {
+          statusElement.classList.add("statusTextBusy");
+        } else if (level === "ng") {
+          statusElement.classList.add("statusTextNg");
+        } else {
+          statusElement.classList.add("muted");
+        }
+        const nowText = new Date().toLocaleTimeString("ja-JP", { hour12: false });
+        statusElement.textContent = `${text} (${nowText})`;
+      }
+
+      /**
+       * @description [003-0008] 選択APに応じてWebページへ移動ボタンの表示/hrefを更新する。
+       * 遷移先: http://192.168.4.1/（ESP32 AP 既定IP）
+       */
+      function updateApWebLinkButton() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const apWebLinkButton = document.getElementById("apWebLinkButton");
+        if (!apSsidSelect || !apWebLinkButton) return;
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length > 0) {
+          apWebLinkButton.href = "http://192.168.4.1/";
+          apWebLinkButton.classList.remove("hidden");
+        } else {
+          apWebLinkButton.href = "#";
+          apWebLinkButton.classList.add("hidden");
+        }
+      }
+
+      /**
+       * @description AP作業エラーを共通処理し、認証切れの場合はトークンを破棄する。
+       * @param {string} actionLabel 操作名（AP探索/AP接続など）。
+       * @param {unknown} errorObject エラーオブジェクト。
+       */
+      function handleApWorkflowError(actionLabel, errorObject) {
+        const rawMessage = errorObject instanceof Error ? errorObject.message : String(errorObject);
+        const isAuthError =
+          rawMessage.includes("requireAdminSession") ||
+          rawMessage.includes("admin token") ||
+          rawMessage.includes("認証");
+        if (isAuthError) {
+          setAdminToken("");
+          const authErrorMessage = `${actionLabel}エラー: 認証切れの可能性があります。再ログインしてください。`;
+          setApWorkflowStatus("ng", authErrorMessage);
+          appendLog(`${authErrorMessage} detail=${rawMessage}`, "ng");
+          return;
+        }
+        setApWorkflowStatus("ng", `${actionLabel}エラー: ${rawMessage}`);
+        appendLog(rawMessage, "ng");
+      }
+
+      /**
+       * @description [003-0008] 選択APの Webページへ移動 ボタンの表示・href を更新する。
+       */
+      function updateApWebLinkButton() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const apWebLinkButton = document.getElementById("apWebLinkButton");
+        if (!apSsidSelect || !apWebLinkButton) return;
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length > 0) {
+          apWebLinkButton.href = "http://192.168.4.1/";
+          apWebLinkButton.classList.remove("hidden");
+        } else {
+          apWebLinkButton.href = "#";
+          apWebLinkButton.classList.add("hidden");
+        }
+      }
+
+      /**
+       * @description 現在保持中の管理者トークンを返す。
+       * @returns {string} トークン文字列。
+       */
+      function getAdminToken() {
+        return sessionStorage.getItem(adminTokenStorageKey) || "";
+      }
+
+      /**
+       * @description 管理者トークンを保存し、表示状態を更新する。
+       * @param {string} token 認証トークン。
+       */
+      function setAdminToken(token) {
+        if (token && token.length > 0) {
+          sessionStorage.setItem(adminTokenStorageKey, token);
+        } else {
+          sessionStorage.removeItem(adminTokenStorageKey);
+        }
+        refreshAuthState();
+        updateAuthUiState();
+      }
+
+      /**
+       * @description 認証状態テキストを更新する。
+       */
+      function refreshAuthState() {
+        const authStateText = document.getElementById("authStateText");
+        const token = getAdminToken();
+        authStateText.textContent = token.length > 0 ? "認証済み（トークン保持中）" : "未認証";
+      }
+
+      /**
+       * @description 認証状態に応じて管理機能表示を切り替える。
+       */
+      function updateAuthUiState() {
+        const isAuthenticated = getAdminToken().length > 0;
+        const secureCardIdList = ["adminActionsCard", "wifiUsbCard", "apWorkflowCard", "securePingCard", "deviceListCard"];
+        secureCardIdList.forEach((cardId) => {
+          const cardElement = document.getElementById(cardId);
+          if (cardElement === null) {
+            return;
+          }
+          if (isAuthenticated) {
+            cardElement.classList.remove("hidden");
+          } else {
+            cardElement.classList.add("hidden");
+          }
+        });
+      }
+
+      /**
+       * @description パスワード不可視/可視を切り替える。
+       * @param {HTMLInputElement} passwordInput 入力欄。
+       * @param {HTMLButtonElement} toggleButton 切替ボタン。
+       */
+      function togglePasswordVisibility(passwordInput, toggleButton) {
+        if (passwordInput.type === "password") {
+          passwordInput.type = "text";
+          toggleButton.setAttribute("aria-label", "パスワードを隠す");
+          toggleButton.title = "パスワードを隠す";
+          return;
+        }
+        passwordInput.type = "password";
+        toggleButton.setAttribute("aria-label", "パスワード表示切替");
+        toggleButton.title = "パスワード表示切替";
+      }
+
+      /**
+       * @description 管理者APIを呼び出す。
+       * @param {string} path APIパス。
+       * @param {string} method HTTPメソッド。
+       * @param {Object|null} bodyJson リクエストJSON。
+       * @returns {Promise<any>} 応答JSON。
+       */
+      async function callAdminApi(path, method, bodyJson) {
+        const token = getAdminToken();
+        if (token.length === 0) {
+          throw new Error("管理者トークンが未設定です。先にログインしてください。");
+        }
+        const headers = {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json"
+        };
+        const abortController = new AbortController();
+        const timeoutHandle = setTimeout(() => abortController.abort(), 30000);
+        let response;
+        try {
+          response = await fetch(path, {
+            method,
+            headers,
+            body: bodyJson === null ? undefined : JSON.stringify(bodyJson),
+            signal: abortController.signal
+          });
+        } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") {
+            throw new Error(`${path} timeout. 30秒以内に応答がありませんでした。`);
+          }
+          throw error;
+        } finally {
+          clearTimeout(timeoutHandle);
+        }
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `${path} failed. status=${response.status}`);
+        }
+        return jsonObject;
+      }
+
+      /**
+       * @description ログインAPIを実行する。
+       */
+      async function loginAdmin() {
+        const username = document.getElementById("usernameInput").value.trim();
+        const password = document.getElementById("passwordInput").value;
+        const response = await fetch("/api/admin/auth/login", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username, password })
+        });
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `login failed. status=${response.status}`);
+        }
+        setAdminToken(jsonObject.token || "");
+        appendLog("ログイン成功。", "ok");
+        await loadWifiUsbInterfaces();
+        await loadKUserStatus();
+      }
+
+      /**
+       * @description ログアウトAPIを実行する。
+       */
+      async function logoutAdmin() {
+        const token = getAdminToken();
+        if (token.length > 0) {
+          await fetch("/api/admin/auth/logout", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`
+            }
+          });
+        }
+        setAdminToken("");
+        appendLog("ログアウトしました。", "ok");
+      }
+
+      /**
+       * @description k-user発行APIを実行する。
+       */
+      async function issueKUser() {
+        const status = await loadKUserStatus();
+        if (status.isIssued) {
+          const confirmed = window.confirm(
+            "k-userはすでに発行済みです。再発行すると既存k-deviceは無効となり、再発行が必要です。再発行しますか？"
+          );
+          if (!confirmed) {
+            appendLog("k-user再発行をキャンセルしました。", "info");
+            return;
+          }
+        }
+        const jsonObject = await callAdminApi("/api/admin/keys/k-user/issue", "POST", {});
+        appendLog(`k-user発行成功: fingerprint=${jsonObject.keyFingerprint} issuedAt=${jsonObject.issuedAt}`, "ok");
+        await loadKUserStatus();
+      }
+
+      /**
+       * @description k-user発行状態を取得して表示する。
+       * @returns {Promise<any>} 状態オブジェクト。
+       */
+      async function loadKUserStatus() {
+        const jsonObject = await callAdminApi("/api/admin/keys/k-user/status", "GET", null);
+        const statusText = document.getElementById("kUserIssuedStatusText");
+        if (jsonObject.isIssued) {
+          statusText.textContent =
+            `発行状態: 発行済み (issuedAt=${jsonObject.issuedAt}, fingerprint=${jsonObject.keyFingerprint}, k-device数=${jsonObject.deviceKeyCount})`;
+          return jsonObject;
+        }
+        statusText.textContent = `発行状態: 未発行 (k-device数=${jsonObject.deviceKeyCount})`;
+        return jsonObject;
+      }
+
+      /**
+       * @description k-device発行APIを実行する。
+       */
+      async function issueKDevice() {
+        const targetDeviceName = document.getElementById("kDeviceTargetInput").value.trim();
+        const pushToDevice = document.getElementById("pushToDeviceInput").checked;
+        const jsonObject = await callAdminApi("/api/admin/keys/k-device/issue", "POST", {
+          targetDeviceName,
+          pushToDevice
+        });
+        appendLog(
+          `k-device発行成功: target=${jsonObject.targetDeviceName} pushed=${jsonObject.pushedToDevice} fingerprint=${jsonObject.keyFingerprint}`,
+          "ok"
+        );
+      }
+
+      /**
+       * @description secure-ping試験APIを実行する。
+       */
+      async function runSecurePing() {
+        const targetDeviceName = document.getElementById("securePingTargetInput").value.trim();
+        const plainText = document.getElementById("securePingTextInput").value;
+        const timeoutMs = Number(document.getElementById("securePingTimeoutInput").value);
+        const jsonObject = await callAdminApi("/api/admin/commands/secure-ping", "POST", {
+          targetDeviceName,
+          plainText,
+          timeoutMs
+        });
+        appendLog(
+          `secure-ping成功: requestId=${jsonObject.requestId} response=${JSON.stringify(jsonObject.decryptedResponse)}`,
+          "ok"
+        );
+      }
+
+      /**
+       * @description 管理対象デバイス一覧を取得する。
+       * @remarks [003-0008] APモード機体には「Webページへ移動」リンクを表示する。
+       */
+      async function loadDevices() {
+        const jsonObject = await callAdminApi("/api/admin/devices", "GET", null);
+        const deviceListArea = document.getElementById("deviceListArea");
+        const deviceList = jsonObject.devices || [];
+        if (deviceList.length === 0) {
+          deviceListArea.innerHTML = "(デバイス未検出)";
+        } else {
+          const rows = deviceList.map((item) => {
+            const webLink = (item.apWebUrl || "").length > 0
+              ? `<a href="${item.apWebUrl}" target="_blank" rel="noopener noreferrer" class="apWebLink">Webページへ移動</a>`
+              : "";
+            return `<div class="deviceListRow"><span>${item.deviceName}</span> <span class="muted">mode=${item.connectionMode} online=${item.onlineState}</span> ${webLink}</div>`;
+          });
+          deviceListArea.innerHTML = rows.join("");
+        }
+        appendLog(`管理対象一覧取得: count=${deviceList.length}`, "ok");
+      }
+
+      /**
+       * @description Wi-Fi USB候補一覧と現在選択を読み込む。
+       */
+      async function loadWifiUsbInterfaces() {
+        const jsonObject = await callAdminApi("/api/admin/wifi-usb/interfaces", "GET", null);
+        const wifiUsbSelect = document.getElementById("wifiUsbSelect");
+        const selectedWifiUsbText = document.getElementById("selectedWifiUsbText");
+        wifiUsbSelect.innerHTML = "";
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "(未選択)";
+        wifiUsbSelect.appendChild(emptyOption);
+        (jsonObject.interfaces || []).forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.interfaceName;
+          const tagList = [];
+          if (item.isLikelyWifi) {
+            tagList.push("Wi-Fi候補");
+          }
+          if (item.isLikelyUsb) {
+            tagList.push("USB候補");
+          }
+          const addressText = Array.isArray(item.addressList) ? item.addressList.join(", ") : "";
+          option.textContent = `${item.interfaceName}${tagList.length > 0 ? ` [${tagList.join("/")}]` : ""}${addressText.length > 0 ? ` (${addressText})` : ""}`;
+          wifiUsbSelect.appendChild(option);
+        });
+        const selectedInterfaceName = jsonObject.selectedInterfaceName || "";
+        wifiUsbSelect.value = selectedInterfaceName;
+        selectedWifiUsbText.textContent = selectedInterfaceName.length > 0 ? selectedInterfaceName : "(未選択)";
+        appendLog(`Wi-Fi USB候補取得: count=${(jsonObject.interfaces || []).length}`, "ok");
+      }
+
+      /**
+       * @description Wi-Fi USB選択値を保存する。
+       */
+      async function saveWifiUsbSelection() {
+        const wifiUsbSelect = document.getElementById("wifiUsbSelect");
+        const selectedWifiUsbText = document.getElementById("selectedWifiUsbText");
+        const interfaceName = wifiUsbSelect.value || "";
+        const jsonObject = await callAdminApi("/api/admin/wifi-usb/selection", "POST", {
+          interfaceName
+        });
+        const nextSelectedInterfaceName = jsonObject.selectedInterfaceName || "";
+        selectedWifiUsbText.textContent = nextSelectedInterfaceName.length > 0 ? nextSelectedInterfaceName : "(未選択)";
+        appendLog(`Wi-Fi USB選択を保存: interface=${nextSelectedInterfaceName || "(未選択)"}`, "ok");
+      }
+
+      /**
+       * @description [003-0008] 選択APに応じて「Webページへ移動」リンクの表示・href を更新する。
+       */
+      function updateApWebLinkButton() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const apWebLinkButton = document.getElementById("apWebLinkButton");
+        if (!apSsidSelect || !apWebLinkButton) return;
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length > 0 && ssid.startsWith("AP-esp32lab-")) {
+          apWebLinkButton.href = "http://192.168.4.1/";
+          apWebLinkButton.classList.remove("hidden");
+        } else {
+          apWebLinkButton.href = "#";
+          apWebLinkButton.classList.add("hidden");
+        }
+      }
+
+      /**
+       * @description [003-0008] 選択APに応じて「Webページへ移動」ボタンの表示とhrefを更新する。
+       */
+      function updateApWebLinkButton() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const apWebLinkButton = document.getElementById("apWebLinkButton");
+        if (!apSsidSelect || !apWebLinkButton) return;
+        const ssid = (apSsidSelect.value || "").trim();
+        const apWebUrl = "http://192.168.4.1/";
+        if (ssid.length > 0) {
+          apWebLinkButton.href = apWebUrl;
+          apWebLinkButton.classList.remove("hidden");
+        } else {
+          apWebLinkButton.href = "#";
+          apWebLinkButton.classList.add("hidden");
+        }
+      }
+
+      /**
+       * @description [003-0008] 選択APに応じて「Webページへ移動」ボタンの表示・hrefを更新する。
+       */
+      function updateApWebLinkButton() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const apWebLinkButton = document.getElementById("apWebLinkButton");
+        if (!apSsidSelect || !apWebLinkButton) return;
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length > 0) {
+          apWebLinkButton.href = "http://192.168.4.1/";
+          apWebLinkButton.classList.remove("hidden");
+        } else {
+          apWebLinkButton.href = "#";
+          apWebLinkButton.classList.add("hidden");
+        }
+      }
+
+      /**
+       * @description AP探索を実行して候補を更新する。
+       */
+      async function scanAccessPoints() {
+        setApWorkflowStatus("busy", "AP探索中");
+        const jsonObject = await callAdminApi("/api/admin/ap/scan", "GET", null);
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        apSsidSelect.innerHTML = "";
+        const emptyOption = document.createElement("option");
+        emptyOption.value = "";
+        emptyOption.textContent = "(未選択)";
+        apSsidSelect.appendChild(emptyOption);
+        (jsonObject.apList || []).forEach((apItem) => {
+          const option = document.createElement("option");
+          option.value = apItem.ssid;
+          option.textContent = `${apItem.ssid} ${apItem.signal ? `(${apItem.signal})` : ""}`;
+          apSsidSelect.appendChild(option);
+        });
+        if ((jsonObject.apList || []).length > 0) {
+          apSsidSelect.value = jsonObject.apList[0].ssid;
+          await loadSelectedAccessPointSettings();
+        }
+        updateApWebLinkButton();
+        appendLog(`AP探索完了: count=${(jsonObject.apList || []).length}`, "ok");
+        setApWorkflowStatus("ok", `AP探索完了 count=${(jsonObject.apList || []).length}`);
+      }
+
+      /**
+       * @description 選択APへ接続する。
+       */
+      async function connectSelectedAccessPoint() {
+        setApWorkflowStatus("busy", "AP接続中");
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length === 0) {
+          throw new Error("AP接続失敗: AP機体を選択してください。");
+        }
+        const jsonObject = await callAdminApi("/api/admin/ap/connect", "POST", { ssid });
+        appendLog(`AP接続完了: ssid=${jsonObject.connectedSsid}`, "ok");
+        setApWorkflowStatus("ok", `AP接続済み ssid=${jsonObject.connectedSsid}`);
+        await loadSelectedAccessPointSettings();
+      }
+
+      /**
+       * @description MQTT値を基準に、同一チェックが有効な項目を上書きする。
+       */
+      function syncApInputsFromMqttIfChecked() {
+        const mqttUrl = document.getElementById("apMqttUrlInput").value.trim();
+        const mqttUrlName = document.getElementById("apMqttUrlNameInput").value.trim();
+        const mqttUser = document.getElementById("apMqttUserInput").value.trim();
+        const mqttPass = document.getElementById("apMqttPassInput").value;
+        const mqttPort = Number(document.getElementById("apMqttPortInput").value);
+        const mqttTls = document.getElementById("apMqttTlsInput").checked;
+        if (document.getElementById("sameServerUrlAsMqttCheck").checked) document.getElementById("apServerUrlInput").value = mqttUrl;
+        if (document.getElementById("sameServerUrlNameAsMqttCheck").checked) document.getElementById("apServerUrlNameInput").value = mqttUrlName;
+        if (document.getElementById("sameServerUserAsMqttCheck").checked) document.getElementById("apServerUserInput").value = mqttUser;
+        if (document.getElementById("sameServerPassAsMqttCheck").checked) document.getElementById("apServerPassInput").value = mqttPass;
+        if (document.getElementById("sameServerPortAsMqttCheck").checked) document.getElementById("apServerPortInput").value = String(mqttPort);
+        if (document.getElementById("sameServerTlsAsMqttCheck").checked) document.getElementById("apServerTlsInput").checked = mqttTls;
+        if (document.getElementById("sameOtaUrlAsMqttCheck").checked) document.getElementById("apOtaUrlInput").value = mqttUrl;
+        if (document.getElementById("sameOtaUrlNameAsMqttCheck").checked) document.getElementById("apOtaUrlNameInput").value = mqttUrlName;
+        if (document.getElementById("sameOtaUserAsMqttCheck").checked) document.getElementById("apOtaUserInput").value = mqttUser;
+        if (document.getElementById("sameOtaPassAsMqttCheck").checked) document.getElementById("apOtaPassInput").value = mqttPass;
+        if (document.getElementById("sameOtaPortAsMqttCheck").checked) document.getElementById("apOtaPortInput").value = String(mqttPort);
+        if (document.getElementById("sameOtaTlsAsMqttCheck").checked) document.getElementById("apOtaTlsInput").checked = mqttTls;
+        if (document.getElementById("sameNtpUrlAsMqttCheck").checked) document.getElementById("apNtpUrlInput").value = mqttUrl;
+        if (document.getElementById("sameNtpUrlNameAsMqttCheck").checked) document.getElementById("apNtpUrlNameInput").value = mqttUrlName;
+        if (document.getElementById("sameNtpPortAsMqttCheck").checked) document.getElementById("apNtpPortInput").value = String(mqttPort);
+        if (document.getElementById("sameNtpTlsAsMqttCheck").checked) document.getElementById("apNtpTlsInput").checked = mqttTls;
+      }
+
+      /**
+       * @description FileオブジェクトからUTF-8テキストを読み込む。
+       * @param {File} inputFile 入力ファイル。
+       * @returns {Promise<string>} 読み込みテキスト。
+       */
+      function readUtf8TextFromFile(inputFile) {
+        return new Promise((resolve, reject) => {
+          const fileReader = new FileReader();
+          fileReader.onload = () => {
+            resolve(String(fileReader.result || ""));
+          };
+          fileReader.onerror = () => {
+            reject(new Error(`証明書ファイル読込失敗: file=${inputFile.name}`));
+          };
+          fileReader.readAsText(inputFile, "UTF-8");
+        });
+      }
+
+      /**
+       * @description ローカルファイルからMQTT証明書PEMを読み込みフォームへ反映する。
+       */
+      async function loadMqttCertificateFromLocalFile() {
+        const certFileInput = document.getElementById("apMqttCertFileInput");
+        const certFileNameText = document.getElementById("apMqttCertFileNameText");
+        if (!(certFileInput instanceof HTMLInputElement) || certFileInput.files === null || certFileInput.files.length <= 0) {
+          throw new Error("証明書ファイル読込失敗: ローカル証明書ファイルを選択してください。");
+        }
+        const certFile = certFileInput.files[0];
+        if (certFile.size > 256 * 1024) {
+          throw new Error(`証明書ファイル読込失敗: file=${certFile.name} size=${certFile.size}bytes は上限256KBを超えています。`);
+        }
+        const rawText = await readUtf8TextFromFile(certFile);
+        const normalizedPem = rawText.replace(/\r\n/g, "\n").trim();
+        if (!normalizedPem.includes("-----BEGIN CERTIFICATE-----") || !normalizedPem.includes("-----END CERTIFICATE-----")) {
+          throw new Error(`証明書ファイル読込失敗: file=${certFile.name} PEM形式ではありません。`);
+        }
+        document.getElementById("apMqttTlsCaCertPemInput").value = `${normalizedPem}\n`;
+        if (document.getElementById("apMqttCertIssueNoInput").value.trim().length <= 0) {
+          document.getElementById("apMqttCertIssueNoInput").value = certFile.name.replace(/\.[^.]+$/, "");
+        }
+        document.getElementById("apMqttCertStatusText").textContent = `ローカル読込済み (file=${certFile.name})`;
+        certFileNameText.textContent = certFile.name;
+        appendLog(`MQTT証明書ファイル読込完了: file=${certFile.name} size=${certFile.size}bytes`, "ok");
+      }
+
+      /**
+       * @description MQTT証明書PEM入力をクリアする。
+       */
+      function clearMqttCertificateInput() {
+        const certFileInput = document.getElementById("apMqttCertFileInput");
+        if (certFileInput instanceof HTMLInputElement) {
+          certFileInput.value = "";
+        }
+        document.getElementById("apMqttTlsCaCertPemInput").value = "";
+        document.getElementById("apMqttCertFileNameText").textContent = "(未選択)";
+        document.getElementById("apMqttCertStatusText").textContent = "ローカル入力なし";
+        appendLog("MQTT証明書入力をクリアしました。", "info");
+      }
+
+      /**
+       * @description 選択APから現在設定を読み込んでフォームへ反映する。
+       */
+      async function loadSelectedAccessPointSettings() {
+        const apSsidSelect = document.getElementById("apSsidSelect");
+        const ssid = (apSsidSelect.value || "").trim();
+        if (ssid.length === 0) {
+          throw new Error("現在値読込失敗: AP機体を選択してください。");
+        }
+        setApWorkflowStatus("busy", `設定読込中 ssid=${ssid}`);
+        const jsonObject = await callAdminApi(`/api/admin/ap/settings?ssid=${encodeURIComponent(ssid)}`, "GET", null);
+        const settings = jsonObject.settings || {};
+        document.getElementById("apWifiSsidInput").value = settings.wifiSsid || "";
+        document.getElementById("apWifiPassInput").value = settings.wifiPass || "";
+        document.getElementById("apMqttUrlInput").value = settings.mqttUrl || "";
+        document.getElementById("apMqttUrlNameInput").value = settings.mqttUrlName || "";
+        document.getElementById("apMqttUserInput").value = settings.mqttUser || "";
+        document.getElementById("apMqttPassInput").value = settings.mqttPass || "";
+        document.getElementById("apMqttPortInput").value = String(settings.mqttPort ?? 8883);
+        document.getElementById("apMqttTlsInput").checked = Boolean(settings.mqttTls);
+        document.getElementById("apMqttCertIssueNoInput").value = settings.mqttTlsCertIssueNo || "";
+        document.getElementById("apMqttTlsCaCertPemInput").value = "";
+        document.getElementById("apMqttCertFileNameText").textContent = "(未選択)";
+        const mqttCertStatusText = document.getElementById("apMqttCertStatusText");
+        if (settings.mqttTlsCertExists) {
+          mqttCertStatusText.textContent =
+            `あり (発行No=${settings.mqttTlsCertIssueNo || "未設定"}, 設定日=${settings.mqttTlsCertSetAt || "未設定"})`;
+        } else {
+          mqttCertStatusText.textContent = "なし";
+        }
+        document.getElementById("apServerUrlInput").value = settings.serverUrl || "";
+        document.getElementById("apServerUrlNameInput").value = settings.serverUrlName || "";
+        document.getElementById("apServerUserInput").value = settings.serverUser || "";
+        document.getElementById("apServerPassInput").value = settings.serverPass || "";
+        document.getElementById("apServerPortInput").value = String(settings.serverPort ?? 443);
+        document.getElementById("apServerTlsInput").checked = Boolean(settings.serverTls);
+        document.getElementById("apOtaUrlInput").value = settings.otaUrl || "";
+        document.getElementById("apOtaUrlNameInput").value = settings.otaUrlName || "";
+        document.getElementById("apOtaUserInput").value = settings.otaUser || "";
+        document.getElementById("apOtaPassInput").value = settings.otaPass || "";
+        document.getElementById("apOtaPortInput").value = String(settings.otaPort ?? 443);
+        document.getElementById("apOtaTlsInput").checked = Boolean(settings.otaTls);
+        document.getElementById("apNtpUrlInput").value = settings.timeServerUrl || "";
+        document.getElementById("apNtpUrlNameInput").value = settings.timeServerUrlName || "";
+        document.getElementById("apNtpPortInput").value = String(settings.timeServerPort ?? 123);
+        document.getElementById("apNtpTlsInput").checked = Boolean(settings.timeServerTls);
+        appendLog(`AP現在値読込完了: ssid=${ssid}`, "ok");
+        setApWorkflowStatus("ok", `設定読込完了 ssid=${ssid}`);
+      }
+
+      /**
+       * @description 選択APへネットワーク設定/k-deviceを投入する。
+       */
+      async function applySelectedAccessPointConfig() {
+        const applyButton = document.getElementById("applyApConfigButton");
+        applyButton.disabled = true;
+        try {
+          const apSsidSelect = document.getElementById("apSsidSelect");
+          const ssid = (apSsidSelect.value || "").trim();
+          if (ssid.length === 0) {
+            throw new Error("設定投入失敗: AP機体を選択してください。");
+          }
+          setApWorkflowStatus("busy", `設定書込中 ssid=${ssid}`);
+          appendLog(`設定投入開始: ssid=${ssid}`, "info");
+          const mqttTlsCaCertPem = document.getElementById("apMqttTlsCaCertPemInput").value;
+          const mqttTlsCertIssueNo = document.getElementById("apMqttCertIssueNoInput").value.trim();
+          const mqttTlsCertSetAt = mqttTlsCaCertPem.trim().length > 0 ? new Date().toISOString() : "";
+          const body = {
+            ssid,
+            targetDeviceName: document.getElementById("apTargetDeviceNameInput").value.trim(),
+            wifiSsid: document.getElementById("apWifiSsidInput").value.trim(),
+            wifiPass: document.getElementById("apWifiPassInput").value,
+            mqttUrl: document.getElementById("apMqttUrlInput").value.trim(),
+            mqttUrlName: document.getElementById("apMqttUrlNameInput").value.trim(),
+            mqttUser: document.getElementById("apMqttUserInput").value.trim(),
+            mqttPass: document.getElementById("apMqttPassInput").value,
+            mqttPort: Number(document.getElementById("apMqttPortInput").value),
+            mqttTls: document.getElementById("apMqttTlsInput").checked,
+            mqttTlsCaCertPem,
+            mqttTlsCertIssueNo,
+            mqttTlsCertSetAt,
+            serverUrl: document.getElementById("apServerUrlInput").value.trim(),
+            serverUrlName: document.getElementById("apServerUrlNameInput").value.trim(),
+            serverUser: document.getElementById("apServerUserInput").value.trim(),
+            serverPass: document.getElementById("apServerPassInput").value,
+            serverPort: Number(document.getElementById("apServerPortInput").value),
+            serverTls: document.getElementById("apServerTlsInput").checked,
+            otaUrl: document.getElementById("apOtaUrlInput").value.trim(),
+            otaUrlName: document.getElementById("apOtaUrlNameInput").value.trim(),
+            otaUser: document.getElementById("apOtaUserInput").value.trim(),
+            otaPass: document.getElementById("apOtaPassInput").value,
+            otaPort: Number(document.getElementById("apOtaPortInput").value),
+            otaTls: document.getElementById("apOtaTlsInput").checked,
+            timeServerUrl: document.getElementById("apNtpUrlInput").value.trim(),
+            timeServerUrlName: document.getElementById("apNtpUrlNameInput").value.trim(),
+            timeServerPort: Number(document.getElementById("apNtpPortInput").value),
+            timeServerTls: document.getElementById("apNtpTlsInput").checked,
+            requestReboot: true
+          };
+          const jsonObject = await callAdminApi("/api/admin/ap/configure", "POST", body);
+          appendLog(
+            `設定投入完了: ssid=${jsonObject.ssid} keyDeviceApplied=${jsonObject.keyDeviceApplied} rebootRequested=${jsonObject.rebootRequested}`,
+            "ok"
+          );
+          if (!jsonObject.keyDeviceApplied && String(jsonObject.keyDeviceSkippedReason || "").length > 0) {
+            appendLog(`k-device未投入で継続: ${jsonObject.keyDeviceSkippedReason}`, "info");
+          }
+          if (jsonObject.rebootRequested) {
+            setApWorkflowStatus("busy", `再起動要求送信済み ssid=${jsonObject.ssid}`);
+          } else {
+            setApWorkflowStatus("ok", `設定書込完了 ssid=${jsonObject.ssid}`);
+          }
+        } finally {
+          applyButton.disabled = false;
+        }
+      }
+
+      /**
+       * @description MQTT/NTPの到達性をLocalServer側から診断する。
+       */
+      async function diagnoseConnectivity() {
+        const mqttUrl = document.getElementById("apMqttUrlInput").value.trim();
+        const mqttPort = Number(document.getElementById("apMqttPortInput").value);
+        const timeServerUrl = document.getElementById("apNtpUrlInput").value.trim();
+        const timeServerPort = Number(document.getElementById("apNtpPortInput").value);
+        setApWorkflowStatus("busy", "MQTT/NTP診断中");
+        const responseJson = await callAdminApi("/api/admin/ap/diagnose-connectivity", "POST", {
+          mqttUrl,
+          mqttPort,
+          timeServerUrl,
+          timeServerPort
+        });
+        const mqttResult = responseJson.mqtt || {};
+        const ntpResult = responseJson.ntp || {};
+        appendLog(
+          `診断結果 MQTT: ok=${mqttResult.ok} host=${mqttResult.host}:${mqttResult.port} durationMs=${mqttResult.durationMs} error=${mqttResult.errorDetail || ""}`,
+          mqttResult.ok ? "ok" : "ng"
+        );
+        appendLog(
+          `診断結果 NTP: ok=${ntpResult.ok} host=${ntpResult.host}:${ntpResult.port} durationMs=${ntpResult.durationMs} bytes=${ntpResult.responseBytes || 0} error=${ntpResult.errorDetail || ""}`,
+          ntpResult.ok ? "ok" : "ng"
+        );
+        if (mqttResult.ok && ntpResult.ok) {
+          setApWorkflowStatus("ok", "MQTT/NTP診断OK");
+        } else {
+          setApWorkflowStatus("ng", "MQTT/NTP診断NG");
+        }
+      }
+
+      document.getElementById("backToSettingsButton").addEventListener("click", () => {
+        window.location.href = "/settings.html";
+      });
+      document.getElementById("backToIndexButton").addEventListener("click", () => {
+        window.location.href = "/";
+      });
+      document.getElementById("clearTokenButton").addEventListener("click", () => {
+        setAdminToken("");
+        appendLog("トークンをクリアしました。");
+      });
+      document.getElementById("loginButton").addEventListener("click", () => {
+        loginAdmin().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("logoutButton").addEventListener("click", () => {
+        logoutAdmin().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("issueKUserButton").addEventListener("click", () => {
+        issueKUser().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("issueKDeviceButton").addEventListener("click", () => {
+        issueKDevice().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("securePingButton").addEventListener("click", () => {
+        runSecurePing().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("loadDevicesButton").addEventListener("click", () => {
+        loadDevices().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("reloadWifiUsbButton").addEventListener("click", () => {
+        loadWifiUsbInterfaces().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("saveWifiUsbButton").addEventListener("click", () => {
+        saveWifiUsbSelection().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("scanApButton").addEventListener("click", () => {
+        scanAccessPoints().catch((error) => handleApWorkflowError("AP探索", error));
+      });
+      document.getElementById("connectApButton").addEventListener("click", () => {
+        connectSelectedAccessPoint().catch((error) => handleApWorkflowError("AP接続", error));
+      });
+      document.getElementById("apSsidSelect").addEventListener("change", () => {
+        updateApWebLinkButton();
+        loadSelectedAccessPointSettings().catch((error) => handleApWorkflowError("設定読込", error));
+      });
+      document.getElementById("loadApSettingsButton").addEventListener("click", () => {
+        loadSelectedAccessPointSettings().catch((error) => handleApWorkflowError("設定読込", error));
+      });
+      document.getElementById("diagnoseConnectivityButton").addEventListener("click", () => {
+        diagnoseConnectivity().catch((error) => handleApWorkflowError("MQTT/NTP診断", error));
+      });
+      document.getElementById("applyApConfigButton").addEventListener("click", () => {
+        applySelectedAccessPointConfig().catch((error) => handleApWorkflowError("設定書込", error));
+      });
+      document.getElementById("loadApMqttCertFileButton").addEventListener("click", () => {
+        loadMqttCertificateFromLocalFile().catch((error) => appendLog(error.message, "ng"));
+      });
+      document.getElementById("clearApMqttCertFileButton").addEventListener("click", () => {
+        clearMqttCertificateInput();
+      });
+      [
+        "apMqttUrlInput",
+        "apMqttUrlNameInput",
+        "apMqttUserInput",
+        "apMqttPassInput",
+        "apMqttPortInput",
+        "apMqttTlsInput",
+        "sameServerUrlAsMqttCheck",
+        "sameServerUrlNameAsMqttCheck",
+        "sameServerUserAsMqttCheck",
+        "sameServerPassAsMqttCheck",
+        "sameServerPortAsMqttCheck",
+        "sameServerTlsAsMqttCheck",
+        "sameOtaUrlAsMqttCheck",
+        "sameOtaUrlNameAsMqttCheck",
+        "sameOtaUserAsMqttCheck",
+        "sameOtaPassAsMqttCheck",
+        "sameOtaPortAsMqttCheck",
+        "sameOtaTlsAsMqttCheck",
+        "sameNtpUrlAsMqttCheck",
+        "sameNtpUrlNameAsMqttCheck",
+        "sameNtpPortAsMqttCheck",
+        "sameNtpTlsAsMqttCheck"
+      ].forEach((elementId) => {
+        const inputElement = document.getElementById(elementId);
+        if (inputElement !== null) {
+          inputElement.addEventListener("input", syncApInputsFromMqttIfChecked);
+          inputElement.addEventListener("change", syncApInputsFromMqttIfChecked);
+        }
+      });
+
+      refreshAuthState();
+      updateAuthUiState();
+      document.querySelectorAll('input[type="password"][data-password-toggle="true"]').forEach((passwordInputElement) => {
+        if (!(passwordInputElement instanceof HTMLInputElement)) {
+          return;
+        }
+        const parentElement = passwordInputElement.parentElement;
+        if (parentElement === null) {
+          return;
+        }
+        const toggleButton = parentElement.querySelector(".eyeToggleButton");
+        if (!(toggleButton instanceof HTMLButtonElement)) {
+          return;
+        }
+        toggleButton.addEventListener("click", () => {
+          togglePasswordVisibility(passwordInputElement, toggleButton);
+        });
+      });
+      if (getAdminToken().length > 0) {
+        loadWifiUsbInterfaces().catch((error) => appendLog(error.message, "ng"));
+        scanAccessPoints().catch((error) => handleApWorkflowError("AP探索", error));
+        loadKUserStatus().catch((error) => appendLog(error.message, "ng"));
+      }
+      setApWorkflowStatus("info", "待機中");
+      appendLog("管理者画面を開きました。");
+    </script>
+  </body>
+</html>

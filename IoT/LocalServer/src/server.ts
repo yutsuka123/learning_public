@@ -28,9 +28,12 @@ import { keyService } from "./keyService";
 import {
   apConfigureRequestBody,
   commandRequestBody,
+  keyRotationWorkflowStartRequestBody,
   otaCommandRequestBody,
   pairingRequestedSettings,
   pairingWorkflowStartRequestBody,
+  productionWorkflowPrecheckSnapshot,
+  productionWorkflowStartRequestBody,
   rollbackTestCommandRequestBody,
   localServerSettings,
   genericCommandRequestBody
@@ -1378,6 +1381,74 @@ app.post("/api/workflows/pairing/start", async (request: Request, response: Resp
 });
 
 /**
+ * @description Rust 側の KeyRotation workflow を開始するAPI。
+ * @remarks
+ * - [重要] 入力形は Pairing workflow と同じとし、TS 側は新 `keyVersion` と設定の完全性だけを保証する。
+ * - [厳守] workflow 開始後の対ESP32通信や完了判定は Rust 側へ委譲する。
+ */
+app.post("/api/workflows/key-rotation/start", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    if (!USE_SECRET_CORE) {
+      throw new Error("key-rotation workflow start failed. SecretCore is disabled.");
+    }
+    // [重要] 新しい k-user を先に発行し、その後に k-device を再導出した request を workflow へ渡す。
+    // 理由: KeyRotation は旧系統の鍵を再投入する処理ではなく、新系統への切替を対象とするため。
+    await localKeyService.issueKUser();
+    const requestBody = await resolvePairingWorkflowStartRequestBody(
+      request.body as Partial<keyRotationWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+    );
+    const workflowStatus = await secretCoreFacade.runKeyRotationSession(requestBody);
+    response.json({
+      result: "OK",
+      workflow: workflowStatus
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description Rust 側の Production workflow を開始するAPI。
+ * @remarks
+ * - [厳守] TS 側は実行条件と dry-run 意図の検証までに限定し、高リスク手順本体は保持しない。
+ * - [重要] 現段階では workflow 境界固定が主目的であり、不可逆処理の本体は後続実装とする。
+ */
+app.post("/api/workflows/production/start", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    if (!USE_SECRET_CORE) {
+      throw new Error("production workflow start failed. SecretCore is disabled.");
+    }
+    const requestBody = request.body as productionWorkflowStartRequestBody;
+    validateProductionWorkflowStartRequestBody("production workflow start", requestBody);
+    const workflowStatus = await secretCoreFacade.runProductionSecureFlow(requestBody);
+    response.json({
+      result: "OK",
+      workflow: workflowStatus
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
  * @description Rust 側の OTA workflow を開始するAPI。
  * [重要] 初回実装は単一対象機のみを受け付ける。理由: workflow の完了判定と監査単位を明確にするため。
  */
@@ -1924,6 +1995,164 @@ function resolveTargetDeviceNameFromWorkflowTargetId(targetDeviceId: string): st
   });
 
   return matchedDevice?.deviceName ?? normalizedTargetDeviceId;
+}
+
+/**
+ * @description Production workflow 開始要求の最小妥当性を検証する。
+ * @param functionName 呼び出し元関数名。
+ * @param requestBody Production workflow 開始要求。
+ */
+function validateProductionWorkflowStartRequestBody(
+  functionName: string,
+  requestBody: productionWorkflowStartRequestBody
+): void {
+  if (requestBody === undefined || requestBody === null) {
+    throw new Error(`validateProductionWorkflowStartRequestBody failed. functionName=${functionName} requestBody is null.`);
+  }
+  if (String(requestBody.targetDeviceId ?? "").trim().length === 0) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} targetDeviceId is required.`
+    );
+  }
+  if (String(requestBody.runId ?? "").trim().length === 0) {
+    throw new Error(`validateProductionWorkflowStartRequestBody failed. functionName=${functionName} runId is required.`);
+  }
+  if (requestBody.productionSettings === undefined || requestBody.productionSettings === null) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings is required.`
+    );
+  }
+  if (typeof requestBody.productionSettings.dryRun !== "boolean") {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.dryRun must be boolean.`
+    );
+  }
+  if (
+    requestBody.productionSettings.stepPlan !== undefined &&
+    (!Array.isArray(requestBody.productionSettings.stepPlan) ||
+      requestBody.productionSettings.stepPlan.some((stepName) => typeof stepName !== "string" || stepName.trim().length === 0))
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.stepPlan must be string array.`
+    );
+  }
+  if (
+    requestBody.productionSettings.expectedMac !== undefined &&
+    requestBody.productionSettings.expectedMac.trim().length > 0 &&
+    !/^[0-9a-fA-F:-]{12,17}$/.test(requestBody.productionSettings.expectedMac.trim())
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.expectedMac format is invalid.`
+    );
+  }
+  if (
+    requestBody.productionSettings.expectedFirmwareVersion !== undefined &&
+    requestBody.productionSettings.expectedFirmwareVersion.trim().length === 0
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.expectedFirmwareVersion must not be empty when provided.`
+    );
+  }
+  if (
+    requestBody.productionSettings.minimumFreeHeapBytes !== undefined &&
+    (typeof requestBody.productionSettings.minimumFreeHeapBytes !== "number" ||
+      Number.isNaN(requestBody.productionSettings.minimumFreeHeapBytes) ||
+      requestBody.productionSettings.minimumFreeHeapBytes < 0)
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.minimumFreeHeapBytes must be non-negative number.`
+    );
+  }
+  if (
+    requestBody.productionSettings.minimumStackMarginBytes !== undefined &&
+    (typeof requestBody.productionSettings.minimumStackMarginBytes !== "number" ||
+      Number.isNaN(requestBody.productionSettings.minimumStackMarginBytes) ||
+      requestBody.productionSettings.minimumStackMarginBytes < 0)
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.minimumStackMarginBytes must be non-negative number.`
+    );
+  }
+  validateOptionalProductionApCredentials(functionName, requestBody);
+  if (
+    requestBody.productionSettings.precheckSnapshot !== undefined &&
+    requestBody.productionSettings.precheckSnapshot !== null
+  ) {
+    validateProductionWorkflowPrecheckSnapshot(functionName, requestBody.productionSettings.precheckSnapshot);
+  }
+}
+
+/**
+ * @description Production workflow の AP 接続情報の整合性を検証する。
+ * @param functionName 呼び出し元関数名。
+ * @param requestBody Production workflow 開始要求。
+ */
+function validateOptionalProductionApCredentials(
+  functionName: string,
+  requestBody: productionWorkflowStartRequestBody
+): void {
+  const apBaseUrl = String(requestBody.productionSettings.apBaseUrl ?? "").trim();
+  const apUsername = String(requestBody.productionSettings.apUsername ?? "").trim();
+  const apPassword = String(requestBody.productionSettings.apPassword ?? "");
+  const providedFieldCount = [apBaseUrl, apUsername, apPassword].filter((fieldValue) => fieldValue.length > 0).length;
+  if (providedFieldCount !== 0 && providedFieldCount !== 3) {
+    throw new Error(
+      `validateOptionalProductionApCredentials failed. functionName=${functionName} apBaseUrl/apUsername/apPassword must be provided together.`
+    );
+  }
+  if (apBaseUrl.length > 0) {
+    try {
+      const parsedUrl = new URL(apBaseUrl);
+      if (parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") {
+        throw new Error("invalid protocol");
+      }
+    } catch {
+      throw new Error(
+        `validateOptionalProductionApCredentials failed. functionName=${functionName} productionSettings.apBaseUrl must be valid http/https URL.`
+      );
+    }
+  }
+}
+
+/**
+ * @description Production workflow の事前チェック観測値を検証する。
+ * @param functionName 呼び出し元関数名。
+ * @param precheckSnapshot 事前チェック観測値。
+ */
+function validateProductionWorkflowPrecheckSnapshot(
+  functionName: string,
+  precheckSnapshot: productionWorkflowPrecheckSnapshot
+): void {
+  const booleanFieldNameList: Array<keyof productionWorkflowPrecheckSnapshot> = [
+    "targetDeviceMatched",
+    "powerStable",
+    "firmwareVersionApproved",
+    "keyIdVerified",
+    "unsecuredStateConfirmed",
+    "operatorAuthenticated",
+    "stackMarginOk",
+    "heapMarginOk"
+  ];
+  for (const fieldName of booleanFieldNameList) {
+    const fieldValue = precheckSnapshot[fieldName];
+    if (fieldValue !== undefined && typeof fieldValue !== "boolean") {
+      throw new Error(
+        `validateProductionWorkflowPrecheckSnapshot failed. functionName=${functionName} field=${fieldName} must be boolean when provided.`
+      );
+    }
+  }
+  const numberFieldNameList: Array<keyof productionWorkflowPrecheckSnapshot> = [
+    "measuredFreeHeapBytes",
+    "measuredMinStackMarginBytes"
+  ];
+  for (const fieldName of numberFieldNameList) {
+    const fieldValue = precheckSnapshot[fieldName];
+    if (fieldValue !== undefined && (typeof fieldValue !== "number" || Number.isNaN(fieldValue))) {
+      throw new Error(
+        `validateProductionWorkflowPrecheckSnapshot failed. functionName=${functionName} field=${fieldName} must be number when provided.`
+      );
+    }
+  }
 }
 
 /**
