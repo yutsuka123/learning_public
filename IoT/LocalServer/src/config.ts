@@ -49,6 +49,8 @@ export interface appConfig {
   apWifiPassword: string;
   apRoleAdminUsername: string;
   apRoleAdminPassword: string;
+  apRoleMfgUsername: string;
+  apRoleMfgPassword: string;
 }
 
 /**
@@ -167,7 +169,9 @@ export function loadConfig(): appConfig {
     apSsidPrefix: getStringEnv("AP_SSID_PREFIX", "AP-esp32lab-"),
     apWifiPassword: getStringEnv("AP_WIFI_PASSWORD", "pass-esp32"),
     apRoleAdminUsername: getStringEnv("AP_ROLE_ADMIN_USERNAME", "admin"),
-    apRoleAdminPassword: getStringEnv("AP_ROLE_ADMIN_PASSWORD", "change-me")
+    apRoleAdminPassword: getStringEnv("AP_ROLE_ADMIN_PASSWORD", "change-me"),
+    apRoleMfgUsername: getStringEnv("AP_ROLE_MFG_USERNAME", "mfg"),
+    apRoleMfgPassword: getStringEnv("AP_ROLE_MFG_PASSWORD", "change-me")
   };
 
   if (nextConfig.mqttHostName.length === 0) {

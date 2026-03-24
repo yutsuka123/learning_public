@@ -36,14 +36,14 @@ $keyStorePath = Join-Path $InstallRoot "data\keyStore.json"
 
 # [推奨] バックアップ時は LocalServer を停止しておくこと。理由: コピー中の書き込み競合を防ぐため。
 if (-not (Test-Path $keyStorePath)) {
-  Write-Warning "keyStore.json が存在しません。k-user 未発行の可能性があります。path=$keyStorePath"
-  Write-Host "続行するには任意キーを押してください。"
+  Write-Warning "keyStore.json is not found. k-user may not be issued yet. path=$keyStorePath"
+  Write-Host "Press any key to continue."
   $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
   exit 0
 }
 
 New-Item -ItemType Directory -Path $backupDir -Force | Out-Null
 Copy-Item -Path $keyStorePath -Destination (Join-Path $backupDir "keyStore.json") -Force
-Write-Host "[OK] k-user バックアップ用ファイルを退避しました: $backupDir\keyStore.json"
-Write-Host "[補足] 7090 試験後は restore-k-user-after-7090.ps1 で復元するか、手動で data\keyStore.json へコピーしてください。"
-Write-Host "[重要] バックアップ先は機密扱いとし、試験完了後に安全消去すること。"
+Write-Host "[OK] k-user backup file saved: $backupDir\keyStore.json"
+Write-Host "[note] After 7090, restore with restore-k-user-after-7090.ps1 or copy it back to data\keyStore.json manually."
+Write-Host "[important] Treat the backup directory as sensitive data and securely delete it after the work is complete."

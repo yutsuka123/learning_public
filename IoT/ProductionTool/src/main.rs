@@ -9,10 +9,11 @@
 //! 制限事項:
 //! - GUI 本体は未実装（現フェーズは CLI ウィザード）
 //! - 現フェーズのパスワード照合は開発用簡易ハッシュを使用（将来 SHA-256 + pepper に置き換え）
-//! - 対象機情報は現フェーズ手動入力（将来 SecretCore IPC 自動取得へ置き換え）
+//! - 対象機一覧は現フェーズ手動入力（将来 SecretCore IPC 自動取得へ置き換え）
 //! - eFuse / Secure Boot / Flash Encryption の不可逆処理は未実装
 //! 変更:
 //! - 2026-03-18: `004-0009` 対応として PT-002 追加認証・PT-003 対象機確認・PT-005 dry-run のウィザードフローを追加。
+//! - 2026-03-24: PT-002 の操作者ID/作業指示番号を任意化し、作業指示番号空欄時の自動採番を追加。PT-003 は MAC 再入力方式から一覧選択方式へ変更。
 
 mod app_config;
 mod audit_logger;
@@ -26,7 +27,7 @@ use audit_logger::{write_startup_audit_log, StartupAuditLogRecord};
 use auth_screen_state::{attempt_auth, prompt_auth_input, AuthAttemptResult};
 use chrono::Local;
 use device_select_screen_state::{
-    build_placeholder_device_info, prompt_device_verification, verify_device_selection,
+    build_placeholder_device_list, prompt_device_selection, verify_device_selection,
 };
 use dry_run_screen_state::{build_dry_run_steps, run_dry_run};
 use std::env;
@@ -60,6 +61,17 @@ struct StartupSummary {
     summary_message: String,
 }
 
+/// `PT-002` 追加認証の実行ポリシーです。
+#[derive(Debug, Clone)]
+struct AuthPolicy {
+    /// 許可する操作者 ID（空文字なら未固定）。
+    expected_operator_id: String,
+    /// 正解パスワードのハッシュ値です。
+    expected_password_hash: String,
+    /// 最大認証試行回数です。
+    max_attempts: u32,
+}
+
 /// アプリ全体のエラーを表します。
 #[derive(Debug)]
 enum ProductionToolError {
@@ -67,6 +79,10 @@ enum ProductionToolError {
     CurrentDirectoryResolveFailed { source_error: io::Error },
     /// 設定読込に失敗しました。
     ConfigLoadFailed { detail_message: String },
+    /// `.env` 読込に失敗しました。
+    RuntimeEnvLoadFailed { detail_message: String },
+    /// 追加認証設定の読込/検証に失敗しました。
+    AuthPolicyLoadFailed { detail_message: String },
     /// 監査ログ出力に失敗しました。
     AuditWriteFailed { detail_message: String },
     /// `SecretCore` 事前確認に失敗しました。
@@ -89,6 +105,16 @@ impl fmt::Display for ProductionToolError {
             Self::ConfigLoadFailed { detail_message } => write!(
                 formatter,
                 "ProductionToolError::ConfigLoadFailed detail={}",
+                detail_message
+            ),
+            Self::RuntimeEnvLoadFailed { detail_message } => write!(
+                formatter,
+                "ProductionToolError::RuntimeEnvLoadFailed detail={}",
+                detail_message
+            ),
+            Self::AuthPolicyLoadFailed { detail_message } => write!(
+                formatter,
+                "ProductionToolError::AuthPolicyLoadFailed detail={}",
                 detail_message
             ),
             Self::AuditWriteFailed { detail_message } => write!(
@@ -124,6 +150,8 @@ impl std::error::Error for ProductionToolError {}
 async fn main() -> Result<(), ProductionToolError> {
     let project_root_path = resolve_project_root_path()
         .map_err(|source_error| ProductionToolError::CurrentDirectoryResolveFailed { source_error })?;
+    load_runtime_env_file(&project_root_path)?;
+    let auth_policy = load_auth_policy_from_env()?;
 
     // --- PT-001: 起動・SecretCore 確認 ---
     let startup_summary = build_startup_summary(&project_root_path).await?;
@@ -158,16 +186,30 @@ async fn main() -> Result<(), ProductionToolError> {
     }
 
     // --- PT-002: 追加認証 ---
-    // [重要] 現フェーズのパスワードは開発用固定ハッシュを使用する。
+    // [重要] 認証ポリシーは `.env`（未設定時は安全な既定値）から読み込む。
     // [将来対応] 本番実装では SecretCore 側でのパスワード検証へ委任する。
-    // 現フェーズ固定パスワード: "maker2026" の簡易ハッシュ
-    let expected_password_hash = auth_screen_state::sha256_hex_public("maker2026");
-    let max_attempts: u32 = 3;
+    let expected_operator_id = auth_policy.expected_operator_id.trim().to_string();
+    let max_attempts: u32 = auth_policy.max_attempts;
     let mut auth_state = None;
+
+    println!("  認証ポリシー: 操作者 ID は任意入力（空欄可）");
+    if !expected_operator_id.is_empty() {
+        println!(
+            "  認証ポリシー: operatorId 固定値は監査表示のみ（operatorId={})",
+            expected_operator_id
+        );
+    }
+    println!("  認証ポリシー: 最大試行回数={}", max_attempts);
 
     for attempt in 1..=max_attempts {
         let auth_input = prompt_auth_input(attempt, max_attempts);
-        let state = attempt_auth(&auth_input, &expected_password_hash, attempt, max_attempts);
+        let state = attempt_auth(
+            &auth_input,
+            &expected_operator_id,
+            &auth_policy.expected_password_hash,
+            attempt,
+            max_attempts,
+        );
         let result = state.attempt_result.clone();
         println!("  認証結果: {:?}", result);
         println!("  監査: {}", state.audit_label);
@@ -197,17 +239,30 @@ async fn main() -> Result<(), ProductionToolError> {
     };
 
     println!("\n=== PT-002 追加認証 OK ===");
-    println!("  操作者 ID: {}", auth_state.operator_id);
+    if auth_state.operator_id.trim().is_empty() {
+        println!("  操作者 ID: <empty>");
+    } else {
+        println!("  操作者 ID: {}", auth_state.operator_id);
+    }
     println!("  作業指示番号: {}", auth_state.work_order_id);
 
     // --- PT-003: 対象機識別確認 ---
-    let device_info = build_placeholder_device_info();
-    let (entered_serial, entered_mac) = prompt_device_verification(&device_info);
-    let device_state = verify_device_selection(Some(&device_info), &entered_serial, &entered_mac);
+    let device_list = build_placeholder_device_list();
+    let selected_index = prompt_device_selection(&device_list);
+    let device_state = verify_device_selection(&device_list, selected_index);
 
     println!("\n=== PT-003 対象機確認結果 ===");
     println!("  結果: {:?}", device_state.verify_result);
     println!("  監査: {}", device_state.audit_label);
+    if let Some(selected_device) = &device_state.selected_device {
+        println!(
+            "  選択対象: serial={} mac={} publicId={} connection={}",
+            selected_device.serial_number,
+            selected_device.mac_address,
+            selected_device.public_id,
+            selected_device.connection_status_label
+        );
+    }
 
     if !device_state.can_proceed_to_execution_confirm {
         eprintln!(
@@ -245,6 +300,61 @@ async fn main() -> Result<(), ProductionToolError> {
 /// 現在の作業ディレクトリから `ProductionTool` ルートを解決します。
 fn resolve_project_root_path() -> Result<PathBuf, io::Error> {
     env::current_dir()
+}
+
+/// 実行ディレクトリの `.env` を読み込み、環境変数へ反映します。
+fn load_runtime_env_file(project_root_path: &Path) -> Result<(), ProductionToolError> {
+    let env_file_path = project_root_path.join(".env");
+    if !env_file_path.exists() {
+        return Ok(());
+    }
+    dotenvy::from_path(&env_file_path).map_err(|error| ProductionToolError::RuntimeEnvLoadFailed {
+        detail_message: format!(
+            "load_runtime_env_file failed. envFilePath={} detail={}",
+            env_file_path.display(),
+            error
+        ),
+    })?;
+    Ok(())
+}
+
+/// 追加認証ポリシーを環境変数から読み込みます。
+fn load_auth_policy_from_env() -> Result<AuthPolicy, ProductionToolError> {
+    let expected_operator_id = env::var("PRODUCTION_TOOL_AUTH_OPERATOR_ID").unwrap_or_default();
+    let expected_password_plain =
+        env::var("PRODUCTION_TOOL_AUTH_PASSWORD").unwrap_or_else(|_| "maker2026".to_string());
+    if expected_password_plain.trim().is_empty() {
+        return Err(ProductionToolError::AuthPolicyLoadFailed {
+            detail_message:
+                "load_auth_policy_from_env failed. PRODUCTION_TOOL_AUTH_PASSWORD is empty."
+                    .to_string(),
+        });
+    }
+    let expected_password_hash = auth_screen_state::sha256_hex_public(expected_password_plain.trim());
+    let max_attempts = match env::var("PRODUCTION_TOOL_AUTH_MAX_ATTEMPTS") {
+        Ok(raw_value) => raw_value.parse::<u32>().map_err(|error| {
+            ProductionToolError::AuthPolicyLoadFailed {
+                detail_message: format!(
+                    "load_auth_policy_from_env failed. PRODUCTION_TOOL_AUTH_MAX_ATTEMPTS={} parse error={}",
+                    raw_value, error
+                ),
+            }
+        })?,
+        Err(_) => 3,
+    };
+    if max_attempts == 0 {
+        return Err(ProductionToolError::AuthPolicyLoadFailed {
+            detail_message:
+                "load_auth_policy_from_env failed. PRODUCTION_TOOL_AUTH_MAX_ATTEMPTS must be >= 1."
+                    .to_string(),
+        });
+    }
+
+    Ok(AuthPolicy {
+        expected_operator_id,
+        expected_password_hash,
+        max_attempts,
+    })
 }
 
 /// 起動に必要な情報をまとめて収集します。

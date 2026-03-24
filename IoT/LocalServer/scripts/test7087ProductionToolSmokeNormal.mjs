@@ -23,7 +23,7 @@ const productionToolRoot = path.resolve(localServerRoot, "..", "ProductionTool")
 // PT-001 Enter → PT-002 (op, work_order, maker2026) → PT-003 (serial, mac, public_id, fw) → 再入力 (serial, mac)
 const stdinLines = [
   "",                    // PT-001 Enter
-  "op1",                 // 操作者 ID
+  "productiontool",      // 操作者 ID
   "wo1",                 // 作業指示番号
   "maker2026",           // パスワード（正）
   "S001",                // シリアル番号

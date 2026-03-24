@@ -21,6 +21,7 @@ import { writeJsonReport } from "./testCommon.mjs";
 const scriptDirectoryPath = path.dirname(fileURLToPath(import.meta.url));
 const projectRootPath = path.resolve(scriptDirectoryPath, "..");
 const reportsDirectoryPath = path.join(projectRootPath, "logs", "test-reports");
+const networkDiagnosticsDirectoryPath = path.join(projectRootPath, "logs", "net-diagnostics");
 
 /**
  * @param {string[]} argv
@@ -32,6 +33,10 @@ const reportsDirectoryPath = path.join(projectRootPath, "logs", "test-reports");
  *   preflightRetryIntervalMs: number;
  *   runGate: boolean;
  *   strictGate: boolean;
+ *   autoDiagOnPreflightFail: boolean;
+ *   diagInterfaceName: string;
+ *   diagSsidName: string;
+ *   diagTargetHost: string;
  * }}
  */
 function parseArguments(argv) {
@@ -42,8 +47,26 @@ function parseArguments(argv) {
     preflightRetryCount: readNumberOption(argv, "--preflightRetryCount", 1),
     preflightRetryIntervalMs: readNumberOption(argv, "--preflightRetryIntervalMs", 3000),
     runGate: !argv.includes("--skipGate"),
-    strictGate: argv.includes("--strictGate")
+    strictGate: argv.includes("--strictGate"),
+    autoDiagOnPreflightFail: argv.includes("--autoDiagOnPreflightFail"),
+    diagInterfaceName: readStringOption(argv, "--diagInterfaceName", "Wi-Fi_lab"),
+    diagSsidName: readStringOption(argv, "--diagSsidName", "AP-esp32lab-F0D0F94EB580"),
+    diagTargetHost: readStringOption(argv, "--diagTargetHost", "192.168.4.1")
   };
+}
+
+/**
+ * @param {string[]} argv
+ * @param {string} optionName
+ * @param {string} defaultValue
+ * @returns {string}
+ */
+function readStringOption(argv, optionName, defaultValue) {
+  const optionIndex = argv.indexOf(optionName);
+  if (optionIndex < 0 || !argv[optionIndex + 1]) {
+    return defaultValue;
+  }
+  return String(argv[optionIndex + 1]);
 }
 
 /**
@@ -97,6 +120,36 @@ function findLatestReport(prefixText, fileNamePredicate) {
   return {
     fileName: sortedList[0].fileName,
     filePath: sortedList[0].filePath
+  };
+}
+
+/**
+ * `logs/net-diagnostics` から最新の 7041 診断ディレクトリを返す。
+ * @returns {{ directoryName: string; directoryPath: string } | null}
+ */
+function findLatestApDiagnosticDirectory() {
+  if (!fs.existsSync(networkDiagnosticsDirectoryPath)) {
+    return null;
+  }
+  const sortedDirectoryList = fs
+    .readdirSync(networkDiagnosticsDirectoryPath, "utf-8")
+    .filter((directoryName) => /^7041-apdiag-\d{8}-\d{6}$/.test(directoryName))
+    .map((directoryName) => {
+      const directoryPath = path.join(networkDiagnosticsDirectoryPath, directoryName);
+      const stats = fs.statSync(directoryPath);
+      return {
+        directoryName,
+        directoryPath,
+        mtimeMs: stats.mtimeMs
+      };
+    })
+    .sort((leftItem, rightItem) => rightItem.mtimeMs - leftItem.mtimeMs);
+  if (sortedDirectoryList.length === 0) {
+    return null;
+  }
+  return {
+    directoryName: sortedDirectoryList[0].directoryName,
+    directoryPath: sortedDirectoryList[0].directoryPath
   };
 }
 
@@ -166,11 +219,13 @@ async function main() {
   const options = parseArguments(process.argv.slice(2));
   console.log("[7041-pipeline] start");
   console.log(
-    `[7041-pipeline] options skipPreflight=${options.skipPreflight} skipFull=${options.skipFull} summaryCount=${options.summaryCount} preflightRetryCount=${options.preflightRetryCount} preflightRetryIntervalMs=${options.preflightRetryIntervalMs} runGate=${options.runGate} strictGate=${options.strictGate}`
+    `[7041-pipeline] options skipPreflight=${options.skipPreflight} skipFull=${options.skipFull} summaryCount=${options.summaryCount} preflightRetryCount=${options.preflightRetryCount} preflightRetryIntervalMs=${options.preflightRetryIntervalMs} runGate=${options.runGate} strictGate=${options.strictGate} autoDiagOnPreflightFail=${options.autoDiagOnPreflightFail} diagInterfaceName=${options.diagInterfaceName} diagSsidName=${options.diagSsidName} diagTargetHost=${options.diagTargetHost}`
   );
 
   let preflightOk = true;
   let preflightResult = null;
+  let autoDiagResult = null;
+  let latestApDiagnosticDirectoryPath = "";
   if (!options.skipPreflight) {
     const preflightBeforeFileName = findLatestReport("test7041-", isExecutionReportFileName)?.fileName ?? "";
     preflightResult = runStep("preflight", "node", [
@@ -191,6 +246,26 @@ async function main() {
       preflightResult.report = preflightLatestReport.report;
     }
     preflightOk = preflightResult.ok;
+    if (!preflightOk && options.autoDiagOnPreflightFail) {
+      console.log("[7041-pipeline] preflight NG detected. running auto diagnostics.");
+      autoDiagResult = runStep("auto-diagnostics", "npm", [
+        "run",
+        "test:7041:diag",
+        "--",
+        "-interfaceName",
+        options.diagInterfaceName,
+        "-ssidName",
+        options.diagSsidName,
+        "-targetHost",
+        options.diagTargetHost
+      ]);
+      const latestApDiagnosticDirectory = findLatestApDiagnosticDirectory();
+      latestApDiagnosticDirectoryPath = latestApDiagnosticDirectory?.directoryPath ?? "";
+      if (latestApDiagnosticDirectoryPath.length > 0) {
+        autoDiagResult.latestDiagnosticDirectoryPath = latestApDiagnosticDirectoryPath;
+        console.log(`[7041-pipeline] auto diagnostics latestDirectoryPath=${latestApDiagnosticDirectoryPath}`);
+      }
+    }
   } else {
     console.log("[7041-pipeline] preflight skipped by --skipPreflight");
   }
@@ -226,6 +301,49 @@ async function main() {
     summaryResult.report = summaryLatestReport.report;
   }
 
+  /**
+   * パイプラインレポート本体を組み立てる。
+   * [重要] gate 判定スクリプトは最新 `test7041-pipeline-*.json` を参照するため、
+   * gate 実行前にも暫定レポートを保存しておく。
+   *
+   * @param {object | null} gateResultValue
+   * @returns {object}
+   */
+  function buildPipelineReport(gateResultValue) {
+    const gateOkValue = gateResultValue == null ? true : gateResultValue.ok;
+    const pipelineOkValue = preflightOk && (!fullExecuted || fullOk) && summaryResult.ok && gateOkValue;
+    const pipelineRecommendationDetail = preflightOk
+      ? "preflight OK. keep running full test and compare summary."
+      : "preflight NG. fix AP reachability/auth before full execution.";
+    const pipelineRecommendationValue =
+      !preflightOk && latestApDiagnosticDirectoryPath.length > 0
+        ? `${pipelineRecommendationDetail} latestApDiagnosticDirectoryPath=${latestApDiagnosticDirectoryPath}`
+        : pipelineRecommendationDetail;
+    return {
+      testId: "7041-pipeline",
+      startedAt,
+      completedAt: new Date().toISOString(),
+      result: pipelineOkValue ? "OK" : "NG",
+      options,
+      preflight: preflightResult,
+      full: {
+        executed: fullExecuted,
+        ok: fullOk,
+        detail: fullResult
+      },
+      summary: summaryResult,
+      autoDiagnostics: autoDiagResult,
+      latestApDiagnosticDirectoryPath,
+      gate: gateResultValue,
+      pipelineRecommendation: pipelineRecommendationValue
+    };
+  }
+
+  // gate 判定前の暫定レポートを先に保存して、gate 側の参照前提を満たす。
+  const preGatePipelineReport = buildPipelineReport(null);
+  const preGatePipelineReportFilePath = writeJsonReport("test7041-pipeline", preGatePipelineReport);
+  console.log(`[7041-pipeline] preGatePipelineReportFilePath=${preGatePipelineReportFilePath}`);
+
   let gateResult = null;
   if (options.runGate) {
     const gateBeforeFileName = findLatestReport("test7041-gate-")?.fileName ?? "";
@@ -244,26 +362,8 @@ async function main() {
   }
 
   const gateOk = gateResult == null ? true : gateResult.ok;
-  const pipelineOk = preflightOk && (!fullExecuted || fullOk) && summaryResult.ok && gateOk;
-  const pipelineRecommendation = preflightOk
-    ? "preflight OK. keep running full test and compare summary."
-    : "preflight NG. fix AP reachability/auth before full execution.";
-  const pipelineReport = {
-    testId: "7041-pipeline",
-    startedAt,
-    completedAt: new Date().toISOString(),
-    result: pipelineOk ? "OK" : "NG",
-    options,
-    preflight: preflightResult,
-    full: {
-      executed: fullExecuted,
-      ok: fullOk,
-      detail: fullResult
-    },
-    summary: summaryResult,
-    gate: gateResult,
-    pipelineRecommendation
-  };
+  const pipelineReport = buildPipelineReport(gateResult);
+  const pipelineOk = pipelineReport.result === "OK";
   const pipelineReportFilePath = writeJsonReport("test7041-pipeline", pipelineReport);
   console.log(
     `[7041-pipeline] completed pipelineOk=${pipelineOk} preflightOk=${preflightOk} fullExecuted=${fullExecuted} fullOk=${fullOk} summaryOk=${summaryResult.ok} gateOk=${gateOk}`

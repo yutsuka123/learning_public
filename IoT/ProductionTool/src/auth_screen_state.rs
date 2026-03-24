@@ -3,6 +3,8 @@
 //! [重要] 本ファイルは `PT-002` 追加認証画面の入力・結果状態を定義します。
 //! 主な仕様:
 //! - メーカーモード専用パスワードによる追加認証を受け付ける
+//! - 操作者 ID は任意入力とし、空欄入力を許容する
+//! - 作業指示番号が空欄の場合は `YYYYMMDDHHMMSS` 形式の自動採番値を設定する
 //! - 認証失敗時は `PT-007` 安全停止へ遷移する
 //! - パスワード平文は状態構造体へ保持しない
 //! 制限事項:
@@ -20,8 +22,6 @@ pub enum AuthAttemptResult {
     Success,
     /// パスワードが一致しませんでした。
     WrongPassword,
-    /// 操作者 ID が空でした。
-    EmptyOperatorId,
     /// 認証試行回数の上限に達しました。
     MaxAttemptsExceeded,
 }
@@ -63,6 +63,7 @@ pub struct AuthInput {
 ///
 /// # 引数
 /// - `auth_input`: 操作者 ID・作業指示番号・パスワード
+/// - `expected_operator_id`: 許可する操作者 ID（空文字なら未固定）
 /// - `expected_password_hash`: 正解パスワードの SHA-256 ハッシュ（16進文字列）
 /// - `attempt_count`: 現在の試行回数（1始まり）
 /// - `max_attempts`: 最大試行回数
@@ -71,26 +72,11 @@ pub struct AuthInput {
 /// `AuthScreenState`
 pub fn attempt_auth(
     auth_input: &AuthInput,
+    expected_operator_id: &str,
     expected_password_hash: &str,
     attempt_count: u32,
     max_attempts: u32,
 ) -> AuthScreenState {
-    // 操作者 ID の空チェック
-    if auth_input.operator_id.trim().is_empty() {
-        return AuthScreenState {
-            operator_id: auth_input.operator_id.clone(),
-            work_order_id: auth_input.work_order_id.clone(),
-            attempt_count,
-            max_attempts,
-            attempt_result: AuthAttemptResult::EmptyOperatorId,
-            can_proceed_to_device_select: false,
-            audit_label: format!(
-                "auth_failed:emptyOperatorId attempt={}/{}",
-                attempt_count, max_attempts
-            ),
-        };
-    }
-
     // 試行回数上限チェック
     if attempt_count > max_attempts {
         return AuthScreenState {
@@ -106,6 +92,11 @@ pub fn attempt_auth(
             ),
         };
     }
+
+    // [重要] 2026-03-24 仕様変更:
+    // 操作者 ID は任意入力へ変更したため、操作者 ID 固定値チェックは行わない。
+    // 理由: 工場運用での入力過多を減らし、必須条件をメーカーモード専用パスワードへ集約するため。
+    let _normalized_expected_operator_id = expected_operator_id.trim();
 
     // パスワード照合（SHA-256 ハッシュで比較）
     // [厳守] パスワード平文をログや構造体へ保存しない
@@ -173,6 +164,7 @@ fn sha256_hex(input: &str) -> String {
 /// # 戻り値
 /// `AuthInput`（パスワードは実行時のみ保持）
 pub fn prompt_auth_input(attempt_count: u32, max_attempts: u32) -> AuthInput {
+    use chrono::Local;
     use std::io::{self, Write};
 
     println!("--- PT-002 追加認証 ({}/{}) ---", attempt_count, max_attempts);
@@ -192,9 +184,16 @@ pub fn prompt_auth_input(attempt_count: u32, max_attempts: u32) -> AuthInput {
     let mut password_plain = String::new();
     io::stdin().read_line(&mut password_plain).unwrap_or_default();
 
+    let normalized_work_order_id = if work_order_id.trim().is_empty() {
+        // [重要] 空欄時は西暦年月日時分秒で自動採番する（例: 20260324153045）。
+        Local::now().format("%Y%m%d%H%M%S").to_string()
+    } else {
+        work_order_id.trim().to_string()
+    };
+
     AuthInput {
         operator_id: operator_id.trim().to_string(),
-        work_order_id: work_order_id.trim().to_string(),
+        work_order_id: normalized_work_order_id,
         password_plain: password_plain.trim().to_string(),
     }
 }
