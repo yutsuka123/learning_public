@@ -63,7 +63,7 @@ function Write-AuditLog {
     entries       = $script:auditEntries
   }
   $report | ConvertTo-Json -Depth 5 | Set-Content -Path $auditFilePath -Encoding UTF8
-  Write-Host "[監査] ログ保存: $auditFilePath"
+  Write-Host "[audit] log saved: $auditFilePath"
 }
 
 function Secure-DeleteFile {
@@ -77,7 +77,12 @@ function Secure-DeleteFile {
     if ($fi.PSIsContainer) { return }
     $len = $fi.Length
     $bytes = New-Object byte[] $len
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    $randomNumberGenerator = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+      $randomNumberGenerator.GetBytes($bytes)
+    } finally {
+      $randomNumberGenerator.Dispose()
+    }
     [System.IO.File]::WriteAllBytes($FilePath, $bytes)
     Remove-Item $FilePath -Force
     Add-AuditEntry -Path $FilePath -Kind "secure-delete" -Result "ok" -Detail "overwrite+delete bytes=$len"
@@ -104,8 +109,8 @@ function Stop-LocalServerProcess {
 }
 
 if (-not $NoConfirm) {
-  $msg = "LocalServer をアンインストールします。機密データは上書き消去されます。インストールルート: $InstallRoot"
-  $r = Read-Host "$msg`n続行しますか? (y/N)"
+  $msg = "LocalServer uninstall will overwrite-delete sensitive data. installRoot=$InstallRoot"
+  $r = Read-Host "$msg`nContinue? (y/N)"
   if ($r -notmatch '^[yY]') { exit 0 }
 }
 
@@ -137,22 +142,28 @@ foreach ($f in $secureFiles) {
 
 $logsDir = Join-Path $InstallRoot "logs"
 if (Test-Path $logsDir) {
-  Get-ChildItem $logsDir -File -Filter "*.log" -ErrorAction SilentlyContinue | ForEach-Object {
-    try { Secure-DeleteFile -FilePath $_.FullName } catch { Write-Warning "Secure-Delete failed: $($_.FullName) $_" }
+  $logFileList = @(Get-ChildItem $logsDir -File -Filter "*.log" -ErrorAction SilentlyContinue)
+  foreach ($logFile in $logFileList) {
+    $currentFilePath = $logFile.FullName
+    try { Secure-DeleteFile -FilePath $currentFilePath } catch { Write-Warning "Secure-Delete failed: $currentFilePath $($_.Exception.Message)" }
   }
 }
 
 $uploadsDir = Join-Path $InstallRoot "uploads"
 if (Test-Path $uploadsDir) {
-  Get-ChildItem $uploadsDir -File -Recurse -ErrorAction SilentlyContinue | ForEach-Object {
-    try { Secure-DeleteFile -FilePath $_.FullName } catch { Write-Warning "Secure-Delete failed: $($_.FullName) $_" }
+  $uploadFileList = @(Get-ChildItem $uploadsDir -File -Recurse -ErrorAction SilentlyContinue)
+  foreach ($uploadFile in $uploadFileList) {
+    $currentFilePath = $uploadFile.FullName
+    try { Secure-DeleteFile -FilePath $currentFilePath } catch { Write-Warning "Secure-Delete failed: $currentFilePath $($_.Exception.Message)" }
   }
 }
 
 $certsDir = Join-Path $InstallRoot "certs"
 if (Test-Path $certsDir) {
-  Get-ChildItem $certsDir -File -ErrorAction SilentlyContinue | ForEach-Object {
-    try { Secure-DeleteFile -FilePath $_.FullName } catch { Write-Warning "Secure-Delete failed: $($_.FullName) $_" }
+  $certFileList = @(Get-ChildItem $certsDir -File -ErrorAction SilentlyContinue)
+  foreach ($certFile in $certFileList) {
+    $currentFilePath = $certFile.FullName
+    try { Secure-DeleteFile -FilePath $currentFilePath } catch { Write-Warning "Secure-Delete failed: $currentFilePath $($_.Exception.Message)" }
   }
 }
 
@@ -172,5 +183,5 @@ foreach ($d in $dirsToRemove) {
 
 Add-AuditEntry -Path "uninstall" -Kind "finish" -Result "ok"
 Write-AuditLog
-Write-Host "アンインストール完了。監査ログ: $auditFilePath"
-Write-Host "[重要] node_modules / dist / ソースは削除していません。完全削除する場合は手動でインストールルートを削除してください。"
+Write-Host "LocalServer uninstall completed. audit log: $auditFilePath"
+Write-Host "[important] node_modules, dist, and source files are not removed. Delete the install root manually if you need full removal."

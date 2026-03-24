@@ -93,6 +93,9 @@
 - [厳守] `ProductionTool` アンインストーラは `安全消去ポリシー.md` 4.2 の対象（鍵素材、実行履歴、一時ファイル）を上書き消去し、成否を監査ログへ残す。
 - [重要] これらの確定値は `004-0010` 再判定時の「工場端末配布前提が崩れていないこと」の判定基準として扱う。
 - [進捗][2026-03-22] 実装骨格として `ProductionTool/installer/ProductionTool.iss`、`ProductionTool/scripts/build-production-tool-installer.ps1`、`ProductionTool/scripts/uninstall-production-tool.ps1` を追加した。未完了項目は EXE ビルド実施、混在インストール実機確認、7090 による安全消去確認である。
+- [進捗][2026-03-23] `ProductionTool/scripts/install-production-tool.ps1` と install/uninstall 両スモーク試験を追加し、実インストール前の配置/消去を擬似環境で前倒し確認できるようにした。実端末側の未了は `ISCC.exe` 導入、`ProductionToolSetup.exe` 実生成、7090 本試験である。
+- [重要][2026-03-23] `ProductionTool` の 7090 本試験は「`ISCC.exe` 解決確認 -> `ProductionToolSetup.exe` 生成 -> 工場専用端末へ管理者インストール -> 配置確認 -> 1回起動確認 -> `UninstallRun` 経由アンインストール -> `ProgramData` 消去と監査ログ確認」の順で実施する。
+- [厳守][2026-03-23] `ISCC.exe` 未導入、`LocalServer` 混在検知、UAC 権限不足、監査ログ未生成、`keys/work/logs\audit` 残留のいずれかが発生した場合は、7090 本試験を不合格として中断する。
 
 ## 4. 導入要件の最小化
 

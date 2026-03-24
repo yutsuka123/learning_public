@@ -187,6 +187,8 @@ ensureDirectory -directoryPath (Join-Path $ProgramDataRoot "work")
 ensureDirectory -directoryPath (Join-Path $ProgramDataRoot "keys")
 
 copyFileChecked -sourceFilePath $releaseBinaryPath -destinationFilePath (Join-Path $InstallRoot "ProductionTool.exe")
+copyFileChecked -sourceFilePath (Join-Path $projectRootPath ".env.example.sample.txt") -destinationFilePath (Join-Path $InstallRoot ".env.example.sample.txt")
+copyFileChecked -sourceFilePath (Join-Path $projectRootPath ".env") -destinationFilePath (Join-Path $InstallRoot ".env") -OnlyIfMissing
 copyFileChecked -sourceFilePath (Join-Path $projectRootPath "config\productionTool.settings.example.json") -destinationFilePath (Join-Path $InstallRoot "config\productionTool.settings.example.json")
 copyFileChecked -sourceFilePath (Join-Path $projectRootPath "config\productionTool.settings.installed.example.json") -destinationFilePath (Join-Path $InstallRoot "config\productionTool.settings.json") -OnlyIfMissing
 copyFileChecked -sourceFilePath (Join-Path $projectRootPath "README.md") -destinationFilePath (Join-Path $InstallRoot "docs\README.md")

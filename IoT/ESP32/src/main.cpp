@@ -48,9 +48,11 @@ constexpr uint32_t serialBaudRate = 115200;
 /**
  * @brief mainTaskに割り当てるスタックサイズ。
  * @type uint32_t
- * @note [重要] 初期化シーケンスが重いため8192を下限として運用する。
+ * @note [重要] 初期化シーケンスとAPメンテナンスAPI処理が同一タスクで重なるため、12288へ拡張して運用する。
+ * @note [変更][2026-03-24] 7041 dry-run precheck で measuredMinStackMarginBytes=3232 (閾値4096未満) が継続したため、
+ *       PC-007.stackMarginOk を満たすために mainTask の最小余裕を増やす。
  */
-constexpr uint32_t mainTaskStackSize = 8192;
+constexpr uint32_t mainTaskStackSize = 12288;
 /**
  * @brief mainTaskの優先度。
  * @type UBaseType_t

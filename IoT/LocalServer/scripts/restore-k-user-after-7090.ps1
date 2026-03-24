@@ -37,18 +37,18 @@ if ($BackupDir) {
   $sourceDir = Resolve-Path $BackupDir
 } else {
   if (-not (Test-Path $backupBaseDir)) {
-    Write-Error "バックアップが見つかりません。path=$backupBaseDir"
+    Write-Error "Backup base directory is not found. path=$backupBaseDir"
   }
   $latestDir = Get-ChildItem $backupBaseDir -Directory | Sort-Object Name -Descending | Select-Object -First 1
   if (-not $latestDir) {
-    Write-Error "バックアップディレクトリが空です。path=$backupBaseDir"
+    Write-Error "Backup base directory is empty. path=$backupBaseDir"
   }
   $sourceDir = $latestDir.FullName
 }
 
 $keyStoreBackup = Join-Path $sourceDir "keyStore.json"
 if (-not (Test-Path $keyStoreBackup)) {
-  Write-Error "keyStore.json がバックアップに存在しません。path=$keyStoreBackup"
+  Write-Error "keyStore.json is not found in the backup directory. path=$keyStoreBackup"
 }
 
 $dataDir = Join-Path $InstallRoot "data"
@@ -57,6 +57,6 @@ if (-not (Test-Path $dataDir)) {
 }
 
 Copy-Item -Path $keyStoreBackup -Destination (Join-Path $dataDir "keyStore.json") -Force
-Write-Host "[OK] k-user バックアップ用ファイルを復元しました: $dataDir\keyStore.json"
-Write-Host "[補足] LocalServer を起動して k-user 状態を確認してください。"
-Write-Host "[重要] 復元後、バックアップディレクトリは不要になったら安全消去すること。"
+Write-Host "[OK] k-user backup file restored: $dataDir\keyStore.json"
+Write-Host "[note] Start LocalServer and verify the k-user state."
+Write-Host "[important] Securely delete the backup directory when it is no longer needed."

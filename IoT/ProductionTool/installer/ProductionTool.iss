@@ -56,6 +56,8 @@ Name: "{commonappdata}\IoT\InstallerAudit\ProductionTool"
 
 [Files]
 Source: "{#cargoExeSource}"; DestDir: "{app}"; DestName: "{#appExeName}"; Flags: ignoreversion
+Source: "..\.env.example.sample.txt"; DestDir: "{app}"; DestName: ".env.example.sample.txt"; Flags: ignoreversion
+Source: "..\.env"; DestDir: "{app}"; DestName: ".env"; Flags: onlyifdoesntexist
 Source: "..\config\productionTool.settings.example.json"; DestDir: "{app}\config"; Flags: ignoreversion
 Source: "..\config\productionTool.settings.installed.example.json"; DestDir: "{app}\config"; DestName: "productionTool.settings.json"; Flags: onlyifdoesntexist
 Source: "..\README.md"; DestDir: "{app}\docs"; Flags: ignoreversion
