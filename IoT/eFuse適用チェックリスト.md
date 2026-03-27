@@ -36,6 +36,10 @@
 | R-002 | 本番用 `k-iot-secure-boot` / `k-iot-flash-encryption` は未生成であり、試験用鍵のみで確認する前提になっている | `todo.md`, `鍵一覧仕様書.md`, `コマンド仕様書.md` | 未記入 |
 | R-003 | 途中失敗時は旧パーティションから継続起動し、AP メンテナンスで復旧できる前提が維持されている | `設計概要.md`, `OTA仕様書.md` | 未記入 |
 | R-004 | `005-0008` は未完了のままであり、dry-run 成功だけで有効確認完了扱いにしていない | `todo.md`, `ProductionTool画面仕様書.md`, `機能仕様書.md` | 未記入 |
+| R-005 | `7022` の非不可逆版が定義済みであり、`stage_execute` 前中断時の再判定材料と無条件再実行禁止が固定されている | `試験仕様書.md`, `試験記録書.md`, `本番セキュア化出荷準備試験計画書.md` | 未記入 |
+| R-006 | **[致命的][2026-03-26追加]** `sdkconfig.defaults` の NVS Encryption 設定（`CONFIG_NVS_ENCRYPTION=y` 等）と、対応する eFuse HMAC鍵投入（EF-009b）が **同一段階内で完結する** 計画になっている。sdkconfigだけ先行投入してeFuse未投入のFWを運用しない | `本番セキュア化出荷準備試験計画書.md` 5.9, `sdkconfig.defaults`, `todo.md` | 未記入 |
+| R-007 | **[重要][2026-03-26追加]** FWに `secureNvsInit.cpp` のフォールバック実装（HMAC鍵不在時の plaintext NVS init）が含まれていることを `firmwareVersion` で確認済みである（`beta.29` 以降） | `ESP32/src/secureNvsInit.cpp`, `ESP32/header/version.h` | 未記入 |
+| R-008 | **[重要][2026-03-26追加]** PlatformIO/Arduino 環境では `CONFIG_NVS_ENCRYPTION` が C プリプロセッサマクロとして有効にならない場合があることを理解し、`secureNvsInit` の plaintext パスが実態として動作する前提で計画している | `本番セキュア化出荷準備試験計画書.md` 5.9 | 未記入 |
 
 ## 4. ProductionTool 実行前チェック
 - [厳守] `PC-001`〜`PC-008` はすべて `OK` でなければ `stage_execute` へ進まない。
@@ -52,14 +56,20 @@
 | PC-006 | 作業者認証確認 | `ProductionTool` 追加認証、操作者ID、端末識別情報を照合 | 未記入 |
 | PC-007 | スタック余裕確認 | `minimumStackMarginBytes` と実測 stack margin を照合 | 未記入 |
 | PC-008 | 空きヒープ確認 | `minimumFreeHeapBytes` と実測 free heap を照合 | 未記入 |
+| PC-009 | **[致命的][2026-03-26追加]** 段階2(NVS)実行前に、FWが `secureNvsInit` フォールバック（`beta.29`以降）を含むか確認 | `firmwareVersion` 照合、`本番セキュア化出荷準備試験計画書.md` 5.9 | 未記入 |
+| PC-010 | **[致命的][2026-03-26追加]** 段階2(NVS)完了後に AP HTTP 全ロール認証テスト（`/api/health` + `/api/auth/login`×4ロール）を自動実行し、全 OK を確認 | `7041:pipeline:strict` または同等の自動テスト | 未記入 |
+| PC-011 | **[重要][2026-03-26追加]** 段階間でsdkconfigだけ先行変更しeFuse未投入の状態を作っていないこと | `sdkconfig.defaults` と eFuse 実施状況の照合 | 未記入 |
 
 ## 5. 停止条件
 - [厳守] 次のいずれかに該当した場合は、その場で安全停止し `006-0002` 以降へ進まない。
 - `7085` が未達・進入不可のままである。
-- `PC-001`〜`PC-008` の 1 項目でも `NG` または未記入である。
+- `PC-001`〜`PC-011` の 1 項目でも `NG` または未記入である。
 - 試験機リハーサル対象の版数、鍵ID、手順書、証跡保存先のいずれかが未確定である。
 - `005-0008` を未実施のまま完了扱いにしようとしている。
 - 読戻し検証、隔離判定、監査ログ保存の責務境界が文書と実装で一致していない。
+- `7022` の非不可逆版または `006-0011` の試験機リハーサル結果が未整備で、再判定材料なしに先へ進もうとしている。
+- **[致命的][2026-03-26追加]** `sdkconfig.defaults` に NVS Encryption 設定が含まれるが、対応する eFuse HMAC鍵投入が同一段階内に計画されていない（`問題点記録書 #0020` の再発防止条件）。
+- **[致命的][2026-03-26追加]** 段階2(NVS) 完了後の AP HTTP 全ロール認証テストが未計画または `NG` のまま次段階へ進もうとしている。
 
 ## 6. 記録必須項目
 - [厳守] 実施時は次を `試験記録書.md` または作業記録へ残す。
@@ -77,5 +87,79 @@
 - [重要][2026-03-22] 本書はフェーズDの「準備完了」成果物であり、作業者が実際にチェックを書き込むのはフェーズFの試験機リハーサル以降とする。
 - [厳守] 現時点では空欄のまま保持してよいが、項目定義・照合元・停止条件は変更管理なしで崩さない。
 
-## 8. 変更履歴
+## 8. [致命的教訓][2026-03-26] sdkconfig/eFuse/FW の順序依存と段階間不整合の禁止
+
+[重要] 本セクションは `問題点記録書 #0020` の解決結果に基づく。詳細は `本番セキュア化出荷準備試験計画書.md` 5.9 参照。
+
+### 8.1 発生した問題
+
+段階1(FE) 実行時に `sdkconfig.defaults` へ `CONFIG_NVS_ENCRYPTION=y` を追加したが、対応する eFuse HMAC鍵投入（EF-009b / 段階2(NVS)）を同時に実施しなかった。結果:
+- FW は HMAC 鍵前提で NVS を開こうとし `nvs_open failed: NOT_FOUND`
+- AP モードの認証パスワードがロードできず、AP HTTP API が認証不能
+- `7041:pipeline:strict` が `BLOCKED_AP_REACHABILITY` で停止
+
+### 8.2 確立された順序依存ルール
+
+| 順序 | 作業 | タイミング |
+|---|---|---|
+| 1 | `sdkconfig.defaults` に NVS Encryption 関連設定を追加 | 段階2(NVS) の直前ビルドで |
+| 2 | `secureNvsInit.cpp` のフォールバック実装を含む FW をビルド | 同上 |
+| 3 | OTA またはシリアルで FW 反映 | eFuse 投入**前** |
+| 4 | `espefuse burn_key BLOCK_KEY2 ... HMAC_UP`（EF-009b） | FW 反映**後** |
+| 5 | 再起動 → NVS読書き確認 → AP HTTP 全ロール認証確認 | 投入**直後** |
+
+[厳守] sdkconfig 変更と eFuse 投入は「同一段階内」で完結させること。段階間に sdkconfig だけ先行して eFuse 未投入の状態を**絶対に**作らない。
+
+### 8.3 PlatformIO/Arduino 環境の注意
+
+- `sdkconfig.defaults` に `CONFIG_NVS_ENCRYPTION=y` を記載しても、PlatformIO/Arduino ビルドでは C プリプロセッサマクロ `CONFIG_NVS_ENCRYPTION` が有効にならないケースがある
+- `secureNvsInit.cpp` の `#ifdef CONFIG_NVS_ENCRYPTION` 分岐は実態として plaintext パスが常に実行される
+- ESP-IDF ネイティブビルドへ移行する場合は、secure パスの再検証が必須
+
+### 8.4 ProductionTool 自動化フローへの反映
+
+[重要] 今回の知見を ProductionTool の自動化設計（`005-0008` / `006-0013`）へ以下のように反映する。
+
+**段階実行の内部フロー（自動化時の順番チェック）**:
+
+```
+[段階1(FE)]
+  precheck → FE鍵投入(EF-001) → FE有効化(EF-002〜006) → 暗号化バイナリ書込み
+  → readback → reboot → 安定性確認（OTA×2 / AP / STA）
+  → [go/no-go判定]
+
+[段階2(NVS)] ★ sdkconfig/FW/eFuse の三位一体を同一段階内で完結
+  [前提チェック]
+    ☑ FWバージョンが secureNvsInit フォールバック対応版（beta.29以降）であること
+    ☑ sdkconfig.defaults に CONFIG_NVS_ENCRYPTION=y が含まれていること
+    ☑ EF-009b（BLOCK_KEY2 / HMAC_UP）が未投入であること（重複投入防止）
+  precheck → HMAC鍵投入(EF-009b) → readback(KEY_PURPOSE_2=HMAC_UP, RD_DIS)
+  → reboot → NVS読書き確認
+  → AP HTTP 全ロール認証テスト（/api/health + /api/auth/login×4ロール） ★必須
+  → 安定性確認（OTA×2 / AP / STA）
+  → [go/no-go判定]
+
+[段階3(SB)]
+  precheck → SBダイジェスト投入(EF-007) → SB有効化(EF-008) → 未使用slot revoke(EF-009)
+  → RD_DIS write-protect(EF-015) ★すべての burn-key 完了後
+  → 署名済みバイナリ書込み → readback → reboot
+  → 安定性確認（OTA×2 / AP / STA）
+  → [go/no-go判定]
+
+[段階4(封鎖)]
+  precheck → JTAG無効化(EF-010/011) → ENABLE_SECURITY_DOWNLOAD(EF-014) ★最後
+  → readback → 最終起動確認 → 安定性確認
+  → [最終go/no-go判定]
+```
+
+**自動化時の必須チェック項目**:
+1. 各段階の precheck で `espefuse summary` を自動取得し、前段階の eFuse 状態が期待通りであることを機械的に確認
+2. 段階2(NVS) の precheck では `firmwareVersion` が `secureNvsInit` 対応版であることを API 経由で自動確認
+3. 段階2(NVS) の完了判定には AP HTTP 全ロール認証テストを**必須**で含める（省略不可）
+4. `RD_DIS` write-protect（EF-015）は段階3(SB) の **最後**で実行。段階2(NVS) の前に実行すると HMAC鍵の read-protect が設定できなくなる
+5. `ENABLE_SECURITY_DOWNLOAD`（EF-014）は全段階の**最後の最後**で実行。以降 `espefuse` 追加書込み不可
+
+## 9. 変更履歴
+- 2026-03-26: `R-006`〜`R-008`（sdkconfig/eFuse同一段階完結、secureNvsInitフォールバック確認、PlatformIO/Arduino環境注意）を追加。`PC-009`〜`PC-011`（段階2前FW版数確認、段階2後AP全ロール認証、段階間不整合禁止）を追加。停止条件に2項目追加。セクション8（致命的教訓・順序依存ルール・ProductionTool自動化フロー）を新設。理由: `問題点記録書 #0020`（sdkconfig先行/eFuse未投入によるAP HTTP不能）の教訓を量産自動化・チェックリストに恒久的に反映するため。
+- 2026-03-25: `R-005` と停止条件を追加し、`7022` の非不可逆版と `006-0011` の試験機リハーサル結果が揃わない限り先へ進まないことを明記した。理由: `006` の出口条件をチェックリスト側でも同じ基準で扱い、不可逆前の判定ブレを防ぐため。
 - 2026-03-22: 新規作成。理由: `006-0001` として、第3段階 `eFuse` 適用前の確認項目を専用文書へ分離し、`003-0024` の進入判定ゲートと作業単位のチェックリストを混同しないようにするため。

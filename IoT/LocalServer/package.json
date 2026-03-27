@@ -24,8 +24,10 @@
     "test:7041:diag": "powershell -ExecutionPolicy Bypass -File .\\scripts\\collect7041ApConnectivityDiagnostics.ps1",
     "test:7081": "node scripts/test7081BasicStability.mjs",
     "test:7082": "node scripts/test7082SecuredE2E.mjs",
-    "test:7087": "node scripts/test7087ProductionToolSmoke.mjs",
-    "test:7087:normal": "node scripts/test7087ProductionToolSmokeNormal.mjs",
+    "keys:vault:setup": "node scripts/setupKiotKeyVault.mjs",
+    "keys:vault:unlock": "node scripts/unlockKiotKeyVault.mjs",
+    "test:7087": "node scripts/unlockKiotKeyVault.mjs && node scripts/test7087ProductionToolSmoke.mjs",
+    "test:7087:normal": "node scripts/unlockKiotKeyVault.mjs && node scripts/test7087ProductionToolSmokeNormal.mjs",
     "test:7083": "node scripts/test7083OtaDurability.mjs",
     "test:7084": "node scripts/test7084OneHourLoad.mjs",
     "test:8001": "node scripts/test8001MqttAuthFailure.mjs"
