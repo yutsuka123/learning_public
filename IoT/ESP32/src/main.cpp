@@ -32,6 +32,7 @@
 #include "otaRollback.h"
 #include "sensitiveData.h"
 #include "sensitiveDataService.h"
+#include "secureNvsInit.h"
 #include "tcpip.h"
 #include "timeServer.h"
 #include "util.h"
@@ -948,6 +949,14 @@ void setup() {
 
   certificationModule.initialize();
   filesystemModule.initialize();
+
+  // [重要][2026-03-26] NVS Encryption (HMAC方式) の暗号化初期化。
+  // sdkconfig で CONFIG_NVS_ENCRYPTION=y + CONFIG_NVS_SEC_HMAC_EFUSE_KEY_ID=2 を有効にした場合、
+  // Preferences::begin() より前に nvs_flash_secure_init() を呼ばなければ NVS が開けない。
+  // eFuse BLOCK_KEY2 に HMAC_UP 鍵が投入済みであることが前提。
+  // 工程C（本番セキュア化出荷準備試験計画書.md 5.6c）の実装。
+  secureNvsInit::initializeSecureNvs();
+
   sensitiveDataModule.initialize();
   messageService.initialize();
   messageService.registerTaskQueue(appTaskId::kMain, 16);
