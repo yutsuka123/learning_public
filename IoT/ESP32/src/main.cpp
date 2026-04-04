@@ -955,7 +955,13 @@ void setup() {
   // Preferences::begin() より前に nvs_flash_secure_init() を呼ばなければ NVS が開けない。
   // eFuse BLOCK_KEY2 に HMAC_UP 鍵が投入済みであることが前提。
   // 工程C（本番セキュア化出荷準備試験計画書.md 5.6c）の実装。
-  secureNvsInit::initializeSecureNvs();
+  // [重要][2026-04-04] 最終セキュアビルドでは secure 初期化失敗時に false が返るため、
+  // 以降の初期化を続行しない。開発ビルドは secureNvsInit 側で plain fallback 可否を判定する。
+  const bool secureNvsInitializeResult = secureNvsInit::initializeSecureNvs();
+  if (!secureNvsInitializeResult) {
+    appLogError("setup: secureNvsInit::initializeSecureNvs failed. aborting startup for this build.");
+    return;
+  }
 
   sensitiveDataModule.initialize();
   messageService.initialize();
