@@ -3600,7 +3600,7 @@ bool mqttTask::startTask() {
     appLogError("mqttTask creation failed. xTaskCreateStaticPinnedToCore returned null.");
     return false;
   }
-  appLogInfo("mqttTask created.");
+  appLogInfo("mqttTask created. stackBytes=%u", static_cast<unsigned>(taskStackSize));
   return true;
 }
 

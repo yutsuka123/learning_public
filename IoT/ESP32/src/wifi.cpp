@@ -270,7 +270,7 @@ bool wifiTask::startTask() {
     appLogError("wifiTask creation failed. xTaskCreateStaticPinnedToCore returned null.");
     return false;
   }
-  appLogInfo("wifiTask created.");
+  appLogInfo("wifiTask created. stackBytes=%u", static_cast<unsigned>(taskStackSize));
   return true;
 }
 

@@ -17,6 +17,11 @@ class tcpipTask {
   static void taskEntry(void* taskParameter);
   void runLoop();
 
-  static constexpr uint32_t taskStackSize = 3072;
+  /**
+   * @brief TCP/IPタスクスタックサイズ。@type uint32_t
+   * @details
+   * - [変更][2026-04-04] TCP/IP 系の追加ログと原因切り分け余裕を確保するため、最小限として 512 byte 増やす。
+   */
+  static constexpr uint32_t taskStackSize = 3584;
   static constexpr UBaseType_t taskPriority = 1;
 };

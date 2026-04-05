@@ -18,7 +18,7 @@ namespace appVersion {
  * - [重要] 当面の間は書換有無を識別しやすくするため、ESP32へ書き込むたびに `beta.x` の `x` を必ずインクリメントする。
  * - [厳守] `LocalServer/.env` の `OTA_FIRMWARE_VERSION` と同じ値へ合わせる。
  */
-constexpr const char* kFirmwareVersion = "1.1.0-beta.29";
+constexpr const char* kFirmwareVersion = "1.1.0-beta.31";
 
 /**
  * @brief 現在稼働中ファームウェアの書換時刻文字列。
