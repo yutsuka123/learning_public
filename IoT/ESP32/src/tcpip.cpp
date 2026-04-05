@@ -47,7 +47,7 @@ bool tcpipTask::startTask() {
     appLogError("tcpipTask creation failed. xTaskCreateStaticPinnedToCore returned null.");
     return false;
   }
-  appLogInfo("tcpipTask created.");
+  appLogInfo("tcpipTask created. stackBytes=%u", static_cast<unsigned>(taskStackSize));
   return true;
 }
 

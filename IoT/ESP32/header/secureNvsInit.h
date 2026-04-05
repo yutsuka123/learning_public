@@ -43,6 +43,16 @@ namespace secureNvsInit {
  */
 bool initializeSecureNvs();
 
+/**
+ * @brief secure NVS 初期化失敗の持続ログを必要時のみ再出力する。
+ * @details
+ * - [重要][2026-04-04] `esp32s3_secure_final` で secure NVS 初期化に失敗した場合、
+ *   setup() は安全停止するため、起動後にログを見逃さないよう 10 秒ごとに同じ要点を再通知する。
+ * - [重要] 失敗が未発生のときは何もしない。
+ * - [推奨] Arduino `loop()` のような常駐軽量経路から呼び出す。
+ */
+void emitPersistentFailureLogIfNeeded();
+
 }  // namespace secureNvsInit
 
 #endif  // SECURE_NVS_INIT_H

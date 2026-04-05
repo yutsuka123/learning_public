@@ -1330,6 +1330,49 @@ bool sensitiveDataService::ensureDefaultFileExists() {
 
   String existingJsonText;
   if (readJsonText(&existingJsonText, functionName)) {
+    // [重要][修正 2026-04-05] NVS に空の keyDevice が作成済みでも、
+    // LittleFS の legacy sensitiveData.json に実値が残っている場合は再移行を許可する。
+    // 理由: 初期化順序によって空 keyDevice が固定化され、MQTT 暗号化通信が復旧できなくなるため。
+    cJSON* existingRootObject = cJSON_Parse(existingJsonText.c_str());
+    bool hasValidCurrentKeyDevice = false;
+    if (existingRootObject != nullptr && cJSON_IsObject(existingRootObject)) {
+      cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(existingRootObject, credentialsRootKey);
+      if (credentialsObject != nullptr && cJSON_IsObject(credentialsObject)) {
+        const char* currentKeyDeviceChars =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(credentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice));
+        const String currentKeyDevice = currentKeyDeviceChars == nullptr ? "" : String(currentKeyDeviceChars);
+        hasValidCurrentKeyDevice = currentKeyDevice.length() > 0;
+      }
+    }
+    cJSON_Delete(existingRootObject);
+
+    if (hasValidCurrentKeyDevice) {
+      return true;
+    }
+
+    String legacyJsonTextForRecovery;
+    if (readLegacyJsonText(&legacyJsonTextForRecovery, functionName)) {
+      cJSON* legacyRootObject = cJSON_Parse(legacyJsonTextForRecovery.c_str());
+      bool hasValidLegacyKeyDevice = false;
+      if (legacyRootObject != nullptr && cJSON_IsObject(legacyRootObject)) {
+        cJSON* legacyCredentialsObject = cJSON_GetObjectItemCaseSensitive(legacyRootObject, credentialsRootKey);
+        if (legacyCredentialsObject != nullptr && cJSON_IsObject(legacyCredentialsObject)) {
+          const char* legacyKeyDeviceChars =
+              cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(legacyCredentialsObject, iotCommon::mqtt::jsonKey::network::kKeyDevice));
+          const String legacyKeyDevice = legacyKeyDeviceChars == nullptr ? "" : String(legacyKeyDeviceChars);
+          hasValidLegacyKeyDevice = legacyKeyDevice.length() > 0;
+        }
+      }
+      cJSON_Delete(legacyRootObject);
+
+      if (hasValidLegacyKeyDevice) {
+        if (!writeJsonText(legacyJsonTextForRecovery, functionName)) {
+          appLogError("%s failed. writeJsonText for keyDevice recovery migration returned false.", functionName);
+          return false;
+        }
+        appLogWarn("%s recovered keyDevice from legacy LittleFS sensitive data.", functionName);
+      }
+    }
     return true;
   }
 

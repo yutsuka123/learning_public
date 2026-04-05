@@ -7,7 +7,9 @@
  */
 
 #include <Arduino.h>
+#include <esp_err.h>
 #include <esp_system.h>
+#include <esp_ota_ops.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <time.h>
@@ -52,8 +54,24 @@ constexpr uint32_t serialBaudRate = 115200;
  * @note [重要] 初期化シーケンスとAPメンテナンスAPI処理が同一タスクで重なるため、12288へ拡張して運用する。
  * @note [変更][2026-03-24] 7041 dry-run precheck で measuredMinStackMarginBytes=3232 (閾値4096未満) が継続したため、
  *       PC-007.stackMarginOk を満たすために mainTask の最小余裕を増やす。
+ * @note [変更][2026-04-04] secure NVS 初期化ログ強化と最終セキュア化前の診断余裕確保のため、さらに 512 byte 増やす。
+ * @note [変更][2026-04-04b] AP/STA/OTA 事前動作確認と文鎮化時診断用途で、さらに 1024 byte 追加する。
  */
-constexpr uint32_t mainTaskStackSize = 12288;
+constexpr uint32_t mainTaskStackSize = 13824;
+
+#ifndef APP_SECURE_RESCUE_MODE
+#define APP_SECURE_RESCUE_MODE 0
+#endif
+
+/**
+ * @brief setup() が NVS init 失敗で停止したかどうかのフラグ。
+ * @type bool
+ * @note [重要][修正 2026-04-04] loop() から rollback を発動するためのフラグ。
+ *       setup() の NVS 失敗パスで true にセットされ、loop() が検知して rollback を呼ぶ。
+ *       setup() 内で esp_ota_mark_app_invalid_rollback_and_reboot() が正常動作すれば
+ *       loop() には到達しないため、このフラグは保険として機能する。
+ */
+volatile bool setupAbortedByNvsFailure = false;
 /**
  * @brief mainTaskの優先度。
  * @type UBaseType_t
@@ -89,6 +107,13 @@ constexpr uint8_t startupButtonPressedLevel = LOW;
 constexpr uint32_t startupMaintenanceLongPressMs = 3000;
 /** @brief 起動時NTP待ちの上限(ms)。超過時は未同期でもMQTT接続へ進む。@type uint32_t */
 constexpr uint32_t startupNtpWaitMaxMs = 30000;
+/**
+ * @brief status通知（Reply）の定期送信間隔(ms)。
+ * @type uint32_t
+ * @note [重要][修正 2026-04-05] LocalServer 側の offline 判定は status の受信時刻（lastSeenAt）で更新される。
+ *       起動通知のみだと通常運用中に Offline timeout へ遷移するため、Online維持中は Reply を定期送信する。
+ */
+constexpr uint32_t periodicStatusPublishIntervalMs = 30000;
 
 /** @brief Wi-Fi制御タスクサービスインスタンス。 */
 wifiTask wifiService;
@@ -577,6 +602,35 @@ bool shouldAllowStartupMqttWithoutSyncedTime(uint32_t mainTaskEntryCpuMillis) {
 }
 
 /**
+ * @brief 現在のOTAパーティション情報をログ出力する。
+ * @param reasonText 呼び出し理由。
+ * @return なし。
+ * @note [重要][2026-04-05] rollback失敗時の切り分けを容易にするため、running/boot/nextを同時出力する。
+ */
+void logOtaPartitionSnapshot(const char* reasonText) {
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
+  const esp_partition_t* nextUpdatePartition = esp_ota_get_next_update_partition(nullptr);
+  appLogWarn(
+      "logOtaPartitionSnapshot: reason=%s running(label=%s subtype=%u addr=0x%lx size=0x%lx) "
+      "boot(label=%s subtype=%u addr=0x%lx size=0x%lx) "
+      "next(label=%s subtype=%u addr=0x%lx size=0x%lx)",
+      reasonText != nullptr ? reasonText : "(none)",
+      (runningPartition != nullptr && runningPartition->label != nullptr) ? runningPartition->label : "(null)",
+      static_cast<unsigned>(runningPartition != nullptr ? runningPartition->subtype : 0),
+      static_cast<unsigned long>(runningPartition != nullptr ? runningPartition->address : 0),
+      static_cast<unsigned long>(runningPartition != nullptr ? runningPartition->size : 0),
+      (bootPartition != nullptr && bootPartition->label != nullptr) ? bootPartition->label : "(null)",
+      static_cast<unsigned>(bootPartition != nullptr ? bootPartition->subtype : 0),
+      static_cast<unsigned long>(bootPartition != nullptr ? bootPartition->address : 0),
+      static_cast<unsigned long>(bootPartition != nullptr ? bootPartition->size : 0),
+      (nextUpdatePartition != nullptr && nextUpdatePartition->label != nullptr) ? nextUpdatePartition->label : "(null)",
+      static_cast<unsigned>(nextUpdatePartition != nullptr ? nextUpdatePartition->subtype : 0),
+      static_cast<unsigned long>(nextUpdatePartition != nullptr ? nextUpdatePartition->address : 0),
+      static_cast<unsigned long>(nextUpdatePartition != nullptr ? nextUpdatePartition->size : 0));
+}
+
+/**
  * @brief メインタスク本体。将来ここから各機能タスクを起動する。
  * @param taskParameter タスク引数（未使用）。
  * @return なし（無限ループ）。
@@ -635,6 +689,20 @@ void mainTaskEntry(void* taskParameter) {
       appLogError("mainTaskEntry: failed to start maintenance AP mode. fallback to normal startup.");
     }
   }
+
+#if APP_SECURE_RESCUE_MODE == 1
+  // [重要][2026-04-05] rescueビルドは「ログ採取と回復操作専用」のため、通常のSTA/MQTT/OTA処理を起動しない。
+  appLogWarn(
+      "mainTaskEntry: APP_SECURE_RESCUE_MODE=1. entering maintenance AP only. "
+      "Wi-Fi STA/MQTT/OTA tasks are intentionally skipped.");
+  const bool rescueApModeResult = startMaintenanceApModeAndHold(&i2cModule);
+  if (!rescueApModeResult) {
+    ledController::indicateAbortPattern();
+    appLogFatal("mainTaskEntry: rescue mode failed to enter maintenance AP mode.");
+  }
+  vTaskDelete(nullptr);
+  return;
+#endif
 
 
   // [重要] 起動時に機密設定を読み込み、将来NVS移行時も同等手順を維持する。
@@ -759,6 +827,7 @@ void mainTaskEntry(void* taskParameter) {
   uint32_t lastWifiRetryAtMs = 0;
   uint32_t lastMqttRetryAtMs = 0;
   uint32_t lastPublishRetryAtMs = 0;
+  uint32_t lastPeriodicStatusPublishAtMs = 0;
   uint32_t lastNtpCheckAtMs = 0;
   uint32_t lastNtpRetryAtMs = 0;
 
@@ -793,6 +862,7 @@ void mainTaskEntry(void* taskParameter) {
           lastWifiRetryAtMs = 0;
           lastMqttRetryAtMs = 0;
           lastPublishRetryAtMs = 0;
+          lastPeriodicStatusPublishAtMs = 0;
         } else if (receivedMessage.sourceTaskId == appTaskId::kMqtt) {
           // [重要] MQTT系エラー時はMQTT再接続→ReConnect publishを即再試行する。
           isMqttReady = false;
@@ -800,6 +870,7 @@ void mainTaskEntry(void* taskParameter) {
           shouldRunNtpReconnectAfterPublish = true;
           lastMqttRetryAtMs = 0;
           lastPublishRetryAtMs = 0;
+          lastPeriodicStatusPublishAtMs = 0;
         } else if (receivedMessage.sourceTaskId == appTaskId::kTimeServer) {
           // [重要] NTP系エラー時はNTP再同期タイマをリセットして短周期再試行へ戻す。
           lastNtpRetryAtMs = 0;
@@ -816,6 +887,7 @@ void mainTaskEntry(void* taskParameter) {
       isWifiReady = false;
       isMqttReady = false;
       shouldPublishReconnectStatus = true;
+      lastPeriodicStatusPublishAtMs = 0;
       if (lastWifiRetryAtMs == 0 || (nowMs - lastWifiRetryAtMs >= reconnectRetryIntervalMs)) {
         lastWifiRetryAtMs = nowMs;
         startDisplayResult = i2cModule.requestLcdText("WIFI RECONNECT", "", 0);
@@ -886,6 +958,25 @@ void mainTaskEntry(void* taskParameter) {
       }
     }
 
+    if (isWifiReady &&
+        isMqttReady &&
+        isStartupStatusPublished &&
+        !shouldPublishReconnectStatus &&
+        (lastPeriodicStatusPublishAtMs == 0 || (nowMs - lastPeriodicStatusPublishAtMs >= periodicStatusPublishIntervalMs))) {
+      // [重要][修正 2026-04-05] LocalServer の offline 判定回避のため、Online維持中は Reply を定期送信する。
+      // [理由] test:7083 直後の非コマンド時間帯でも lastSeenAt を更新し、offline timeout への誤遷移を防ぐため。
+      lastPeriodicStatusPublishAtMs = nowMs;
+      bool periodicPublishResult = executeMqttStatusPublishAndConfirm(
+          mainTaskEntryCpuMillis,
+          iotCommon::mqtt::subCommand::status::kReply,
+          "PeriodicReply");
+      if (!periodicPublishResult) {
+        appLogWarn("mainTaskEntry: periodic status publish failed. sub=Reply");
+      } else {
+        appLogInfo("mainTaskEntry: periodic status publish completed. sub=Reply");
+      }
+    }
+
     bool shouldCheckNtp = (!isUtcTimeSynchronized()) || (nowMs - lastNtpCheckAtMs >= ntpCheckIntervalMs);
     if (shouldRunNtpReconnectAfterPublish) {
       shouldCheckNtp = true;
@@ -946,6 +1037,8 @@ void setup() {
              static_cast<unsigned>(ESP.getPsramSize()),
              static_cast<unsigned>(ESP.getFreePsram()),
              static_cast<unsigned>(ESP.getFreeHeap()));
+  appLogInfo("setup: configured mainTaskStackSize=%u bytes before secure NVS initialization.",
+             static_cast<unsigned>(mainTaskStackSize));
 
   certificationModule.initialize();
   filesystemModule.initialize();
@@ -960,7 +1053,21 @@ void setup() {
   const bool secureNvsInitializeResult = secureNvsInit::initializeSecureNvs();
   if (!secureNvsInitializeResult) {
     appLogError("setup: secureNvsInit::initializeSecureNvs failed. aborting startup for this build.");
-    return;
+    appLogError("setup: startup stopped before sensitiveDataModule/messageService/mainTask launch. see secureNvsInit logs for the failing stage.");
+    // [重要][修正 2026-04-04] OTA rollback 自動発動のため、起動失敗時は現OTAアプリを無効化して再起動する。
+    // 理由: setup() で return するだけでは bootloader が rollback を検知できず旧ファームに戻れないため。
+    // CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y の場合、無効化 → 再起動でブートローダが前パーティションを選択する。
+    appLogError("setup: marking current OTA app as invalid and rebooting to trigger rollback...");
+    logOtaPartitionSnapshot("secureNvsInit failed before rollback");
+    setupAbortedByNvsFailure = true;
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_err_t rollbackResult = esp_ota_mark_app_invalid_rollback_and_reboot();
+    appLogError("setup: rollback API returned unexpectedly. result=0x%x (%s). forcing esp_restart.",
+                static_cast<unsigned>(rollbackResult),
+                esp_err_to_name(rollbackResult));
+    // esp_ota_mark_app_invalid_rollback_and_reboot() はリブートするため、以下には到達しない。
+    // フォールバックとして esp_restart() を呼ぶ（念のため）。
+    esp_restart();
   }
 
   sensitiveDataModule.initialize();
@@ -998,5 +1105,22 @@ void setup() {
  * @note [推奨] 業務処理はmainTask/各機能タスクで実施し、loop()は軽量維持する。
  */
 void loop() {
+  // [重要][修正 2026-04-04] setup() が NVS 失敗で停止した場合、rollback を発動して旧ファームに戻す。
+  // setup() で esp_ota_mark_app_invalid_rollback_and_reboot() が動けばここには到達しないが、
+  // 万が一 setup() の return で到達した場合の保険として rollback を再度呼ぶ。
+  if (setupAbortedByNvsFailure) {
+    appLogError("loop: setupAbortedByNvsFailure detected. forcing rollback again...");
+    logOtaPartitionSnapshot("loop fallback rollback retry");
+    vTaskDelay(pdMS_TO_TICKS(500));
+    esp_err_t rollbackResult = esp_ota_mark_app_invalid_rollback_and_reboot();
+    appLogError("loop: rollback API returned unexpectedly. result=0x%x (%s). forcing esp_restart.",
+                static_cast<unsigned>(rollbackResult),
+                esp_err_to_name(rollbackResult));
+    esp_restart();
+  }
+
+  // [重要][2026-04-04] 最終セキュアビルドで secure NVS 初期化に失敗した場合でも、
+  // setup() で停止したまま原因ログを見逃さないよう、10 秒ごとに要点だけ再通知する。
+  secureNvsInit::emitPersistentFailureLogIfNeeded();
   vTaskDelay(pdMS_TO_TICKS(1000));
 }

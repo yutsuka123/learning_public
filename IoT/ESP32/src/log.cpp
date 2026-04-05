@@ -82,8 +82,12 @@ constexpr uint32_t fileLogFailureAutoDisableThreshold = 3;
 uint32_t fileLogConsecutiveFailureCount = 0;
 /** @brief ファイルログ書込みキュー長。 */
 constexpr uint32_t fileLogQueueLength = 64;
-/** @brief ファイルログ書込みタスクのスタックサイズ。 */
-constexpr uint32_t fileLogWriterTaskStackSize = 6144;
+/**
+ * @brief ファイルログ書込みタスクのスタックサイズ。
+ * @details
+ * - [変更][2026-04-04] セキュア化最終版の診断ログ増加を見込みつつ、過剰確保を避けるため 512 byte のみ加算する。
+ */
+constexpr uint32_t fileLogWriterTaskStackSize = 6656;
 /** @brief ファイルログ書込みタスク優先度。 */
 constexpr UBaseType_t fileLogWriterTaskPriority = 0;
 /** @brief ファイルログ1行の最大文字数（終端含む）。 */
@@ -260,6 +264,10 @@ bool ensureFileLogWriterReady() {
       fileLogWriterTaskStackBuffer,
       &fileLogWriterTaskControlBlock,
       tskNO_AFFINITY);
+  if (fileLogWriterTaskHandle != nullptr) {
+    appLogInfo("ensureFileLogWriterReady: fileLogWriterTask created. stackBytes=%u",
+               static_cast<unsigned>(fileLogWriterTaskStackSize));
+  }
   return (fileLogWriterTaskHandle != nullptr);
 }
 
