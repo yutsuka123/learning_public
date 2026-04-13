@@ -28,6 +28,7 @@
 - java/INSTALL.md, java/README.md
 - kotlin/INSTALL.md, kotlin/README.md
 - python/INSTALL.md, python/README.md
+- python/examples/README.md, python/examples/pytorch_practice.py, python/examples/fastapi_practice.py, python/examples/django_minimal/README.md
 - typescript/INSTALL.md, typescript/README.md
 - rust/INSTALL.md, rust/README.md  # 2025-12-30 追加: Rustサンプルを追加したため
 

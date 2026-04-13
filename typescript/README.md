@@ -80,6 +80,10 @@ typescript/
 - 詳細な型注釈と日本語コメント
 - モダンな開発ツールチェーンの活用
 
+## 他言語との対比と Node.js 活用
+
+- `LANGUAGE_COMPARISON_AND_NODEJS.md` … TypeScript と **C# / C / C++** の思想差、**Node.js** での得意分野・注意点を整理
+
 ## 開発環境セットアップ
 ```bash
 # Node.js と npm のインストール後

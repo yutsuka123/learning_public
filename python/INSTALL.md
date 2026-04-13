@@ -364,6 +364,14 @@ python hello_world.py
 
 # PyTorch サンプルの実行
 python pytorch_sample.py
+
+# 実践例（分割版: PyTorch / FastAPI / Django）
+# 詳細は examples/README.md を参照
+cd examples
+python pytorch_practice.py
+# FastAPI: pip install "fastapi>=0.110" "uvicorn[standard]>=0.27"
+# uvicorn fastapi_practice:app --reload --port 8000
+# Django: django_minimal/README.md の手順（migrate / runserver）
 ```
 
 #### **Jupyter Notebook の起動**

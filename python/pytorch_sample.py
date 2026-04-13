@@ -1,5 +1,6 @@
 """
 PyTorch サンプルプログラム
+[推奨] 分割版の実践入門は `python/examples/pytorch_practice.py` と `python/examples/README.md` を参照。
 概要: PyTorchライブラリを使用した基本的な行列計算とニューラルネットワークのサンプル
 主な仕様:
 - テンソル操作の基本

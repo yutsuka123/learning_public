@@ -3,6 +3,8 @@
 ## 📋 概要
 TypeScript開発のための環境セットアップ手順を説明します。型安全なJavaScript開発、最新のECMAScript機能、React/Node.js連携に対応した開発環境を構築します。
 
+C# や C/C++ との対比、Node.js での活用の整理は `LANGUAGE_COMPARISON_AND_NODEJS.md` を参照してください。
+
 ## ✅ 前提条件
 - Windows 10/11 または macOS、Linux
 - 管理者権限でのコマンド実行が可能
