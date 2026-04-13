@@ -358,7 +358,7 @@ async fn handle_client(
                                     error: Some("mqtt_publish failed. Missing topic".into()),
                                 }
                             } else {
-                                match mqtt_transport::publish_message(topic, payload, qos).await {
+                                match mqtt_receiver_manager.publish_message(topic, payload, qos).await {
                                     Ok(()) => IpcResponse {
                                         status: "ok".to_string(),
                                         data: Some(serde_json::json!({
