@@ -7,7 +7,7 @@
 // 変更日: 2026-03-15 Stage7 OTA workflow を追加。理由: 003-0012 の「開始後監視と完了判定」責務を Rust 側へ寄せるため。
 
 use crate::key_manager::KeyManager;
-use crate::mqtt_transport::{self, DeviceStateSummaryDto, MqttReceiverManager};
+use crate::mqtt_transport::{DeviceStateSummaryDto, MqttReceiverManager};
 use rand::RngExt;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -142,6 +142,7 @@ impl OtaWorkflowManager {
         }
 
         let publish_result = publish_ota_command(
+            mqtt_receiver_manager.as_ref(),
             &key_manager,
             &target_device_name,
             &manifest_url,
@@ -286,6 +287,7 @@ impl OtaWorkflowManager {
 }
 
 async fn publish_ota_command(
+    mqtt_receiver_manager: &MqttReceiverManager,
     key_manager: &KeyManager,
     target_device_name: &str,
     manifest_url: &str,
@@ -315,7 +317,7 @@ async fn publish_ota_command(
     .map_err(|e| format!("publish_ota_command failed. payload serialize error={}", e))?;
     let encoded_payload_text = encode_outgoing_payload(key_manager, target_device_name, &plain_payload_text)?;
     let topic = format!("esp32lab/call/otaStart/{}", target_device_name);
-    mqtt_transport::publish_message(&topic, &encoded_payload_text, 1).await
+    mqtt_receiver_manager.publish_message(&topic, &encoded_payload_text, 1).await
 }
 
 fn encode_outgoing_payload(key_manager: &KeyManager, target_device_name: &str, plain_payload_text: &str) -> Result<String, String> {

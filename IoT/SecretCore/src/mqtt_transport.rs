@@ -8,7 +8,7 @@
 // 変更日: 2026-03-15 Stage5 offline timeout判定を追加。理由: `DeviceRegistry` の状態遷移責務をさらに Rust 側へ移すため。
 
 use crate::key_manager::KeyManager;
-use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, Outgoing, QoS, TlsConfiguration, Transport};
+use rumqttc::{AsyncClient, Event, Incoming, MqttOptions, QoS, TlsConfiguration, Transport};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -26,7 +26,6 @@ struct MqttRuntimeConfig {
     username: String,
     password: String,
     ca_path: PathBuf,
-    connect_timeout_ms: u64,
     source_id: String,
     status_offline_timeout_seconds: u64,
 }
@@ -177,6 +176,7 @@ pub struct MqttReceiverManager {
     is_started: Mutex<bool>,
     event_queue: Mutex<VecDeque<MqttInboundEventDto>>,
     device_state_map: Mutex<HashMap<String, DeviceStateDto>>,
+    active_client: Mutex<Option<AsyncClient>>,
     max_queue_len: usize,
 }
 
@@ -186,6 +186,7 @@ impl MqttReceiverManager {
             is_started: Mutex::new(false),
             event_queue: Mutex::new(VecDeque::new()),
             device_state_map: Mutex::new(HashMap::new()),
+            active_client: Mutex::new(None),
             max_queue_len: 1024,
         }
     }
@@ -216,6 +217,44 @@ impl MqttReceiverManager {
             queue_guard.push_back(timeout_event);
         }
         Ok(queue_guard.drain(..).collect())
+    }
+
+    pub async fn publish_message(&self, topic: &str, payload: &str, qos: u8) -> Result<(), String> {
+        let qos_value = match qos {
+            0 => QoS::AtMostOnce,
+            1 => QoS::AtLeastOnce,
+            2 => QoS::ExactlyOnce,
+            _ => {
+                return Err(format!(
+                    "publish_message failed. qos must be 0..2. actual={}",
+                    qos
+                ))
+            }
+        };
+
+        // [重要] broker 側で同一資格情報の多重接続が切断される環境があるため、
+        // publish 専用の別接続を張らず、受信常駐クライアントを共有する。
+        let active_client = {
+            let active_client_guard = self.active_client.lock().map_err(|e| {
+                format!(
+                    "publish_message failed. active-client lock error={} topic={}",
+                    e, topic
+                )
+            })?;
+            active_client_guard.clone()
+        }
+        .ok_or_else(|| {
+            format!(
+                "publish_message failed. active mqtt receiver client is unavailable. topic={}",
+                topic
+            )
+        })?;
+
+        active_client
+            .publish(topic.to_string(), qos_value, false, payload.as_bytes().to_vec())
+            .await
+            .map_err(|e| format!("publish_message failed. active client enqueue error. topic={} error={}", topic, e))?;
+        Ok(())
     }
 
     pub async fn wait_for_status_recovery(
@@ -289,6 +328,7 @@ impl MqttReceiverManager {
 
     async fn run_receiver_loop(self: Arc<Self>, key_mgr: Arc<KeyManager>) {
         loop {
+            let _ = self.replace_active_client(None);
             let runtime_config = match load_runtime_config() {
                 Ok(runtime_config) => runtime_config,
                 Err(e) => {
@@ -312,6 +352,9 @@ impl MqttReceiverManager {
                 match eventloop.poll().await {
                     Ok(Event::Incoming(Incoming::ConnAck(_))) => {
                         was_connected = true;
+                        if let Err(e) = self.replace_active_client(Some(client.clone())) {
+                            self.push_error_event(format!("replace_active_client failed. detail={}", e));
+                        }
                         self.push_simple_event("connected", None);
                         if let Err(e) = subscribe_notice_topics(&client).await {
                             self.push_error_event(format!("subscribe_notice_topics failed. detail={}", e));
@@ -335,6 +378,7 @@ impl MqttReceiverManager {
                     }
                     Ok(_) => {}
                     Err(e) => {
+                        let _ = self.replace_active_client(None);
                         if was_connected {
                             self.push_simple_event("disconnected", Some(format!("broker poll error. detail={}", e)));
                         }
@@ -348,6 +392,15 @@ impl MqttReceiverManager {
                 }
             }
         }
+    }
+
+    fn replace_active_client(&self, next_client: Option<AsyncClient>) -> Result<(), String> {
+        let mut active_client_guard = self
+            .active_client
+            .lock()
+            .map_err(|e| format!("replace_active_client failed. active-client lock error={}", e))?;
+        *active_client_guard = next_client;
+        Ok(())
     }
 
     fn push_error_event(&self, detail: String) {
@@ -507,7 +560,6 @@ fn load_runtime_config() -> Result<MqttRuntimeConfig, String> {
         username: get_env_string("MQTT_USERNAME", "esp32lab_mqtt"),
         password: get_env_string("MQTT_PASSWORD", "esp32lab_mqtt_pass32"),
         ca_path: PathBuf::from(get_env_string("MQTT_TLS_CA_PATH", "../ESP32/src/MQTT/ca.crt")),
-        connect_timeout_ms: get_env_u64("MQTT_CONNECT_TIMEOUT_MS", 15_000)?,
         source_id: get_env_string("LOCAL_SERVER_SOURCE_ID", "local-server-001"),
         status_offline_timeout_seconds: get_env_u64("STATUS_OFFLINE_TIMEOUT_SECONDS", 90)?,
     })
@@ -1046,69 +1098,3 @@ fn resolve_device_name_from_topic(topic: &str) -> String {
     topic.split('/').last().unwrap_or("").to_string()
 }
 
-pub async fn publish_message(topic: &str, payload: &str, qos: u8) -> Result<(), String> {
-    let config = load_runtime_config()?;
-    let mqtt_options = create_mqtt_options(&config, "tx")?;
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, 10);
-    let qos_value = match qos {
-        0 => QoS::AtMostOnce,
-        1 => QoS::AtLeastOnce,
-        2 => QoS::ExactlyOnce,
-        _ => {
-            return Err(format!(
-                "publish_message failed. qos must be 0..2. actual={}",
-                qos
-            ))
-        }
-    };
-
-    let publish_topic = topic.to_string();
-    let publish_payload = payload.as_bytes().to_vec();
-    let mut publish_task = Some(tokio::spawn(async move {
-        client
-            .publish(publish_topic, qos_value, false, publish_payload)
-            .await
-            .map_err(|e| format!("publish_message failed. publish enqueue error={}", e))
-    }));
-
-    let deadline = Instant::now() + Duration::from_millis(config.connect_timeout_ms);
-    let mut enqueue_completed = false;
-
-    loop {
-        if Instant::now() >= deadline {
-            return Err(format!(
-                "publish_message failed. timeout topic={} timeout_ms={}",
-                topic, config.connect_timeout_ms
-            ));
-        }
-        if !enqueue_completed && publish_task.as_ref().is_some_and(|task| task.is_finished()) {
-            publish_task
-                .take()
-                .expect("publish_task must exist before completion check")
-                .await
-                .map_err(|e| format!("publish_message failed. join error={}", e))??;
-            enqueue_completed = true;
-        }
-
-        match eventloop.poll().await {
-            Ok(Event::Incoming(Incoming::PubAck(_))) if qos == 1 => {
-                return Ok(());
-            }
-            Ok(Event::Outgoing(Outgoing::Publish(_))) if qos == 0 => {
-                return Ok(());
-            }
-            Ok(Event::Incoming(Incoming::PubComp(_))) if qos == 2 => {
-                return Ok(());
-            }
-            Ok(_) => {
-                sleep(Duration::from_millis(10)).await;
-            }
-            Err(e) => {
-                return Err(format!(
-                    "publish_message failed. broker_host={} port={} topic={} error={}",
-                    config.broker_host_name, config.broker_port, topic, e
-                ));
-            }
-        }
-    }
-}
