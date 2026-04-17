@@ -22,6 +22,8 @@
 - [厳守] eFuse 実行機能は `ProductionTool` 専用とし、LocalServer では提供しない。
 
 ## 2. セットアップ
+[重要][2026-04-18] ESP32 を **Wi‑Fi STA** で接続し、PC 上の本サーバと **同一LAN** で使う場合の起動順・ブローカ前提は、`IoT/日常運用_LocalServerとSTA接続_クイックリファレンス.md` を参照する。理由: README はモジュール固有設定に集中し、全体運用の入口を一本化するため。
+
 1. `env.example.sample.txt` をコピーして `.env` を作成する。
 2. `.env` の値を環境に合わせて編集する。
 3. [重要] 通信先は `*_HOST_NAME` と `*_HOST_IP` の両方を設定する。
@@ -86,6 +88,7 @@
 - [厳守] `ProductionTool` 専用の eFuse 最終有効化機能は、本READMEの通常運用スコープへ含めない。
 
 ## 9. 変更履歴
+- 2026-04-18: §2 セットアップ冒頭に `日常運用_LocalServerとSTA接続_クイックリファレンス.md` への参照を追加。理由: STA 同一LAN運用時の起動順を README と索引の双方から辿れるようにするため。
 - 2026-03-21: `key-rotation/start` を [進捗] へ更新し、新 `k-user` 発行 + 新 `k-device` 再導出 + Pairing secure bundle 再利用、および `npm run test:7040` を追記。理由: README 上の workflow 現在地を最新実装へ合わせるため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` とは別ソフト・独立動作であることを追記。理由: 通常運用 README でも名称統一と責務分離を明確化するため。
 - 2026-03-16: ESP32 AP 側 `POST /api/pairing/transport-handshake` と、Rust 側 P-256 ECDH handshake を README へ反映。理由: Pairing workflow が secure transport の実ハンドシェイクまで進み、残課題が encrypted bundle 本体送達以降へ絞られたため。
