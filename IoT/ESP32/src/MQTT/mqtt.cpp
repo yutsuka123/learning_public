@@ -62,8 +62,8 @@ bool isTerminalOtaPhase(const char* phaseText) {
 /**
  * @brief MQTT向けTLSクライアント。
  * @details
+ * - [重要] DNS名を正規経路としつつ、DNS不達時はIP退避も選べるようにする。
  * - [重要] IP直指定で接続する場合でも、証明書検証はDNSホスト名で実施する。
- * - [重要] DNS障害時の暫定フォールバック（IP接続）でもTLS検証を維持する。
  * - [禁止] 証明書検証の無効化（setInsecure）は使用しない。
  */
 class MqttTlsClient : public WiFiClientSecure {
@@ -91,20 +91,17 @@ class MqttTlsClient : public WiFiClientSecure {
     bool hostAvailable = (tlsHostName_ != nullptr && strlen(tlsHostName_) > 0);
     bool caAvailable = (tlsCaCertificate_ != nullptr && strlen(tlsCaCertificate_) > 0);
     if (!hostAvailable || !caAvailable) {
-      appLogWarn("MqttTlsClient::connect fallback to default verification path. ip=%s port=%ld hostAvailable=%d caAvailable=%d",
-                 ip.toString().c_str(),
-                 static_cast<long>(port),
-                 hostAvailable ? 1 : 0,
-                 caAvailable ? 1 : 0);
       return WiFiClientSecure::connect(ip, port);
     }
 
-    // [重要] DNS解決失敗時のIP接続でも、証明書照合はDNS名（tlsHostName_）で行う。
     return WiFiClientSecure::connect(ip, port, tlsHostName_, tlsCaCertificate_, nullptr, nullptr);
   }
 
   /**
    * @brief DNS失敗時に使うフォールバックIPを設定する。
+   * @details
+   * - [重要] DNS不達時でも接続経路を確保したいときに使う。
+   * - [推奨] 正規ホスト名の検証文脈は維持する。
    * @param fallbackIp フォールバック接続先IP。
    */
   void setFallbackEndpointIp(IPAddress fallbackIp) {
@@ -3004,7 +3001,7 @@ bool pingBrokerHost(const char* brokerHost) {
     const bool configuredIpAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
     const bool configuredIpParseResult = configuredIpAvailable && configuredIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
     if (configuredIpParseResult) {
-      // [重要] 現在仕様: IPが設定されている場合は、DNS試行より先にIP直指定で疎通を確認する。
+      // [重要] DNS試行より先にIP直指定で疎通を確認する。
       brokerIpAddress = configuredIpAddress;
       appLogWarn("pingBrokerHost: configured IP will be used before DNS. brokerHost=%s configuredIp=%s",
                  brokerHost,

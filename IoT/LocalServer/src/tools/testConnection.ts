@@ -12,6 +12,7 @@ import fs from "fs";
 import { loadConfig } from "../config";
 
 const config = loadConfig();
+// [重要] DNS優先だが、DNS未解決環境ではIPを併用して到達性を確保する。
 const connectHost = config.mqttFallbackIp.length > 0 ? config.mqttFallbackIp : config.mqttHost;
 const brokerUrl = `${config.mqttProtocol}://${connectHost}:${config.mqttPort}`;
 const testTopic = "esp32lab/call/status/all";
