@@ -153,7 +153,7 @@ class OtaTlsClient : public WiFiClientSecure {
     bool hostAvailable = (tlsHostName_ != nullptr && strlen(tlsHostName_) > 0);
     bool caAvailable = (tlsCaCertificate_ != nullptr && strlen(tlsCaCertificate_) > 0);
     if (!hostAvailable || !caAvailable) {
-      appLogWarn("OtaTlsClient::connect fallback to default path. ip=%s port=%u hostAvailable=%d caAvailable=%d",
+      appLogWarn("OtaTlsClient::connect used default verification path. ip=%s port=%u hostAvailable=%d caAvailable=%d",
                  ip.toString().c_str(),
                  static_cast<unsigned>(port),
                  hostAvailable ? 1 : 0,
@@ -413,7 +413,7 @@ bool resolveOtaTargetIp(const otaUrlInfo& urlInfo, IPAddress* resolvedIpAddressO
   if (strlen(SENSITIVE_OTA_FALLBACK_IP) > 0 && fallbackIpAddress.fromString(SENSITIVE_OTA_FALLBACK_IP)) {
     *resolvedIpAddressOut = fallbackIpAddress;
     *fallbackUsedOut = true;
-    appLogWarn("resolveOtaTargetIp configured IP will be used before DNS. host=%s configuredIp=%s",
+    appLogWarn("resolveOtaTargetIp fallback will be used. host=%s fallbackIp=%s",
                urlInfo.host.c_str(),
                fallbackIpAddress.toString().c_str());
     return true;

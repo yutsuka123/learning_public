@@ -308,6 +308,7 @@ export class mqttGateway implements deviceTransport {
    * @returns MQTTクライアント。
    */
   private createClient(): MqttClient {
+    // [重要] DNS優先だが、DNS未解決環境ではIPを併用して到達性を確保する。
     const connectHost = this.config.mqttFallbackIp.length > 0 ? this.config.mqttFallbackIp : this.config.mqttHost;
     const brokerUrl = `${this.config.mqttProtocol}://${connectHost}:${this.config.mqttPort}`;
     const options: IClientOptions = {

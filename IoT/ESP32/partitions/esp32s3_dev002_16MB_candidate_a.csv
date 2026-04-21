@@ -1,0 +1,14 @@
+# ESP32-S3 16MB partition table candidate A for DEV-002
+# Purpose: expand OTA app slots to 4MB each while keeping 100KB NVS,
+# standard otadata, 6MB filesystem, and a 128KB coredump area.
+# Status: approved candidate for DEV-002 verification.
+# Reserved gap 0x24000-0x2FFFF keeps app0 on a 0x10000 boundary.
+# Reserved gap 0xE30000-0xFDFFFF is left for future expansion.
+#
+# name,      type, subtype,  offset,   size,     flags
+nvs,         data, nvs,      0x9000,   0x19000,
+otadata,     data, ota,      0x22000,  0x2000,
+app0,        app,  ota_0,    0x30000,  0x400000,
+app1,        app,  ota_1,    0x430000, 0x400000,
+spiffs,      data, spiffs,   0x830000, 0x600000,
+coredump,    data, coredump, 0xFE0000, 0x020000,

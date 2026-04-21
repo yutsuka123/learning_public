@@ -11,6 +11,9 @@
 
 [将来対応] Mosquitto から AWS IoT Core へ段階移行できるよう、トピック設計を先に共通化しておく。
 
+[推奨] `Mosquitto_TLS_IDパスワード設定手順書.md` は、TLS + ID/パスワード設定だけを素早く辿るための詳細手順書として使う。  
+理由: 本書は全体まとめ、詳細手順書は設定実施の最短導線として役割を分けるため。
+
 ## 1. 全体構成
 
 ```text
@@ -82,6 +85,16 @@ cd "C:\Program Files\Mosquitto"
 
 [重要] `-v` で接続失敗理由（証明書・認証・ポート）を即確認できる。  
 理由: ESP32側ログだけでは切り分けに時間がかかるため。
+
+### 2.7 011-0006向けの最小導線
+[重要] `mosquitto` の TLS + ID/パスワード設定は、まず「TLSで起動できること」と「認証で接続できること」を分けて確認する。  
+理由: TLS と認証を同時に崩すと、どこで失敗しているかが分からなくなるため。
+
+1. `listener 8883`、`cafile`、`certfile`、`keyfile`、`password_file`、`allow_anonymous false` を `mosquitto.conf` にそろえる。
+2. `mosquitto_passwd` で認証ユーザーを作成する。
+3. `mosquitto -v` または `.\mosquitto.exe -c .\mosquitto-test.conf -v` で起動する。
+4. `mosquitto_sub` / `mosquitto_pub` で TLS 接続と認証を確認する。
+5. ESP32 からは CA 証明書だけを使い、サーバー秘密鍵は配置しない。
 
 ## 3. 認証ユーザー作成
 
@@ -364,8 +377,8 @@ client.on("message", (topic, msg) => {
 - ESP32側確認:
   - `hostByName failed`（DNS未解決）は継続するが、フォールバックIP経由で `connectToMqttBroker success. state=0` を確認。
   - `mqtt init done` を確認し、起動時のMQTT初期化フロー完了を確認。
-- [厳守] 暫定対応としての `SENSITIVE_MQTT_FALLBACK_IP` は新ルータ導入後に廃止する。  
-  理由: 本来はDNS名運用（FQDN）を第一経路とし、フォールバック依存を残さないため。
+- [重要] `SENSITIVE_MQTT_FALLBACK_IP` は DNS 不達時の補助経路として使う。DNS 名が解決できない環境では IP 退避で接続を継続できるようにする。  
+  理由: DNS サーバー不在や一時的不達に備えて、運用継続性を確保するため。
 
 ### 11.3 新ルータ導入までの暫定運用ポリシー（1週間）
 [重要] 新ルータ導入予定日（目安: 2026-03-14）までは、現行LANでの暫定運用を継続する。  
@@ -378,12 +391,15 @@ client.on("message", (topic, msg) => {
   4) TLS検証  
   5) MQTT認証
 - [推奨] 1日1回、`mosquitto_pub/sub` とESP32ログをセットで保存し、再発を早期検知する。
-- [将来対応] 新ルータ導入後は `mqtt.esplab.home.arpa -> 172.17.1.100` 固定運用へ移行し、フォールバックIPを停止する。
+- [重要] 新ルータ導入後も `mqtt.esplab.home.arpa -> 172.17.1.100` を正規経路としつつ、フォールバック IP も併用して運用する。
 
 [推奨] PC側CLI (`mosquitto_pub/sub`) とESP32ログをセットで確認する。  
 理由: ネットワーク/DNS/証明書/認証のどこで失敗しているかを早く特定できるため。
 
 ## 12. 変更履歴
+- 2026-04-21: `SENSITIVE_MQTT_FALLBACK_IP` を DNS/IP 併用へ更新。理由: DNS 単独運用では危険なため、DNS 不達時の IP 退避を残す方針へ戻すため。
+- 2026-04-21: `011-0006` 向けに、TLS + ID/パスワード設定の最小導線を追記。理由: `mosquitto` の TLS 設定と認証設定を切り分けて確認できるようにするため。
+- 2026-04-21: `Mosquitto_TLS_IDパスワード設定手順書.md` への参照導線を追加。理由: 詳細手順を独立文書として切り出し、索引と実作業の両方で迷わないようにするため。
 - 2026-03-08: 鍵名称表記を `k-device` へ統一。理由: 鍵管理設計書の正式名称へ合わせるため。
 - 2026-03-06: 新規作成。理由: MQTT over TLS 構成の再現手順と運用上の注意点を一元化するため。
 - 2026-03-06: 検証用起動コマンド（`.\mosquitto.exe -c .\mosquitto-test.conf -v`）と、DNS失敗→IP運用→証明書調整の経緯を追記。
