@@ -37,9 +37,9 @@
 | R-003 | 途中失敗時は旧パーティションから継続起動し、AP メンテナンスで復旧できる前提が維持されている | `設計概要.md`, `OTA仕様書.md` | 未記入 |
 | R-004 | `005-0008` は未完了のままであり、dry-run 成功だけで有効確認完了扱いにしていない | `todo.md`, `ProductionTool画面仕様書.md`, `機能仕様書.md` | 未記入 |
 | R-005 | `7022` の非不可逆版が定義済みであり、`stage_execute` 前中断時の再判定材料と無条件再実行禁止が固定されている | `試験仕様書.md`, `試験記録書.md`, `本番セキュア化出荷準備試験計画書.md` | 未記入 |
-| R-006 | **[致命的][2026-03-26追加]** `sdkconfig.defaults` の NVS Encryption 設定（`CONFIG_NVS_ENCRYPTION=y` 等）と、対応する eFuse HMAC鍵投入（EF-009b）が **同一段階内で完結する** 計画になっている。sdkconfigだけ先行投入してeFuse未投入のFWを運用しない | `本番セキュア化出荷準備試験計画書.md` 5.9, `sdkconfig.defaults`, `todo.md` | 未記入 |
-| R-007 | **[重要][2026-03-26追加]** FWに `secureNvsInit.cpp` のフォールバック実装（HMAC鍵不在時の plaintext NVS init）が含まれていることを `firmwareVersion` で確認済みである（`beta.29` 以降） | `ESP32/src/secureNvsInit.cpp`, `ESP32/header/version.h` | 未記入 |
-| R-008 | **[重要][2026-03-26追加]** PlatformIO/Arduino 環境では `CONFIG_NVS_ENCRYPTION` が C プリプロセッサマクロとして有効にならない場合があることを理解し、`secureNvsInit` の plaintext パスが実態として動作する前提で計画している | `本番セキュア化出荷準備試験計画書.md` 5.9 | 未記入 |
+| R-006 | **[旧仕様][2026-04-23]** NVS Encryption 設定（`CONFIG_NVS_ENCRYPTION=y` 等）と eFuse HMAC鍵投入を同一段階で完結させる案は採用見送りとする。`todo.md` では NVS暗号化をクローズ済みとして扱う | `本番セキュア化出荷準備試験計画書.md` 5.6c, `todo_old20260423.md` | 退避 |
+| R-007 | **[旧仕様][2026-04-23]** `secureNvsInit.cpp` の HMAC鍵不在時 fallback 前提は採用見送りとする。`beta.29` の履歴は残すが、現行の必須確認ではない | `ESP32/src/secureNvsInit.cpp`, `ESP32/header/version.h` | 退避 |
+| R-008 | **[旧仕様][2026-04-23]** PlatformIO/Arduino 環境での `CONFIG_NVS_ENCRYPTION` 取り扱い注意は、NVS暗号化クローズに伴う参考情報として残す | `本番セキュア化出荷準備試験計画書.md` 5.6c | 退避 |
 
 ## 4. ProductionTool 実行前チェック
 - [厳守] `PC-001`〜`PC-008` はすべて `OK` でなければ `stage_execute` へ進まない。
