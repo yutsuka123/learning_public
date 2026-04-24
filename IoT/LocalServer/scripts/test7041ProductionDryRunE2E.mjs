@@ -42,7 +42,7 @@ function parseArguments(argv) {
   const minimumStackMarginBytes = readNumberOption(argv, "--minimumStackMarginBytes", 4096);
   const pollTimeoutMs = readNumberOption(argv, "--pollTimeoutMs", 90000);
   const pollIntervalMs = readNumberOption(argv, "--pollIntervalMs", 2000);
-  const preflightRetryCount = readNumberOption(argv, "--preflightRetryCount", 1);
+  const preflightRetryCount = readNumberOption(argv, "--preflightRetryCount", 3);
   const preflightRetryIntervalMs = readNumberOption(argv, "--preflightRetryIntervalMs", 3000);
   const skipApPreflight = argv.includes("--skipApPreflight");
   const preflightOnly = argv.includes("--preflightOnly");
@@ -131,6 +131,8 @@ function sleepMilliseconds(waitMilliseconds) {
 
 /**
  * AP preflight を複数回リトライする。
+ * [重要][修正理由] 起動直後や Wi-Fi 再接続直後は AP が一瞬だけ不安定になることがあるため、
+ *                単発失敗で即 NG にせず、短い間隔で再試行して環境揺らぎを吸収する。
  * @param {{
  *   apBaseUrl: string;
  *   apMfgUsername: string;

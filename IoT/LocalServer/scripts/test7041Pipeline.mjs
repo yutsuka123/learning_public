@@ -44,7 +44,7 @@ function parseArguments(argv) {
     skipPreflight: argv.includes("--skipPreflight"),
     skipFull: argv.includes("--skipFull"),
     summaryCount: readNumberOption(argv, "--summaryCount", 2),
-    preflightRetryCount: readNumberOption(argv, "--preflightRetryCount", 1),
+    preflightRetryCount: readNumberOption(argv, "--preflightRetryCount", 3),
     preflightRetryIntervalMs: readNumberOption(argv, "--preflightRetryIntervalMs", 3000),
     runGate: !argv.includes("--skipGate"),
     strictGate: argv.includes("--strictGate"),
