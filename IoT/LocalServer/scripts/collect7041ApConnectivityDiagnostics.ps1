@@ -134,14 +134,17 @@ function Export-WlanEvents {
         message = $eventItem.Message
       }
     }
+    $eventObjectListArray = @($eventObjectList)
 
     $eventJsonPath = Join-Path $runDirectoryPath "wlan-events.json"
-    $eventObjectList | ConvertTo-Json -Depth 8 | Set-Content -Path $eventJsonPath -Encoding UTF8
+    $eventObjectListArray | ConvertTo-Json -Depth 8 | Set-Content -Path $eventJsonPath -Encoding UTF8
 
     $eventSummaryObject = [PSCustomObject]@{
-      totalCount = $eventObjectList.Count
+      # [重要][修正理由] 単一イベント時は PSCustomObject に Count プロパティが生えないため、
+      #                配列化してから件数を読む。ここで落ちると診断証跡そのものが保存できない。
+      totalCount = $eventObjectListArray.Count
       idCount = @(
-        $eventObjectList |
+        $eventObjectListArray |
           Group-Object -Property id |
           Sort-Object -Property Count -Descending |
           ForEach-Object {

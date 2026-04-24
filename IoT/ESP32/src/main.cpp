@@ -642,6 +642,16 @@ void mainTaskEntry(void* taskParameter) {
   (void)taskParameter;
   const uint32_t mainTaskEntryCpuMillis = millis();
 
+  // [重要] 起動時長押しは、LEDや各種タスク初期化より前に最優先で判定する。
+  // [理由] 起動後しばらく経ってから見ると、押下そのものが終わってしまいAPモードへ入れないため。
+  if (detectStartupMaintenanceLongPress()) {
+    appLogWarn("mainTaskEntry: startup long press requested maintenance mode before normal startup.");
+    const bool apModeResult = startMaintenanceApModeAndHold(nullptr);
+    if (!apModeResult) {
+      appLogError("mainTaskEntry: failed to start maintenance AP mode from startup long press. continue normal startup.");
+    }
+  }
+
   // [重要] 起動時は青LEDを一旦消灯後0.5秒待機してから点灯する。
   ledController::initializeByMainOnBoot();
   appLogInfo("mainTask started.");
@@ -678,10 +688,6 @@ void mainTaskEntry(void* taskParameter) {
   }
 
   bool shouldEnterMaintenanceAp = maintenanceMode::consumeMaintenanceModeRequest();
-  if (!shouldEnterMaintenanceAp && detectStartupMaintenanceLongPress()) {
-    shouldEnterMaintenanceAp = true;
-    appLogWarn("mainTaskEntry: startup long press requested maintenance mode.");
-  }
   if (shouldEnterMaintenanceAp) {
     appLogWarn("mainTaskEntry: maintenance mode request consumed. start AP maintenance mode.");
     const bool apModeResult = startMaintenanceApModeAndHold(&i2cModule);

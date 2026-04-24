@@ -107,30 +107,41 @@ export async function loginAsMaintenanceApAdmin() {
  * @returns {Promise<{ token: string; apHttpBaseUrl: string }>}
  */
 export async function loginToMaintenanceAp(apHttpBaseUrl, username, password) {
-  const response = await fetch(`${apHttpBaseUrl}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      username,
-      password
-    })
-  });
-  const responseText = await response.text();
-  const responseJson = parseJsonResponseText("loginToMaintenanceAp", responseText, {
-    apHttpBaseUrl,
-    status: response.status
-  });
-  if (!response.ok || responseJson.result !== "OK" || !responseJson.token) {
+  try {
+    const response = await fetch(`${apHttpBaseUrl}/api/auth/login`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username,
+        password
+      })
+    });
+    const responseText = await response.text();
+    const responseJson = parseJsonResponseText("loginToMaintenanceAp", responseText, {
+      apHttpBaseUrl,
+      status: response.status
+    });
+    if (!response.ok || responseJson.result !== "OK" || !responseJson.token) {
+      throw new Error(
+        `loginToMaintenanceAp failed. apHttpBaseUrl=${apHttpBaseUrl} username=${String(username)} status=${response.status} result=${String(
+          responseJson.result
+        )} detail=${String(responseJson.detail ?? "")}`
+      );
+    }
+    return {
+      token: String(responseJson.token),
+      apHttpBaseUrl
+    };
+  } catch (error) {
+    const causeMessage = String(error?.cause?.message ?? "");
+    const causeCode = String(error?.cause?.code ?? "");
+    const errorName = String(error?.name ?? "");
     throw new Error(
-      `loginToMaintenanceAp failed. apHttpBaseUrl=${apHttpBaseUrl} username=${String(username)} status=${response.status} result=${String(
-        responseJson.result
-      )} detail=${String(responseJson.detail ?? "")}`
+      `loginToMaintenanceAp failed. apHttpBaseUrl=${apHttpBaseUrl} username=${String(username)} errorName=${errorName} detail=${String(
+        error?.message ?? error
+      )} causeCode=${causeCode} causeMessage=${causeMessage}`
     );
   }
-  return {
-    token: String(responseJson.token),
-    apHttpBaseUrl
-  };
 }
 
 /**
