@@ -43,7 +43,7 @@ export class DeviceRegistry {
 
     const nextState: deviceState = {
       deviceName: normalizedDeviceName,
-      publicId: status.publicId,
+      publicId: this.resolveInitialPublicId(status.publicId, status.macAddr, normalizedDeviceName),
       configVersion: status.configVersion,
       srcId: status.srcId,
       dstId: status.dstId,
@@ -101,7 +101,7 @@ export class DeviceRegistry {
     const previousState = this.deviceMap.get(normalizedDeviceName);
     const nextState: deviceState = {
       deviceName: normalizedDeviceName,
-      publicId: previousState?.publicId ?? "",
+      publicId: previousState?.publicId ?? this.resolveInitialPublicId("", previousState?.macAddr ?? "", normalizedDeviceName),
       configVersion: previousState?.configVersion ?? "",
       srcId: otaProgress.srcId,
       dstId: otaProgress.dstId,
@@ -145,7 +145,7 @@ export class DeviceRegistry {
     const isSuccess = trh.result.toUpperCase() === "OK";
     const nextState: deviceState = {
       deviceName: normalizedDeviceName,
-      publicId: previousState?.publicId ?? "",
+      publicId: previousState?.publicId ?? this.resolveInitialPublicId("", previousState?.macAddr ?? "", normalizedDeviceName),
       configVersion: previousState?.configVersion ?? "",
       srcId: trh.srcId,
       dstId: trh.dstId,
@@ -267,4 +267,37 @@ export class DeviceRegistry {
     }
     return false;
   }
+
+  /**
+   * @description 受信済みpublicIdが空欄なら、MAC由来の初期名へ補完する。
+   * @param receivedPublicId 受信したpublicId。
+   * @param macAddr 受信したMACアドレス。
+   * @param fallbackDeviceName MACが欠損した場合の最終フォールバック。
+   * @returns 保存すべきpublicId。
+   */
+  private resolveInitialPublicId(receivedPublicId: string, macAddr: string, fallbackDeviceName: string): string {
+    const trimmedPublicId = receivedPublicId.trim();
+    if (trimmedPublicId.length > 0) {
+      return trimmedPublicId;
+    }
+    const initialPublicId = this.createInitialPublicIdFromMacAddress(macAddr);
+    if (initialPublicId.length > 0) {
+      return initialPublicId;
+    }
+    return fallbackDeviceName;
+  }
+
+  /**
+   * @description MACアドレス文字列から `IoT_<MACコロン除去>` を生成する。
+   * @param macAddr MACアドレス文字列。
+   * @returns 初期publicId。MAC不正時は空文字。
+   */
+  private createInitialPublicIdFromMacAddress(macAddr: string): string {
+    const normalizedMac = macAddr.replace(/[^0-9a-fA-F]/g, "").trim();
+    if (normalizedMac.length === 0) {
+      return "";
+    }
+    return `IoT_${normalizedMac.toUpperCase()}`;
+  }
+
 }

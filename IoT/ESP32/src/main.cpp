@@ -51,13 +51,14 @@ constexpr uint32_t serialBaudRate = 115200;
 /**
  * @brief mainTaskに割り当てるスタックサイズ。
  * @type uint32_t
- * @note [重要] 初期化シーケンスとAPメンテナンスAPI処理が同一タスクで重なるため、12288へ拡張して運用する。
+ * @note [重要] 初期化シーケンスとAPメンテナンスAPI処理が同一タスクで重なるため、15KBへ拡張して運用する。
  * @note [変更][2026-03-24] 7041 dry-run precheck で measuredMinStackMarginBytes=3232 (閾値4096未満) が継続したため、
  *       PC-007.stackMarginOk を満たすために mainTask の最小余裕を増やす。
  * @note [変更][2026-04-04] secure NVS 初期化ログ強化と最終セキュア化前の診断余裕確保のため、さらに 512 byte 増やす。
- * @note [変更][2026-04-04b] AP/STA/OTA 事前動作確認と文鎮化時診断用途で、さらに 1024 byte 追加する。
+ * @note [変更][2026-04-04b] AP/STA/OTA 事前動作確認と文鎮化時診断用途で、さらに 1024 byte 追加し、きりのよい 15KB に合わせる。
+ * @note [推奨] 15KB は 15360 byte であり、12288 byte 運用から 3072 byte の余裕を追加した構成とする。
  */
-constexpr uint32_t mainTaskStackSize = 13824;
+constexpr uint32_t mainTaskStackSize = 15360;
 
 #ifndef APP_SECURE_RESCUE_MODE
 #define APP_SECURE_RESCUE_MODE 0

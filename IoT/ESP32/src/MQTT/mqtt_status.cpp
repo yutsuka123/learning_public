@@ -406,6 +406,9 @@ bool buildMqttStatusPayload(const char* subName,
   if (!resolveSenderNameText(&senderNameText)) {
     return false;
   }
+  // [重要] 初期 public_id は送信元名と同じ IoT_<BaseMacNoColon> 形式を使う。
+  // [理由] AP 初回接続時に server 側へも同じ初期識別子を渡し、未ペアリング状態でも空欄にしないため。
+  String publicIdText = senderNameText;
   String networkMacAddressText;
   if (!createNetworkMacAddressText(&networkMacAddressText, macAddressText)) {
     return false;
@@ -458,6 +461,7 @@ bool buildMqttStatusPayload(const char* subName,
       {iotCommon::mqtt::jsonKey::status::kVersion, jsonValueType::kString, "1", 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kDstId, jsonValueType::kString, "all", 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kSrcId, jsonValueType::kString, senderNameText.c_str(), 0, 0, false},
+      {"publicId", jsonValueType::kString, publicIdText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kKind, jsonValueType::kString, "Notice", 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kMacAddr, jsonValueType::kString, macAddressText.c_str(), 0, 0, false},
       {iotCommon::mqtt::jsonKey::status::kMacAddrNetwork, jsonValueType::kString, networkMacAddressText.c_str(), 0, 0, false},
