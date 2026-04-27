@@ -2028,6 +2028,14 @@ function validateProductionWorkflowStartRequestBody(
     );
   }
   if (
+    requestBody.productionSettings.allowIrreversibleExecution !== undefined &&
+    typeof requestBody.productionSettings.allowIrreversibleExecution !== "boolean"
+  ) {
+    throw new Error(
+      `validateProductionWorkflowStartRequestBody failed. functionName=${functionName} productionSettings.allowIrreversibleExecution must be boolean when provided.`
+    );
+  }
+  if (
     requestBody.productionSettings.stepPlan !== undefined &&
     (!Array.isArray(requestBody.productionSettings.stepPlan) ||
       requestBody.productionSettings.stepPlan.some((stepName) => typeof stepName !== "string" || stepName.trim().length === 0))
