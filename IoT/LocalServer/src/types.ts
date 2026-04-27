@@ -280,6 +280,12 @@ export interface productionWorkflowPrecheckSnapshot {
  */
 export interface productionWorkflowSettings {
   dryRun: boolean;
+  /**
+   * [重要] 不可逆工程を許可する明示フラグ。
+   * [厳守] `006-0011` など、手順書と試験記録で許可を確認した場合のみ `true` にする。
+   * [禁止] 既定で `true` にしない。
+   */
+  allowIrreversibleExecution?: boolean;
   stepPlan?: string[];
   operatorComment?: string;
   expectedSerial?: string;

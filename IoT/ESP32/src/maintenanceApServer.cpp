@@ -15,6 +15,7 @@
 #include <cctype>
 #include <cstring>
 #include <esp_system.h>
+#include <esp_ota_ops.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <mbedtls/base64.h>
@@ -181,6 +182,11 @@ bool loadRolePasswordsFromPreferences() {
   if (loadedMfgPassword.length() > 0) {
     mfgRoleCredential.password = loadedMfgPassword;
   }
+  appLogInfo("loadRolePasswordsFromPreferences summary. userLoaded=%d maintLoaded=%d adminLoaded=%d mfgLoaded=%d",
+             static_cast<int>(loadedUserPassword.length() > 0),
+             static_cast<int>(loadedMaintenancePassword.length() > 0),
+             static_cast<int>(loadedAdminPassword.length() > 0),
+             static_cast<int>(loadedMfgPassword.length() > 0));
   return true;
 }
 
@@ -213,6 +219,75 @@ String toRoleText(maintenanceRole role) {
     default:
       return "none";
   }
+}
+
+const char* toResetReasonText(esp_reset_reason_t resetReason) {
+  switch (resetReason) {
+    case ESP_RST_POWERON:
+      return "poweron";
+    case ESP_RST_EXT:
+      return "external";
+    case ESP_RST_SW:
+      return "software";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+      return "int_wdt";
+    case ESP_RST_TASK_WDT:
+      return "task_wdt";
+    case ESP_RST_WDT:
+      return "other_wdt";
+    case ESP_RST_DEEPSLEEP:
+      return "deepsleep";
+    case ESP_RST_BROWNOUT:
+      return "brownout";
+    case ESP_RST_SDIO:
+      return "sdio";
+    default:
+      return "unknown";
+  }
+}
+
+void logMaintenanceApRuntimeSnapshot(const char* reasonText, const char* remoteIpText = nullptr) {
+  const esp_reset_reason_t resetReason = esp_reset_reason();
+  const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+  const esp_partition_t* bootPartition = esp_ota_get_boot_partition();
+  const String runningPartitionLabel =
+      (runningPartition != nullptr && runningPartition->label != nullptr) ? String(runningPartition->label) : String("(null)");
+  const String bootPartitionLabel =
+      (bootPartition != nullptr && bootPartition->label != nullptr) ? String(bootPartition->label) : String("(null)");
+  const String activeRoleText = toRoleText(activeRole);
+  const char* safeReasonText = reasonText != nullptr ? reasonText : "(none)";
+  const char* safeRemoteIpText = (remoteIpText != nullptr && remoteIpText[0] != '\0') ? remoteIpText : "(none)";
+  appLogWarn(
+      "maintenanceApServer snapshot. reason=%s remoteIp=%s uptimeMs=%lu resetReason=%d(%s) apSsid=%s serverStarted=%d "
+      "activeRole=%s activeTokenSet=%d rebootScheduled=%d runningPartition=%s bootPartition=%s "
+      "lastPairingState=%s lastPairingResult=%s lastPairingTargetDeviceId=%s lastProductionRunId=%s lastProductionState=%s "
+      "lastProductionResult=%s lastProductionDetail=%s lastProductionObservedFirmwareVersion=%s lastProductionObservedMac=%s "
+      "lastProductionObservedFreeHeapBytes=%lu lastProductionObservedStackMarginBytes=%lu",
+      safeReasonText,
+      safeRemoteIpText,
+      static_cast<unsigned long>(millis()),
+      static_cast<int>(resetReason),
+      toResetReasonText(resetReason),
+      currentApSsid.c_str(),
+      static_cast<int>(isServerStarted),
+      activeRoleText.c_str(),
+      static_cast<int>(activeToken.length() > 0),
+      static_cast<int>(rebootScheduled),
+      runningPartitionLabel.c_str(),
+      bootPartitionLabel.c_str(),
+      lastPairingState.c_str(),
+      lastPairingResult.c_str(),
+      lastPairingTargetDeviceId.c_str(),
+      lastProductionRunId.c_str(),
+      lastProductionState.c_str(),
+      lastProductionResult.c_str(),
+      lastProductionDetail.c_str(),
+      lastProductionObservedFirmwareVersion.c_str(),
+      lastProductionObservedMac.c_str(),
+      static_cast<unsigned long>(lastProductionObservedFreeHeapBytes),
+      static_cast<unsigned long>(lastProductionObservedStackMarginBytes));
 }
 
 /**
@@ -1007,6 +1082,8 @@ void handleManagedFileDeleteApi() {
 }
 
 void handleHealthApi() {
+  const String remoteIpText = maintenanceWebServer.client().remoteIP().toString();
+  logMaintenanceApRuntimeSnapshot("handleHealthApi", remoteIpText.c_str());
   String responseText = "{\"result\":\"OK\",\"mode\":\"maintenance-ap\",\"ssid\":\"" + currentApSsid + "\"}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }
@@ -1808,6 +1885,7 @@ void handleProductionPrecheckApi() {
 }
 
 void handleLoginApi() {
+  const String remoteIpText = maintenanceWebServer.client().remoteIP().toString();
   const String requestBody = maintenanceWebServer.arg("plain");
   String username;
   String password;
@@ -1815,14 +1893,52 @@ void handleLoginApi() {
   parseBodyStringValue(requestBody, "password", &password);
   username.trim();
   password.trim();
+
+  if (requestBody.length() == 0) {
+    appLogError("handleLoginApi failed. request body is empty. remoteIp=%s requestBodyLength=%ld apSsid=%s",
+                remoteIpText.c_str(),
+                static_cast<long>(requestBody.length()),
+                currentApSsid.c_str());
+    maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"authentication failed\"}");
+    return;
+  }
+
+  // [重要] 認証失敗時の切り分け用に、受信元IPと候補ロールを残す。
+  // PowerShell 側の本文破損と認証不一致を分けて追跡しやすくする。
+  String matchedRoleText = "unknown";
+  if (username == mfgRoleCredential.username) {
+    matchedRoleText = "mfg";
+  } else if (username == adminRoleCredential.username) {
+    matchedRoleText = "admin";
+  } else if (username == maintenanceRoleCredential.username) {
+    matchedRoleText = "maintenance";
+  } else if (username == userRoleCredential.username) {
+    matchedRoleText = "user";
+  }
+
   const maintenanceRole role = resolveRoleByCredentials(username, password);
   if (role == maintenanceRole::kNone) {
+    appLogWarn("handleLoginApi failed. remoteIp=%s requestBodyLength=%ld username=%s usernameLength=%ld passwordLength=%ld matchedRole=%s apSsid=%s",
+               remoteIpText.c_str(),
+               static_cast<long>(requestBody.length()),
+               username.c_str(),
+               static_cast<long>(username.length()),
+               static_cast<long>(password.length()),
+               matchedRoleText.c_str(),
+               currentApSsid.c_str());
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"authentication failed\"}");
     return;
   }
 
   activeRole = role;
   activeToken = String("ap-token-") + String(millis()) + "-" + String(static_cast<unsigned long>(esp_random()));
+  const String roleText = toRoleText(role);
+  appLogWarn("handleLoginApi success. remoteIp=%s requestBodyLength=%ld username=%s role=%s apSsid=%s",
+             remoteIpText.c_str(),
+             static_cast<long>(requestBody.length()),
+             username.c_str(),
+             roleText.c_str(),
+             currentApSsid.c_str());
   const String responseText = String("{\"result\":\"OK\",\"token\":\"") + activeToken + "\",\"role\":\"" + toRoleText(role) + "\"}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }
@@ -2089,8 +2205,11 @@ void handleRebootApi() {
   }
   rebootScheduled = true;
   rebootScheduledAtMs = millis();
-  appLogWarn("handleRebootApi accepted. reboot scheduled. delayMs=%lu",
-             static_cast<unsigned long>(rebootDelayMs));
+  appLogWarn("handleRebootApi accepted. reboot scheduled. delayMs=%lu activeRole=%s tokenSet=%d apSsid=%s",
+             static_cast<unsigned long>(rebootDelayMs),
+             toRoleText(activeRole).c_str(),
+             static_cast<int>(activeToken.length() > 0),
+             currentApSsid.c_str());
   maintenanceWebServer.send(200, "application/json", "{\"result\":\"OK\",\"detail\":\"reboot scheduled\"}");
 }
 
@@ -2136,6 +2255,7 @@ bool start(const String& apSsid, sensitiveDataService* sensitiveDataServiceOut) 
   maintenanceWebServer.on("/api/system/reboot", HTTP_POST, handleRebootApi);
   maintenanceWebServer.begin();
   isServerStarted = true;
+  logMaintenanceApRuntimeSnapshot("maintenanceApServer::start");
   appLogWarn("maintenanceApServer::start success. AP maintenance API enabled.");
   return true;
 }

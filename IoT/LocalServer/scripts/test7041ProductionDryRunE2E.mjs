@@ -436,20 +436,24 @@ function resolveApMfgCredentialsFromConfig(config) {
 }
 
 function buildProductionStartBody(params) {
+  const productionSettings = {
+    dryRun: true,
+    expectedMac: params.expectedMac,
+    expectedFirmwareVersion: params.expectedFirmwareVersion,
+    minimumFreeHeapBytes: params.minimumFreeHeapBytes,
+    minimumStackMarginBytes: params.minimumStackMarginBytes,
+    apBaseUrl: params.apBaseUrl,
+    apUsername: params.apMfgUsername,
+    apPassword: params.apMfgPassword,
+    operatorComment: "7041 dry-run verification"
+  };
+  if (params.allowIrreversibleExecution === true) {
+    productionSettings.allowIrreversibleExecution = true;
+  }
   return {
     targetDeviceId: params.targetDeviceId,
     runId: params.runId,
-    productionSettings: {
-      dryRun: true,
-      expectedMac: params.expectedMac,
-      expectedFirmwareVersion: params.expectedFirmwareVersion,
-      minimumFreeHeapBytes: params.minimumFreeHeapBytes,
-      minimumStackMarginBytes: params.minimumStackMarginBytes,
-      apBaseUrl: params.apBaseUrl,
-      apUsername: params.apMfgUsername,
-      apPassword: params.apMfgPassword,
-      operatorComment: "7041 dry-run verification"
-    }
+    productionSettings
   };
 }
 

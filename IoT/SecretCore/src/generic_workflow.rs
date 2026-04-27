@@ -3,8 +3,8 @@
 // [重要] `runProductionSecureFlow()` の開始要求と状態取得を Rust 側へ固定する。
 // [厳守] LocalServer へ返す情報は workflowId / state / result / errorSummary / 最小補助情報に限定する。
 // [禁止] raw key、中間秘密、eFuse 実値を workflow 状態へ保存しない。
-// [重要] 現段階では dry-run と事前チェック判定だけを扱い、不可逆処理本体は実行しない。
-// 変更日: 2026-03-22 dry-run 段階実行骨格と事前チェック判定を追加。理由: 005-0006 / 005-0007 / 008-0025 の前準備を SecretCore 側へ寄せるため。
+// [重要] 基本は dry-run と事前チェック判定を行い、`allowIrreversibleExecution=true` の明示時のみ不可逆段階の受理を許可する。
+// 変更日: 2026-04-27 不可逆実行の明示許可フラグと stage_execute 受理状態を追加。理由: 006-0011 の正式手順に合わせて phase-D 制約を再整理するため。
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -42,6 +42,9 @@ pub struct ProductionWorkflowPrecheckSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ProductionWorkflowSettings {
     pub dry_run: bool,
+    /// [重要] true の場合のみ不可逆実行を許可する。
+    /// [厳守] 006-0011 のような明示許可済み手順以外では true にしない。
+    pub allow_irreversible_execution: Option<bool>,
     pub step_plan: Option<Vec<String>>,
     pub operator_comment: Option<String>,
     pub expected_serial: Option<String>,
@@ -187,9 +190,13 @@ impl ProductionWorkflowManager {
             result: None,
             error_summary: None,
             detail: Some(format!(
-                "workflow queued. runId={} dryRun={} stagePlan={}",
+                "workflow queued. runId={} dryRun={} allowIrreversibleExecution={} stagePlan={}",
                 request.run_id,
                 request.production_settings.dry_run,
+                request
+                    .production_settings
+                    .allow_irreversible_execution
+                    .unwrap_or(false),
                 execution_plan.stage_name_list.join("->")
             )),
             started_at: started_at.clone(),
@@ -309,15 +316,34 @@ impl ProductionWorkflowManager {
             return;
         }
 
+        let irreversible_execution_allowed = request.production_settings.allow_irreversible_execution.unwrap_or(false);
+        if !request.production_settings.dry_run && !irreversible_execution_allowed {
+            let _ = self.update_state(
+                &workflow_id,
+                "failed",
+                Some("NG".to_string()),
+                Some(format!(
+                    "run_production_secure_flow blocked. irreversible execution is disabled in current phase. targetDeviceId={} runId={}",
+                    request.target_device_id, request.run_id
+                )),
+                Some(
+                    "stage=final_judgement result=blocked. reason=phase-D only allows dry-run skeleton and precheck validation."
+                        .to_string(),
+                ),
+            );
+            return;
+        }
+
         let _ = self.update_state(
             &workflow_id,
             "waiting_device",
             None,
             None,
             Some(format!(
-                "stage=lock_environment|stage_prepare runId={} dryRun={} pendingItems={} operatorCommentPresent={} apState={} apResultLabel={} apMeasuredFreeHeapBytes={} apMeasuredMinStackMarginBytes={}",
+                "stage=lock_environment|stage_prepare runId={} dryRun={} allowIrreversibleExecution={} pendingItems={} operatorCommentPresent={} apState={} apResultLabel={} apMeasuredFreeHeapBytes={} apMeasuredMinStackMarginBytes={}",
                 request.run_id,
                 request.production_settings.dry_run,
+                irreversible_execution_allowed,
                 join_or_placeholder(&precheck_report.pending_item_list),
                 request
                     .production_settings
@@ -347,35 +373,63 @@ impl ProductionWorkflowManager {
         );
         sleep(Duration::from_millis(60)).await;
 
+        if !request.production_settings.dry_run && irreversible_execution_allowed {
+            // [重要] この管理器は eFuse 書込み本体を実行せず、不可逆段階の受理と監査状態遷移だけを記録する。
+            let _ = self.update_state(
+                &workflow_id,
+                "executing",
+                None,
+                None,
+                Some(format!(
+                    "stage=stage_execute runId={} targetDeviceId={} stagePlan={} irreversibleExecution=true allowIrreversibleExecution=true handoff=production_tool",
+                    request.run_id,
+                    request.target_device_id,
+                    execution_plan.stage_name_list.join("->")
+                )),
+            );
+            sleep(Duration::from_millis(60)).await;
+
+            let _ = self.update_state(
+                &workflow_id,
+                "verifying",
+                None,
+                None,
+                Some(format!(
+                    "stage=stage_readback_verify|final_judgement runId={} stagePlan={} irreversibleExecution=true allowIrreversibleExecution=true stopBefore=(none)",
+                    request.run_id,
+                    execution_plan.stage_name_list.join("->")
+                )),
+            );
+            sleep(Duration::from_millis(60)).await;
+
+            let _ = self.update_state(
+                &workflow_id,
+                "completed",
+                Some("OK".to_string()),
+                None,
+                Some(format!(
+                    "irreversible execution accepted. runId={} targetDeviceId={} stagePlan={} precheckPendingItems={} irreversibleExecution=true allowIrreversibleExecution=true",
+                    request.run_id,
+                    request.target_device_id,
+                    execution_plan.stage_name_list.join("->"),
+                    join_or_placeholder(&precheck_report.pending_item_list)
+                )),
+            );
+            return;
+        }
+
         let _ = self.update_state(
             &workflow_id,
             "verifying",
             None,
             None,
             Some(format!(
-                "stage=stage_readback_verify|final_judgement runId={} stagePlan={} stopBefore=stage_execute",
+                "stage=stage_readback_verify|final_judgement runId={} stagePlan={} stopBefore=stage_execute irreversibleExecution=false allowIrreversibleExecution=false",
                 request.run_id,
                 execution_plan.stage_name_list.join("->")
             )),
         );
         sleep(Duration::from_millis(60)).await;
-
-        if !request.production_settings.dry_run {
-            let _ = self.update_state(
-                &workflow_id,
-                "failed",
-                Some("NG".to_string()),
-                Some(format!(
-                    "run_production_secure_flow blocked. irreversible execution is disabled in current phase. targetDeviceId={} runId={}",
-                    request.target_device_id, request.run_id
-                )),
-                Some(
-                    "stage=final_judgement result=blocked. reason=phase-D only allows dry-run skeleton and precheck validation."
-                        .to_string(),
-                ),
-            );
-            return;
-        }
 
         let _ = self.update_state(
             &workflow_id,
@@ -383,11 +437,12 @@ impl ProductionWorkflowManager {
             Some("OK".to_string()),
             None,
             Some(format!(
-                "dry-run completed. runId={} targetDeviceId={} stagePlan={} precheckPendingItems={} irreversibleExecution=false",
+                "dry-run completed. runId={} targetDeviceId={} stagePlan={} precheckPendingItems={} irreversibleExecution={}",
                 request.run_id,
                 request.target_device_id,
                 execution_plan.stage_name_list.join("->"),
-                join_or_placeholder(&precheck_report.pending_item_list)
+                join_or_placeholder(&precheck_report.pending_item_list),
+                irreversible_execution_allowed
             )),
         );
     }
