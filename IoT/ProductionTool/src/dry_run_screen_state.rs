@@ -4,9 +4,10 @@
 //! 主な仕様:
 //! - eFuse / Secure Boot / Flash Encryption の本実行前に必ず停止する
 //! - 導線、認証、対象機確認、監査ログ出力、停止点を確認する
+//! - `ProductionTool` が責任を持つ不可逆段階計画を、実コマンド起動前に利用者へ明示する
 //! 制限事項:
 //! - dry-run 成功をもって不可逆処理本体完了とみなさない
-//! - 現フェーズは「実行ステップの事前確認」のみで、実機との接続確認は後続フェーズ
+//! - 現フェーズは「実行ステップの事前確認」と「段階計画表示」までで、`espefuse` 等の実行は後続フェーズ
 
 use chrono::Local;
 use serde::Serialize;
@@ -102,8 +103,8 @@ pub fn build_dry_run_steps() -> Vec<DryRunStep> {
         },
         DryRunStep {
             step_number: 5,
-            step_name: "不可逆処理 dry-run 停止点確認".to_string(),
-            step_description: "[厳守] eFuse / Secure Boot / Flash Encryption の本実行の直前で停止します。不可逆処理は実行しません。".to_string(),
+            step_name: "ProductionTool 所有の不可逆段階計画確認".to_string(),
+            step_description: "[厳守] FE -> NVS暗号化なし確認（非焼込み） -> SB -> 封鎖の順序を ProductionTool 側の段階計画として確認し、実コマンド起動の直前で停止します。".to_string(),
             // [厳守] 現フェーズでは必ず Skipped とする。本実装は後続フェーズで追加する。
             step_result: DryRunStepResult::Skipped,
         },
