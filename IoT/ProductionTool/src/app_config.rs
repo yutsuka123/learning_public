@@ -92,7 +92,9 @@ impl std::error::Error for AppConfigError {}
 /// 2. 共有用の `config/productionTool.settings.example.json`
 /// 3. コード内既定値
 pub fn load_app_config(project_root_path: &Path) -> Result<LoadedConfig, AppConfigError> {
-    let primary_config_path = project_root_path.join("config").join("productionTool.settings.json");
+    let primary_config_path = project_root_path
+        .join("config")
+        .join("productionTool.settings.json");
     if primary_config_path.exists() {
         let config = read_config_file(&primary_config_path)?;
         return Ok(LoadedConfig {
@@ -120,10 +122,11 @@ pub fn load_app_config(project_root_path: &Path) -> Result<LoadedConfig, AppConf
 
 /// 指定設定ファイルを読み込み、構造体へ変換します。
 fn read_config_file(config_path: &Path) -> Result<ProductionToolConfig, AppConfigError> {
-    let config_text = fs::read_to_string(config_path).map_err(|source_error| AppConfigError::ReadFailed {
-        config_path: config_path.to_path_buf(),
-        source_error,
-    })?;
+    let config_text =
+        fs::read_to_string(config_path).map_err(|source_error| AppConfigError::ReadFailed {
+            config_path: config_path.to_path_buf(),
+            source_error,
+        })?;
 
     serde_json::from_str::<ProductionToolConfig>(&config_text).map_err(|source_error| {
         AppConfigError::InvalidJson {

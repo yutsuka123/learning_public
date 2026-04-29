@@ -105,6 +105,84 @@
   - 次回: `7099`/`7101`/`7095`/`7100` の各当日追記欄が開かれていることを確認してから `OK` にする。
 - [判定][2026-04-04b] `PC-012` は確定済みだが `PC-013` 実確認が残るため、`007-B` 進入判定は引き続き **No-Go**。次回 `7099` 完了＋`PC-013` 実確認で `Go` に変更できる。
 
+### 4.3 `007-B` No-Go解除準備メモ（2026-04-29）
+- [重要] 本メモは非破壊の readback と証跡保存先確認であり、`stage_execute` または不可逆 eFuse 書込みの許可ではない。
+- `PC-001`:
+  - 状態: **一部確認済み**。
+  - `COM4` で `MAC=80:b5:4e:f9:ce:04` を readback し、`デバイス管理表.md` の `DEV-002` と一致した。
+  - 未了: AP 表示 `MAC=04:CE:F9:4E:B5:80`、`deviceName=IoT_04CEF94EB580`、`public_id` の当日照合。
+- `PC-005`:
+  - 状態: **非破壊 readback 済み**。
+  - `get_security_info` で `Secure Boot: Disabled`、`Flash Encryption: Disabled`、`SPI_BOOT_CRYPT_CNT=0x0`、`BLOCK_KEY0/1/2=USER/EMPTY` を確認した。
+- `PC-013`:
+  - 状態: **保存先存在と before 証跡作成を確認済み**。
+  - 証跡: `IoT/LocalServer/logs/efuse-readback/get-security-info-before-007B-COM4-20260429-1113.txt`、`IoT/LocalServer/logs/efuse-readback/espefuse-summary-before-007B-COM4-20260429-1113.txt`。
+- `PC-014`:
+  - 状態: **追記先確認済み、最終OKは未記入**。
+  - `試験記録書.md` `7095` に `DEV-002` 用の No-Go解除準備ブロックを追記した。
+- [判定][更新 2026-04-29] `PC-001` のAP側照合、`PC-002`〜`PC-004`、`PC-006`〜`PC-012`、`PC-014` の当日最終OKが未完了のため、`007-B` 本体は **No-Go 継続**。`7099` 同日再確認は下記 §4.4 で **OK** へ更新済み。
+
+### 4.4 `007-A.1` / `7099` 同日再確認結果（2026-04-29）
+- [重要] 本節は非不可逆の安定性確認結果であり、eFuse 書込み許可そのものではない。
+- `7099` 同日再確認:
+  - `7083(iterations=2)`: **OK**。証跡: `IoT/LocalServer/logs/test-reports/test7083-2026-04-29T02-22-02-137Z.json`
+  - `STA 10分`: **OK**。証跡: `IoT/LocalServer/logs/test-reports/test7099-sta-2026-04-29T02-22-18Z.txt`
+  - `AP 10分`: **OK**。証跡: `IoT/LocalServer/logs/test-reports/test7099-ap-2026-04-29T02-36-07Z.txt`
+  - `STA復帰`: **OK**。証跡: `IoT/LocalServer/logs/test-reports/test7099-final-sta-return-2026-04-29T03-10-28Z.txt`
+- [判定] `7099` 由来の No-Go は解除可。ただし `PC-001`〜`PC-014` の最終OK、`7095` 本番別表の段階別4点証跡開始、`ProductionTool` 実ランナー未実装に対する運用判断が未完了のため、`007-B` 本体は **No-Go 継続**。
+
+### 4.5 `7041:pipeline:strict` / ProductionTool 連携確認結果（2026-04-29）
+- [重要] 本節は `ProductionTool` / `LocalServer` / `SecretCore` / AP preflight の dry-run 系確認であり、eFuse 書込みの実施記録ではない。
+- 実施結果:
+  - 初回: **NG**。理由: AP後に STA 復帰済みで `192.168.4.1` 経路が無く、`BLOCKED_AP_REACHABILITY`。
+  - 再実行: **OK**。`maintenance-reboot` で AP モードへ遷移し、`Wi-Fi_lab` を `AP-esp32lab-04CEF94EB580` へ接続してから `npm run test:7041:pipeline:strict` を再実行。
+- 証跡:
+  - 失敗レポート: `IoT/LocalServer/logs/test-reports/test7041-2026-04-29T03-15-29-641Z.json`
+  - 成功レポート: `IoT/LocalServer/logs/test-reports/test7041-2026-04-29T03-17-02-730Z.json`
+  - gate レポート: `IoT/LocalServer/logs/test-reports/test7041-gate-2026-04-29T03-17-02-998Z.json`
+  - pipeline レポート: `IoT/LocalServer/logs/test-reports/test7041-pipeline-2026-04-29T03-17-03-023Z.json`
+- 成功時の観測:
+  - `gateStatus=FULL_COMPLETED`
+  - workflow `state=completed` / `result=OK`
+  - AP production state `precheck_collected`
+  - `observedFirmwareVersion=1.1.0-beta.34`
+  - `observedMac=04:CE:F9:4E:B5:80`
+  - `measuredFreeHeapBytes=230084`（閾値 `50000` 以上）
+  - `measuredMinStackMarginBytes=9996`（閾値 `4096` 以上）
+- `7041` 後の復帰:
+  - AP `POST /api/system/reboot` 後、`GET /api/devices` で `onlineState=online` / `detail=Reply` を確認。
+  - `ping 172.17.1.200` は 2/2 成功。
+- [準備判定] `PC-001`（AP表示MAC / deviceName 照合）、`PC-006`（管理者認証 / ProductionTool dry-run 経路）、`PC-007`（stack margin）、`PC-008`（free heap）、`PC-010`（AP preflight / 認証経路）は解除材料取得済み。
+- [残条件] `PC-002` 電源安定、`PC-004` 鍵ID・署名素材ID・ロット・作業指示番号、`PC-011`/`PC-012` の最終運用判断、`PC-014` の当日最終OK記録、`7095` 本番別表の段階別4点証跡開始、`ProductionTool` 実ランナー未実装に対する運用判断は未完了。
+
+### 4.6 `007-B` No-Go解除 最終直前確認（2026-04-29）
+- [重要] 本節は `007-B` 進入判定の最終確認メモであり、不可逆コマンド実行の記録ではない。
+- `PC-002`:
+  - 状態: **OK扱い可**。
+  - 根拠: 作業者確認で `DEV-002` は安定電源として確認済み。
+- `PC-004`:
+  - 状態: **未解除**。
+  - 根拠: 作業者確認で「鍵ID・署名素材ID・ロット・作業指示番号」は未確認。
+  - 非秘密の補助確認として、以下の鍵素材ファイルの存在のみ確認済み。
+    - `C:\secure-work\keys\test\k-iot-secure-boot-test.pem`（存在、サイズ `2455` bytes）
+    - `C:\secure-work\keys\test\k-iot-flash-encryption-test.bin`（存在、サイズ `32` bytes）
+  - [厳守] ファイル存在は `PC-004` の十分条件ではない。秘密値を出さずに、鍵ID、署名素材ID、ロット、作業指示番号を作業記録上で照合してから `OK` とする。
+- `ProductionTool` 実ランナー未実装への運用判断:
+  - 状態: **未解除**。
+  - [方針変更][2026-04-29 12:27] `007-B` は、`ProductionTool` の最終形実装（`precheck -> stage_execute -> readback -> evidence -> stability` を `ProductionTool` 管理下で閉じる実ランナー）を実装・検証した後に進める。
+  - [廃止の方針] 既存実績手順を手動でなぞって不可逆本体へ入る運用は、今回の本番候補 `DEV-002` では採用しない。理由: `ProductionTool` を不可逆工程の責任主体にする設計思想を、実行責任と監査証跡まで一致させるため。
+- `PC-004` 鍵方針:
+  - 状態: **鍵新規発行なしで固定**。
+  - [重要][2026-04-29 12:27] `k-iot-secure-boot` / `k-iot-flash-encryption` は当面、既存の試験用素材を本番1台目にも用いる。`020-0001`（本番専用分離）を実施しない限り、新規発行は行わない。
+  - [厳守] `PC-004` で確認するのは新規発行ではなく、使用鍵ID・署名素材ID・ロット・作業指示番号の照合である。秘密値、raw key、秘密鍵本文は記録しない。
+- `PC-011` / `PC-012`:
+  - 状態: **OK扱い可**。
+  - 根拠: 今回は NVS 暗号化なし方針を維持し、build env / 手順は `本番セキュア化出荷準備試験計画書.md` §6.4 と `007_本番1台目_実行順チェックリスト.md` の既存実績手順へ合わせる最終運用判断で確認済み。
+- `PC-014` / `7095` 本番別表:
+  - 状態: **OK扱い可**。
+  - 根拠: `7095` 本番別表の4点証跡（`ProductionTool` ログ、ESP32シリアルログ、`espefuse summary` before/after、`試験記録書.md` 追記）を開始する前提で当日最終OK扱いとする確認済み。
+- [最終判定][2026-04-29 12:27] `007-B` 本体は **No-Go 継続**。残条件は、`PC-004` の鍵ID・署名素材ID・ロット・作業指示番号照合と、`ProductionTool` 最終形実ランナーの実装・検証完了。鍵の新規発行は行わない。
+
 ## 5. 停止条件
 - [厳守] 次のいずれかに該当した場合は、その場で安全停止し `006-0002` 以降へ進まない。
 - `7085` が未達・進入不可のままである。
@@ -207,7 +285,7 @@
 
 [追記][2026-04-29] `007-0011` の文書再確認観点として、次の 5 点を毎回照合する。
 1. `BLOCK_KEY0=Flash Encryption`、`BLOCK_KEY1=Secure Boot digest` の割当てが各文書で一致していること
-2. `RD_DIS` write-protect は `SB` 段階末尾であり、`NVS(HMAC)` 段階より前に置かれていないこと
+2. `RD_DIS` write-protect は `SB` 段階末尾であり、旧 `NVS(HMAC)` 由来の手順が現行本番手順へ混入していないこと
 3. `DIS_DOWNLOAD_MODE` は**未適用保持**、`ENABLE_SECURITY_DOWNLOAD` を代替として採用していること
 4. `ENABLE_SECURITY_DOWNLOAD` は封鎖段階の**最後**にのみ実行すること
 5. `DIS_USB_SERIAL_JTAG` は**未適用保持**であり、シリアルログ制御は FW 方針と一致していること
@@ -229,6 +307,7 @@
 - 5. 停止条件: いずれかで異常、記録先未確定、証跡欠落がある場合は `007-B` へ進まない。
 
 ## 10. 変更履歴
+- 2026-04-29 12:27: `007-B` の方針を「鍵新規発行なし」「不可逆本体は `ProductionTool` 最終形実ランナー実装・検証後」へ変更。理由: 鍵変更と実行主体変更を同時に動かさず、`ProductionTool` を責任主体とする設計思想を実行責任まで一致させるため。
 - 2026-04-29: **`R-002`** を更新。当面は試験用 `k-iot` を本番にも流用し、本番専用未生成の前提をやめた。分離は **`020-0001`**。理由: `todo_old20260429.md` と整合
 <!-- @import "[TOC]" {cmd="toc" depthFrom=1 depthTo=6 orderedList=false} -->
 するため。

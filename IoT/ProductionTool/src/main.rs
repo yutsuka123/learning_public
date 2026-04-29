@@ -4,22 +4,29 @@
 //! 主な仕様:
 //! - `LocalServer` と分離した独立実行物として起動する（PT-001）
 //! - 設定を読み込み、監査ログ出力先を初期化し、起動記録を JSON で保存する
-//! - `SecretCore` Named Pipe 到達確認を行い、不可逆処理へ進まず安全停止できる
-//! - 追加認証（PT-002）→ 対象機識別確認（PT-003）→ dry-run 確認（PT-005）のウィザードフローを提供する
+//! - `SecretCore` Named Pipe 到達確認を行い、`ProductionTool` 所有の不可逆段階計画を表示する
+//! - 追加認証（PT-002）→ 対象機識別確認（PT-003）→ dry-run 確認（PT-005）
+//! - オプションで PT-005a: `LocalServer` へ不可逆監査受理の HTTP POST（eFuse 実書込みはしない）
 //! 制限事項:
 //! - GUI 本体は未実装（現フェーズは CLI ウィザード）
 //! - 現フェーズのパスワード照合は開発用簡易ハッシュを使用（将来 SHA-256 + pepper に置き換え）
 //! - 対象機一覧は現フェーズ手動入力（将来 SecretCore IPC 自動取得へ置き換え）
-//! - eFuse / Secure Boot / Flash Encryption の不可逆処理は未実装
+//! - eFuse / Secure Boot / Flash Encryption の実コマンド起動ランナーは未実装。
+//!   ただし責任主体は `ProductionTool` とし、現時点では §6.4 の段階計画を `ProductionTool` 側で所有・表示する。
 //! 変更:
 //! - 2026-03-18: `004-0009` 対応として PT-002 追加認証・PT-003 対象機確認・PT-005 dry-run のウィザードフローを追加。
-//! - 2026-03-24: PT-002 の操作者ID/作業指示番号を任意化し、作業指示番号空欄時の自動採番を追加。PT-003 は MAC 再入力方式から一覧選択方式へ変更。
+//! - 2026-04-29: PT-005a で LocalServer へ不可逆監査受理記録するオプション（`production_workflow_handoff`）を追加。
+//! - 2026-04-29: `irreversible_stage_plan` を追加し、不可逆工程の責任主体を `ProductionTool` としてコード上に固定。
+//! - 2026-04-29: `irreversible_command_runner` を追加し、実コマンドランナーの環境変数検査とテンプレート表示を追加。
 
 mod app_config;
 mod audit_logger;
 mod auth_screen_state;
 mod device_select_screen_state;
 mod dry_run_screen_state;
+mod irreversible_command_runner;
+mod irreversible_stage_plan;
+mod production_workflow_handoff;
 mod startup_screen_state;
 
 use app_config::{load_app_config, LoadedConfig};
@@ -30,6 +37,8 @@ use device_select_screen_state::{
     build_placeholder_device_list, prompt_device_selection, verify_device_selection,
 };
 use dry_run_screen_state::{build_dry_run_steps, run_dry_run};
+use irreversible_command_runner::build_irreversible_command_runner_preview;
+use irreversible_stage_plan::build_irreversible_stage_plan;
 use std::env;
 use std::fmt;
 use std::io;
@@ -91,6 +100,8 @@ enum ProductionToolError {
     AuthFailed { detail_message: String },
     /// 対象機識別確認に失敗しました（PT-007 安全停止）。
     DeviceVerifyFailed { detail_message: String },
+    /// `PT-005a` で LocalServer handoff に失敗しました。
+    IrreversibleHandoffFailed { detail_message: String },
 }
 
 impl fmt::Display for ProductionToolError {
@@ -135,6 +146,11 @@ impl fmt::Display for ProductionToolError {
             Self::DeviceVerifyFailed { detail_message } => write!(
                 formatter,
                 "ProductionToolError::DeviceVerifyFailed detail={}",
+                detail_message
+            ),
+            Self::IrreversibleHandoffFailed { detail_message } => write!(
+                formatter,
+                "ProductionToolError::IrreversibleHandoffFailed detail={}",
                 detail_message
             ),
         }
@@ -289,6 +305,74 @@ async fn main() -> Result<(), ProductionToolError> {
             "  Step {}: {} -> {:?}",
             step.step_number, step.step_name, step.step_result
         );
+    }
+
+    let irreversible_stage_plan = build_irreversible_stage_plan();
+    println!("\n=== ProductionTool 所有の不可逆段階計画 ===");
+    println!("  計画名: {}", irreversible_stage_plan.plan_name);
+    println!("  根拠: {}", irreversible_stage_plan.source_document_label);
+    println!(
+        "  実コマンド起動: {}（現フェーズは計画表示と監査のみ）",
+        irreversible_stage_plan.command_execution_enabled
+    );
+    println!("  監査: {}", irreversible_stage_plan.audit_label);
+    for stage in &irreversible_stage_plan.stage_list {
+        println!("  Stage {}: {}", stage.stage_number, stage.stage_name);
+        println!("    主操作: {}", stage.operation_summary_list.join(" / "));
+        println!("    必須ゲート: {}", stage.required_gate_list.join(" -> "));
+    }
+
+    let irreversible_runner_preview = build_irreversible_command_runner_preview(&irreversible_stage_plan);
+    println!("\n=== ProductionTool 不可逆コマンドランナー準備 ===");
+    println!(
+        "  実コマンド起動サポート: {}（現フェーズでは false）",
+        irreversible_runner_preview.command_execution_supported
+    );
+    println!(
+        "  ランナー armed: {}",
+        irreversible_runner_preview.command_execution_armed
+    );
+    println!("  監査: {}", irreversible_runner_preview.audit_label);
+    if irreversible_runner_preview.missing_env_var_list.is_empty() {
+        println!("  必須環境変数: 充足");
+    } else {
+        println!(
+            "  必須環境変数不足: {}",
+            irreversible_runner_preview.missing_env_var_list.join(", ")
+        );
+    }
+    for command_template in &irreversible_runner_preview.command_template_list {
+        println!(
+            "  Stage {} Command {} [{} irreversible={}]: {}",
+            command_template.stage_number,
+            command_template.command_number,
+            command_template.command_name,
+            command_template.is_irreversible,
+            command_template.command_template
+        );
+    }
+
+    // --- PT-005a（任意）: LocalServer で不可逆監査受理を記録（eFuse 実書込みはしない） ---
+    if let Some(ref selected_device) = device_state.selected_device {
+        match production_workflow_handoff::prompt_and_post_irreversible_workflow_acceptance(
+            selected_device,
+            &auth_state.work_order_id,
+            &auth_state.operator_id,
+        )
+        .await
+        {
+            Ok(Some(audit_record)) => {
+                println!("  PT-005a 監査記録: {:?}", audit_record);
+            }
+            Ok(None) => {}
+            Err(detail_message) => {
+                eprintln!(
+                    "ProductionTool: PT-005a(LocalServer irreversible handoff) に失敗しました。detail={}",
+                    detail_message
+                );
+                return Err(ProductionToolError::IrreversibleHandoffFailed { detail_message });
+            }
+        }
     }
 
     println!("\n=== ProductionTool ウィザードフロー完了 ===");
