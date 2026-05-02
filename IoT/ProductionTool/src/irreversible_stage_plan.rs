@@ -113,10 +113,13 @@ pub fn build_irreversible_stage_plan() -> IrreversibleStagePlan {
             stage_name: "段階4(封鎖): JTAG / Download 最終封鎖".to_string(),
             operation_summary_list: vec![
                 "JTAG 無効化（DIS_PAD_JTAG / DIS_USB_JTAG）".to_string(),
-                "DIS_USB_SERIAL_JTAG は焼かない方針を再確認".to_string(),
-                "ENABLE_SECURITY_DOWNLOAD を最後に実行".to_string(),
+                "試験中はシリアル経路を残し、最終クローズ時のみ DIS_USB_SERIAL_JTAG による書換え不能化を適用可能とする".to_string(),
+                "他の不可逆と証跡確認が完了した後に、シリアル抑止済みの量産通常FWへ更新してセキュア化を完成させる".to_string(),
+                "ENABLE_SECURITY_DOWNLOAD を全 eFuse の最後に実行".to_string(),
             ],
-            required_gate_list: build_common_gate_list("最終起動・OTA・AP/STA 安定性確認"),
+            required_gate_list: build_common_gate_list(
+                "最終起動・OTA・AP/STA 安定性確認、および量産通常FW更新後のシリアル書換え/出力の最終閉鎖確認",
+            ),
         },
     ];
 

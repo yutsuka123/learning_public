@@ -21,7 +21,7 @@
 | :--- | :--- |
 | 不可逆の段階・順序・証跡 | `本番セキュア化出荷準備試験計画書.md` §6.4、`007_本番1台目_実行順チェックリスト.md` |
 | 将来のウィザード一気通貫 | `ProductionTool画面仕様書.md` 第9節 |
-| Rust 実行物が担う処理 | PT-001〜PT-005、不可逆段階計画表示（`src/irreversible_stage_plan.rs`）、不可逆コマンドランナー準備表示（`src/irreversible_command_runner.rs`）、任意 PT-005a（`src/production_workflow_handoff.rs`） |
+| Rust 実行物が担う処理 | PT-001〜PT-005、`PC-004` 鍵ID確認（`src/pc004_check_state.rs`）、不可逆段階計画表示（`src/irreversible_stage_plan.rs`）、不可逆コマンドランナー準備表示（`src/irreversible_command_runner.rs`）、任意 PT-005a（`src/production_workflow_handoff.rs`） |
 | SecretCore が焼くか | 焼かない（`runProductionSecureFlow` は受理／監査遷移。`generic_workflow.rs` 参照） |
 
 ## 1. 現在の想定フォルダ構成
@@ -49,9 +49,10 @@
 - `PT-003` 対象機確認画面 … 実装済（一覧行選択方式、MAC再入力不要）
 - `PT-004` 実行内容確認画面 … 実装済（dry-run 導線入口）
 - `PT-005` dry-run 結果画面 … 実装済（本実行手前で停止）
+- `PC-004` 鍵ID確認 … 実装済（`PRODUCTION_TOOL_FE_KEY_ID` / `PRODUCTION_TOOL_SB_SIGNING_MATERIAL_ID` / `PRODUCTION_TOOL_TARGET_LOT_ID` を期待値として、鍵ID・署名素材ID・ロット・作業指示番号を照合し、`pc004-check-summary.json` を保存。期待値どおりでよい項目は Enter のみで採用可能。各項目が「期待値採用」か「作業者上書き」かも記録する。不一致時は `PT-005z run` を安全停止）
 - `PT-005x` 不可逆段階計画表示 … 実装済（`FE -> NVS暗号化なし確認（非焼込み） -> SB -> 封鎖` を `ProductionTool` 所有計画として表示。実コマンド起動は未実装）
-- `PT-005y` 不可逆コマンドランナー準備表示 … 実装済（`espefuse` / `espsecure` / `esptool` のテンプレートと必須環境変数を表示。実コマンド起動は未実装）
-- `PT-005z` 不可逆実コマンドランナー … **未実装 / 007-B進入ブロック条件**（`precheck -> stage_execute -> readback -> evidence -> stability` を閉じる最終形。2026-04-29 12:27 方針変更により、本機能の実装・検証完了まで本番候補 `DEV-002` の不可逆本体へ進まない）
+- `PT-005y` 不可逆コマンドランナー準備表示 … 実装済（`espefuse` / `espsecure` / `esptool` のテンプレートと必須環境変数を表示。証跡ファイル名も保持）
+- `PT-005z` 不可逆実コマンドランナー … **最小骨格を実装済み / 007-B進入ブロック条件は継続**（Windows CLI 限定。`PRODUCTION_TOOL_ENABLE_IRREVERSIBLE_COMMAND_RUNNER=1` と操作者の `run` 入力で段階逐次実行、`run 1`〜`run 4` で段階指定起動。`PT-005z precheck` で Windows 対応、証跡保存先、`python`、鍵ファイルパス存在を確認した後に、証跡ディレクトリ作成、コマンド展開、stdout/stderr 保存、手動確認待ち停止、安全ゲート停止、`runner-execution-summary.json` による段階別 readback/evidence 要約、`runner-stability-summary.json` による stability / 次段可否の回収まで対応。`run` は内部的に Stage1→Stage2→... を順に起動し、各段階の完了後に stability を回収してから次段へ進む。さらに `run 2` 以降は直前段の `runner-stability-summary.json` に `canProceedToNextStage=true` が無ければ安全停止する。段階4では `PRODUCTION_TOOL_BURN_DIS_USB_SERIAL_JTAG=1` のときのみ `DIS_USB_SERIAL_JTAG` を最終クローズ候補へ追加し、`ENABLE_SECURITY_DOWNLOAD` は常に最後に残す。`precheck -> stage_execute -> readback -> evidence -> stability` を完全に閉じる最終形は未完了。2026-04-29 12:27 方針変更により、本機能の実装・検証完了まで本番候補 `DEV-002` の不可逆本体へ進まない）
 - `PT-005a` 不可逆監査受理 handoff … 実装済（`LocalServer` start API の POST 成功だけでなく、`GET /api/workflows/{workflowId}` で `completed/OK` まで追跡）
 - `PT-006` 監査ログ確認画面 … 骨格実装済
 - `PT-007` エラー / 安全停止画面 … 実装済
@@ -95,11 +96,22 @@
 - `PRODUCTION_TOOL_WORKFLOW_POLL_INTERVAL_MILLIS`: workflow ポーリング間隔（既定 1000 ms）。
 
 ## 5.3 `.env` 運用（不可逆コマンドランナー準備）
-- `PRODUCTION_TOOL_ENABLE_IRREVERSIBLE_COMMAND_RUNNER`: 現フェーズでは `1` でも実コマンド未実行。後続実装で二重確認ゲートに使う。
+- `PRODUCTION_TOOL_ENABLE_IRREVERSIBLE_COMMAND_RUNNER`: `1` のとき最小実ランナーを起動可能にする。ただし操作者が CLI で `run` を入力しない限り実行しない。
+- `PRODUCTION_TOOL_ALLOW_IRREVERSIBLE_EXECUTION`: `1` のときのみ不可逆コマンド実行を許可する。未設定時は `espefuse summary` 等の可逆コマンドのみ実行され、最初の不可逆コマンド手前で安全停止する。
+- `PRODUCTION_TOOL_FE_KEY_ID` / `PRODUCTION_TOOL_SB_SIGNING_MATERIAL_ID` / `PRODUCTION_TOOL_TARGET_LOT_ID`: `PC-004` 鍵ID確認の期待値。秘密値ではなく識別用 ID のみを設定し、CLI 入力結果と `pc004-check-summary.json` に照合結果を残す。
 - `PRODUCTION_TOOL_SERIAL_PORT`: 対象 COM ポート。
 - `PRODUCTION_TOOL_EVIDENCE_DIR`: 4点証跡のうち `ProductionTool` / `espefuse` 側を保存する作業ディレクトリ。
 - `PRODUCTION_TOOL_FE_KEY_PATH` / `PRODUCTION_TOOL_SB_SIGNING_KEY_PATH`: 鍵素材のローカル実パス（サンプルや Git へ実値禁止）。現行案Aでは `PRODUCTION_TOOL_HMAC_KEY_PATH` は使わない。
 - `PRODUCTION_TOOL_FLASH_ARGS_STAGE1` / `PRODUCTION_TOOL_FLASH_ARGS_STAGE3`: 段階別 flash 引数。アドレス・ファイル対応は `コマンド仕様書.md` と当日記録で固定する。
+- `PRODUCTION_TOOL_BURN_DIS_USB_SERIAL_JTAG`: `1` のときだけ段階4で `DIS_USB_SERIAL_JTAG` を焼けるようにする。既定 `0` では 1号機ノウハウどおり、試験中は USB シリアルログとシリアル書換え余地を最後まで残す。
+- `PC-004` 実行時は `pc004-check-summary.json` を `PRODUCTION_TOOL_EVIDENCE_DIR` へ保存し、期待値・入力値・入力元（期待値採用 / 作業者上書き）・作業指示番号・一致/不一致理由を記録する。
+- `PT-005z precheck` は `runner-precheck-summary.json` を `PRODUCTION_TOOL_EVIDENCE_DIR` へ保存し、Windows 対応、証跡保存先、`python`、`*_PATH` 系の存在確認、`PC-004` 用 `PRODUCTION_TOOL_FE_KEY_ID` / `PRODUCTION_TOOL_SB_SIGNING_MATERIAL_ID` / `PRODUCTION_TOOL_TARGET_LOT_ID` の設定有無を記録する。
+- `PT-005z precheck` では、段階4最終クローズに関する `serialClosureMode` / `serialOutputClosureReview` も記録し、`DIS_USB_SERIAL_JTAG` の適用有無と「シリアル出力停止は最終レビュー対象」であることを明示する。
+- `PT-005z` 実行時は `runner-execution-summary.json` を `PRODUCTION_TOOL_EVIDENCE_DIR` へ保存し、段階ごとの `before/after readback`、失敗有無、手動確認待ち停止、安全ゲート停止、段階指定実行時の `selectedStageNumber` を要約する。
+- `PT-005z` 実行後は `runner-stability-summary.json` を `PRODUCTION_TOOL_EVIDENCE_DIR` へ保存し、各段階の `OTA x2 / AP 10分 / STA 10分`、証跡パス、次段可否を回収する。手動確認待ち段階でも次段可否を保存し、後続段階のゲート判定に使う。
+- `run 2` 以降の段階指定実行では、同じ `PRODUCTION_TOOL_EVIDENCE_DIR` 配下の `runner-stability-summary.json` に直前段の `canProceedToNextStage=true` が記録されていなければ安全停止する。
+- [厳守] `ENABLE_SECURITY_DOWNLOAD` は全 eFuse の最後に残し、`DIS_USB_SERIAL_JTAG` を焼く場合もその直前で止める。
+- [重要] 「シリアル出力停止」は、他の不可逆・証跡・安定性確認が完了した後に **シリアル抑止済みの量産通常FWへ更新する** ことで実現する。現時点の `ProductionTool` 自動実装は `DIS_USB_SERIAL_JTAG` 切替までで、FW切替自体は最終クローズ手順のレビュー対象とする。
 
 ## 5. EXE 化の再開手順
 - [重要] `ISCC.exe` が利用可能になったら、まず `scripts/build-production-tool-installer.ps1 -SkipCargoBuild` で解決可否だけを確認する。
@@ -112,6 +124,14 @@
 - 2026-04-29 12:27: `007-B` は `ProductionTool` 最終形実ランナーの実装・検証後に進める方針へ変更。理由: `ProductionTool` を不可逆工程の責任主体とする設計思想を、画面・監査だけでなく実行責任まで一致させるため。
 - 2026-04-29: `irreversible_command_runner.rs` の `espefuse summary` テンプレートを段階・コマンド番号別の証跡ファイル名へ修正。理由: 実ランナー実装時に before/after 証跡を上書きしないため。
 - 2026-04-30（続²）: `irreversible_command_runner.rs` による不可逆コマンドランナー準備表示を追記。理由: `ProductionTool` が `espefuse` 等を管理下へ取り込む前に、必須環境変数・段階テンプレート・実行未サポート状態を安全に固定するため。
+- 2026-05-02: `PT-005z` 最小実ランナー（Windows CLI 限定）を追記。理由: `ProductionTool` 管理下で証跡ディレクトリ作成、コマンド展開、stdout/stderr 保存、安全ゲート停止までを実装し、完全版へ向けた第一歩を明文化するため。
+- 2026-05-02: `PT-005z precheck` を追記。理由: `stage_execute` 前に不足条件と停止理由を `ProductionTool` 自身が証跡化できるようにするため。
+- 2026-05-02: `runner-execution-summary.json` を追記。理由: 段階ごとの readback/evidence を `ProductionTool` 側で要約し、4点証跡整理の入口を作るため。
+- 2026-05-02: `runner-stability-summary.json` を追記。理由: stability の結果と証跡も `ProductionTool` 側で一貫して扱うため。
+- 2026-05-02: 段階指定実行の前段 stability ゲートを追記。理由: `run 2` 以降でも `stage_execute -> readback -> evidence -> stability -> next stage` を `ProductionTool` 自身が強制するため。
+- 2026-05-02: `run` の段階逐次実行を追記。理由: 全段実行でも段階ごとに stability を閉じてから次段へ進めるため。
+- 2026-05-02: 段階4の最終クローズ切替を追記。理由: 1号機ノウハウどおり試験では USB シリアルログを残しつつ、最終個体では `DIS_USB_SERIAL_JTAG` も焼けるようにするため。
+- 2026-05-02: `PC-004` 鍵ID確認を追記。理由: 鍵ID・署名素材ID・ロット・作業指示番号の照合責任も `ProductionTool` へ集約するため。
 - 2026-04-30（続）: `irreversible_stage_plan.rs` による不可逆段階計画表示と、PT-005a の workflow 終端追跡を追記。理由: `ProductionTool` が製造ツールとして焼込み責任を持つ設計へ、既存 Rust フローを壊さず段階的に収束させるため。
 - 2026-04-29: 現行案Aに合わせ、NVS(HMAC) / HMAC鍵投入を本番不可逆段階から外す旨を追記。理由: NVS Encryption は実施しない方針のため。
 - 2026-04-30: **上位設計との関係（§6.4／007 チェックリストと本番1台目実績）** と **現コードが担う範囲（PT-005a まで）** を冒頭直下に明示。不可逆焼込の実コマンドランナーは未実装であり、`SecretCore` は受理記録のみと整理。理由: 「ProductionTool が eFuse の設計」を文書資産・実コード・本番実施の三本で食い違わせないため。
