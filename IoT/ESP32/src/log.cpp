@@ -21,6 +21,8 @@
 #include <time.h>
 #include <vector>
 
+#include "../header/firmwareMode.h"
+
 #ifndef IOT_ENABLE_FILE_LOG
 #define IOT_ENABLE_FILE_LOG 1
 #endif
@@ -1080,6 +1082,12 @@ bool isFileLogEnabled() {
 
 void initializeLogLevel() {
   initializeFileLogBootCount();
-  esp_log_level_set("*", ESP_LOG_DEBUG);
-  appLogInfo("log level initialized to DEBUG.");
+  const esp_log_level_t selectedLogLevel = firmwareMode::kDiagnosticLogEnabled ? ESP_LOG_DEBUG : ESP_LOG_WARN;
+  const char* selectedLogLevelText = firmwareMode::kDiagnosticLogEnabled ? "DEBUG" : "WARN";
+  esp_log_level_set("*", selectedLogLevel);
+  appLogWarn("initializeLogLevel completed. firmwareOperationMode=%s serialOutputMode=%s factoryApisEnabled=%d serialLogLevel=%s",
+             firmwareMode::kFirmwareOperationMode,
+             firmwareMode::kSerialOutputMode,
+             static_cast<int>(firmwareMode::kFactoryApisEnabled),
+             selectedLogLevelText);
 }

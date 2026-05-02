@@ -8,6 +8,7 @@
  */
 
 #include "../header/maintenanceApServer.h"
+#include "../header/firmwareMode.h"
 
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -975,6 +976,29 @@ bool isAuthorized(maintenanceRole minimumRole) {
 }
 
 /**
+ * @brief 製造系APIが現在のFWモードで許可されるかを確認する。
+ * @param apiName ログ出力用API名。
+ * @return 許可時true、拒否応答送信済み時false。
+ * @details
+ * - [厳守] 通常運用FWでは pairing / production 系APIを公開しない。
+ * - [重要] 403 を返し、顧客環境で危険APIが残っていないことを明示する。
+ */
+bool ensureFactoryApiEnabled(const char* apiName) {
+  if (firmwareMode::kFactoryApisEnabled) {
+    return true;
+  }
+  const char* safeApiName = (apiName != nullptr) ? apiName : "(unknown)";
+  appLogWarn("ensureFactoryApiEnabled rejected. api=%s firmwareOperationMode=%s serialOutputMode=%s",
+             safeApiName,
+             firmwareMode::kFirmwareOperationMode,
+             firmwareMode::kSerialOutputMode);
+  maintenanceWebServer.send(403,
+                            "application/json",
+                            "{\"result\":\"NG\",\"detail\":\"factory api disabled in normal firmware\"}");
+  return false;
+}
+
+/**
  * @brief APモード中に `/images` または `/certs` へ1ファイルを局所更新するAPI。
  * @details
  * - [重要] 受信形式は JSON（`targetArea`/`path`/`dataBase64`/`expectedSha256`）。
@@ -1084,7 +1108,10 @@ void handleManagedFileDeleteApi() {
 void handleHealthApi() {
   const String remoteIpText = maintenanceWebServer.client().remoteIP().toString();
   logMaintenanceApRuntimeSnapshot("handleHealthApi", remoteIpText.c_str());
-  String responseText = "{\"result\":\"OK\",\"mode\":\"maintenance-ap\",\"ssid\":\"" + currentApSsid + "\"}";
+  String responseText = "{\"result\":\"OK\",\"mode\":\"maintenance-ap\",\"ssid\":\"" + currentApSsid +
+                        "\",\"firmwareOperationMode\":\"" + String(firmwareMode::kFirmwareOperationMode) +
+                        "\",\"serialOutputMode\":\"" + String(firmwareMode::kSerialOutputMode) +
+                        "\",\"factoryApisEnabled\":" + String(firmwareMode::kFactoryApisEnabled ? "true" : "false") + "}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }
 
@@ -1096,6 +1123,9 @@ void handleHealthApi() {
  * - [進捗][2026-03-21] `savedCurrentKeyVersion` と `previousKeyState` は Pairing / KeyRotation 直後の実保存結果を返す。
  */
 void handlePairingStateApi() {
+  if (!ensureFactoryApiEnabled("handlePairingStateApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kMaintenance)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"unauthorized\"}");
     return;
@@ -1147,6 +1177,9 @@ void handlePairingStateApi() {
  * - [将来対応] ECDH・署名検証・復号・NVS 保存本体を実装したら、本関数で metadata 受理から本適用処理へ置き換える。
  */
 void handlePairingSessionApi() {
+  if (!ensureFactoryApiEnabled("handlePairingSessionApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kAdmin)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
     return;
@@ -1203,6 +1236,9 @@ void handlePairingSessionApi() {
  * - [将来対応] ECDH と secure bundle transport 実装後は、本APIまたは後継APIで summary ではなく暗号化済み本体を受理する。
  */
 void handlePairingBundleSummaryApi() {
+  if (!ensureFactoryApiEnabled("handlePairingBundleSummaryApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kAdmin)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
     return;
@@ -1289,6 +1325,9 @@ void handlePairingBundleSummaryApi() {
  * - [将来対応] secure transport 実装後は、本APIの交渉結果に従って暗号化済み bundle を受ける後続APIへ接続する。
  */
 void handlePairingTransportSessionApi() {
+  if (!ensureFactoryApiEnabled("handlePairingTransportSessionApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kAdmin)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
     return;
@@ -1370,6 +1409,9 @@ void handlePairingTransportSessionApi() {
  * - [将来対応] 後続の encrypted bundle 受理APIで、本 handshake により導出した鍵を使って復号・検証する。
  */
 void handlePairingTransportHandshakeApi() {
+  if (!ensureFactoryApiEnabled("handlePairingTransportHandshakeApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kAdmin)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
     return;
@@ -1456,6 +1498,9 @@ void handlePairingTransportHandshakeApi() {
  * - [禁止] handshake 未完了状態での適用実行を許可しない。
  */
 void handlePairingSecureBundleApplyApi() {
+  if (!ensureFactoryApiEnabled("handlePairingSecureBundleApplyApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kAdmin)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"admin authorization required\"}");
     return;
@@ -1748,6 +1793,9 @@ void handlePairingSecureBundleApplyApi() {
  * - [厳守] `mfg` ロール認証済みの場合のみ参照を許可する。
  */
 void handleProductionStateApi() {
+  if (!ensureFactoryApiEnabled("handleProductionStateApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kMfg)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"mfg authorization required\"}");
     return;
@@ -1778,6 +1826,9 @@ void handleProductionStateApi() {
  * - [禁止] eFuse 実値や秘密鍵素材をレスポンスへ含めない。
  */
 void handleProductionPrecheckApi() {
+  if (!ensureFactoryApiEnabled("handleProductionPrecheckApi")) {
+    return;
+  }
   if (!isAuthorized(maintenanceRole::kMfg)) {
     maintenanceWebServer.send(401, "application/json", "{\"result\":\"NG\",\"detail\":\"mfg authorization required\"}");
     return;
@@ -2216,7 +2267,9 @@ void handleRebootApi() {
 void handleRootPage() {
   const String htmlText =
       "<html><head><meta charset='UTF-8'><title>Maintenance AP</title></head>"
-      "<body><h1>Maintenance AP</h1><p>Use LocalServer admin API.</p></body></html>";
+      "<body><h1>Maintenance AP</h1><p>Use LocalServer admin API.</p><p>firmwareOperationMode=" +
+      String(firmwareMode::kFirmwareOperationMode) + " / factoryApisEnabled=" +
+      String(firmwareMode::kFactoryApisEnabled ? "true" : "false") + "</p></body></html>";
   maintenanceWebServer.send(200, "text/html", htmlText);
 }
 
@@ -2256,7 +2309,10 @@ bool start(const String& apSsid, sensitiveDataService* sensitiveDataServiceOut) 
   maintenanceWebServer.begin();
   isServerStarted = true;
   logMaintenanceApRuntimeSnapshot("maintenanceApServer::start");
-  appLogWarn("maintenanceApServer::start success. AP maintenance API enabled.");
+  appLogWarn("maintenanceApServer::start success. firmwareOperationMode=%s serialOutputMode=%s factoryApisEnabled=%d",
+             firmwareMode::kFirmwareOperationMode,
+             firmwareMode::kSerialOutputMode,
+             static_cast<int>(firmwareMode::kFactoryApisEnabled));
   return true;
 }
 
