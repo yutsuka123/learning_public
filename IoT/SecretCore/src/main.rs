@@ -635,6 +635,33 @@ async fn handle_client(
                             IpcResponse { status: "error".to_string(), data: None, error: Some("Missing payload".into()) }
                         }
                     },
+                    "sign_by_k_device" => {
+                        if let Some(p) = req.payload {
+                            if let (Some(device), Some(text)) =
+                                (p.get("targetDeviceName").and_then(|v| v.as_str()), p.get("messageText").and_then(|v| v.as_str()))
+                            {
+                                match key_mgr.sign_by_k_device(device, text) {
+                                    Ok(signature_base64) => IpcResponse {
+                                        status: "ok".to_string(),
+                                        data: Some(serde_json::json!({
+                                            "signatureBase64": signature_base64,
+                                            "signatureAlgorithm": "HMAC-SHA256"
+                                        })),
+                                        error: None,
+                                    },
+                                    Err(e) => IpcResponse {
+                                        status: "error".to_string(),
+                                        data: None,
+                                        error: Some(e),
+                                    }
+                                }
+                            } else {
+                                IpcResponse { status: "error".to_string(), data: None, error: Some("Missing fields".into()) }
+                            }
+                        } else {
+                            IpcResponse { status: "error".to_string(), data: None, error: Some("Missing payload".into()) }
+                        }
+                    },
                     "decrypt" => {
                         if let Some(p) = req.payload {
                             let device = p.get("targetDeviceName").and_then(|v| v.as_str());

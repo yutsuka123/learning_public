@@ -131,6 +131,23 @@ impl OtaWorkflowManager {
         timeout_seconds: u64,
     ) {
         let started_at = chrono::Utc::now().to_rfc3339();
+        let baseline_device_state = match mqtt_receiver_manager.get_device_state_summary(&target_device_name) {
+            Ok(device_state_option) => device_state_option,
+            Err(read_error) => {
+                let _ = self.update_state(
+                    &workflow_id,
+                    "failed",
+                    Some("NG".to_string()),
+                    Some(read_error),
+                    Some("device state baseline read failed".to_string()),
+                );
+                return;
+            }
+        };
+        let baseline_ota_updated_at = baseline_device_state
+            .as_ref()
+            .map(|device_state| device_state.ota_updated_at.clone())
+            .unwrap_or_default();
         if let Err(status_error) = self.update_state(
             &workflow_id,
             "running",
@@ -192,10 +209,16 @@ impl OtaWorkflowManager {
 
             match mqtt_receiver_manager.get_device_state_summary(&target_device_name) {
                 Ok(Some(device_state)) => {
-                    let detail_text = build_workflow_detail_text(&device_state);
+                    let has_fresh_ota_observation =
+                        has_fresh_ota_observation(&device_state, baseline_ota_updated_at.as_str());
+                    let detail_text = build_workflow_detail_text(
+                        &device_state,
+                        baseline_ota_updated_at.as_str(),
+                        has_fresh_ota_observation,
+                    );
                     if detail_text != last_state_text {
                         last_state_text = detail_text.clone();
-                        let workflow_state = if is_verifying_phase(&device_state) {
+                        let workflow_state = if has_fresh_ota_observation && is_verifying_phase(&device_state) {
                             "verifying"
                         } else {
                             "waiting_device"
@@ -203,7 +226,7 @@ impl OtaWorkflowManager {
                         let _ = self.update_state(&workflow_id, workflow_state, None, None, Some(detail_text));
                     }
 
-                    if is_ota_failed(&device_state) {
+                    if has_fresh_ota_observation && is_ota_failed(&device_state) {
                         let _ = self.update_state(
                             &workflow_id,
                             "failed",
@@ -297,7 +320,7 @@ async fn publish_ota_command(
     timeout_seconds: u64,
 ) -> Result<(), String> {
     let source_id = get_env_string("LOCAL_SERVER_SOURCE_ID", "local-server-001");
-    let plain_payload_text = serde_json::to_string(&serde_json::json!({
+    let payload_for_signature = serde_json::json!({
         "v": 1,
         "DstID": target_device_name,
         "SrcID": source_id,
@@ -305,6 +328,7 @@ async fn publish_ota_command(
         "ts": chrono::Utc::now().to_rfc3339(),
         "op": "call",
         "sub": "otaStart",
+        "sigAlg": "HMAC-SHA256",
         "args": {
             "requestType": "otaStart",
             "manifestUrl": manifest_url,
@@ -313,8 +337,32 @@ async fn publish_ota_command(
             "sha256": sha256,
             "timeoutSeconds": timeout_seconds
         }
+    });
+    let payload_for_signature_text = serde_json::to_string(&payload_for_signature)
+        .map_err(|e| format!("publish_ota_command failed. signature payload serialize error={}", e))?;
+    let signature_base64 = key_manager
+        .sign_by_k_device(target_device_name, &payload_for_signature_text)
+        .map_err(|e| format!("publish_ota_command failed. sign error={}", e))?;
+    let plain_payload_text = serde_json::to_string(&serde_json::json!({
+        "v": 1,
+        "DstID": target_device_name,
+        "SrcID": source_id,
+        "id": payload_for_signature["id"],
+        "ts": payload_for_signature["ts"],
+        "op": "call",
+        "sub": "otaStart",
+        "sigAlg": "HMAC-SHA256",
+        "args": {
+            "requestType": "otaStart",
+            "manifestUrl": manifest_url,
+            "firmwareUrl": firmware_url,
+            "firmwareVersion": firmware_version,
+            "sha256": sha256,
+            "timeoutSeconds": timeout_seconds
+        },
+        "signature": signature_base64
     }))
-    .map_err(|e| format!("publish_ota_command failed. payload serialize error={}", e))?;
+    .map_err(|e| format!("publish_ota_command failed. signed payload serialize error={}", e))?;
     let encoded_payload_text = encode_outgoing_payload(key_manager, target_device_name, &plain_payload_text)?;
     let topic = format!("esp32lab/call/otaStart/{}", target_device_name);
     mqtt_receiver_manager.publish_message(&topic, &encoded_payload_text, 1).await
@@ -366,6 +414,11 @@ fn is_ota_failed(device_state: &DeviceStateSummaryDto) -> bool {
     device_state.ota_phase.trim().eq_ignore_ascii_case("error")
 }
 
+fn has_fresh_ota_observation(device_state: &DeviceStateSummaryDto, baseline_ota_updated_at: &str) -> bool {
+    let current_ota_updated_at = device_state.ota_updated_at.trim();
+    !current_ota_updated_at.is_empty() && current_ota_updated_at != baseline_ota_updated_at.trim()
+}
+
 fn is_ota_completed(device_state: &DeviceStateSummaryDto, expected_firmware_version: &str) -> bool {
     device_state.online_state == "online"
         && !expected_firmware_version.trim().is_empty()
@@ -379,9 +432,13 @@ fn is_verifying_phase(device_state: &DeviceStateSummaryDto) -> bool {
         || device_state.ota_detail.to_lowercase().contains("rebooted after ota")
 }
 
-fn build_workflow_detail_text(device_state: &DeviceStateSummaryDto) -> String {
+fn build_workflow_detail_text(
+    device_state: &DeviceStateSummaryDto,
+    baseline_ota_updated_at: &str,
+    has_fresh_ota_observation: bool,
+) -> String {
     format!(
-        "onlineState={} otaPhase={} otaProgressPercent={} otaDetail={}",
+        "onlineState={} otaPhase={} otaProgressPercent={} otaDetail={} otaUpdatedAt={} baselineOtaUpdatedAt={} freshOtaObservation={}",
         device_state.online_state,
         if device_state.ota_phase.trim().is_empty() {
             "(empty)"
@@ -396,7 +453,18 @@ fn build_workflow_detail_text(device_state: &DeviceStateSummaryDto) -> String {
             "(empty)"
         } else {
             device_state.ota_detail.as_str()
-        }
+        },
+        if device_state.ota_updated_at.trim().is_empty() {
+            "(empty)"
+        } else {
+            device_state.ota_updated_at.as_str()
+        },
+        if baseline_ota_updated_at.trim().is_empty() {
+            "(empty)"
+        } else {
+            baseline_ota_updated_at
+        },
+        has_fresh_ota_observation
     )
 }
 

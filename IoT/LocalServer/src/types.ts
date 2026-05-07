@@ -137,6 +137,13 @@ export interface otaCommandRequestBody extends commandRequestBody {
 }
 
 /**
+ * @description OTA 不正署名試験APIの要求パラメータ。
+ */
+export interface otaTamperedSignatureTestRequestBody extends otaCommandRequestBody {
+  targetDeviceName: string;
+}
+
+/**
  * @description AP単体設定投入APIの要求パラメータ。
  */
 export interface apConfigureRequestBody {
@@ -344,4 +351,9 @@ export interface mqttCommandPayload {
   op: string;
   sub: string;
   args: Record<string, unknown>;
+  sigAlg?: string;
+  signature?: string;
+  keyId?: string;
+  nonce?: string;
+  exp?: string;
 }

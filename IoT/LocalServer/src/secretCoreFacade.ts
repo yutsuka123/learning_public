@@ -89,6 +89,14 @@ export interface secretCoreEncryptedPayload {
 }
 
 /**
+ * @description k-device による HMAC 署名結果DTO。
+ */
+export interface secretCoreSignedPayloadResult {
+  signatureBase64: string;
+  signatureAlgorithm: "HMAC-SHA256";
+}
+
+/**
  * @description SecretCore 受信MQTTイベントDTO。
  */
 export interface secretCoreMqttInboundEvent {
@@ -158,6 +166,19 @@ export class SecretCoreFacade {
    */
   public async encryptByKDevice(targetDeviceName: string, plainText: string): Promise<secretCoreEncryptedPayload> {
     return await this.secretCoreIpcClient.sendRequest<secretCoreEncryptedPayload>("encrypt", { targetDeviceName, plainText });
+  }
+
+  /**
+   * @description k-device を用いて HMAC-SHA256 署名を生成する。
+   * @param targetDeviceName 対象デバイス名。
+   * @param messageText 署名対象文字列。
+   * @returns 署名DTO。
+   */
+  public async signByKDevice(targetDeviceName: string, messageText: string): Promise<secretCoreSignedPayloadResult> {
+    return await this.secretCoreIpcClient.sendRequest<secretCoreSignedPayloadResult>("sign_by_k_device", {
+      targetDeviceName,
+      messageText
+    });
   }
 
   /**

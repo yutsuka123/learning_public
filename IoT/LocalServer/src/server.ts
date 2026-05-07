@@ -30,6 +30,7 @@ import {
   commandRequestBody,
   keyRotationWorkflowStartRequestBody,
   otaCommandRequestBody,
+  otaTamperedSignatureTestRequestBody,
   pairingRequestedSettings,
   pairingWorkflowStartRequestBody,
   productionWorkflowPrecheckSnapshot,
@@ -42,6 +43,7 @@ import { SecretCoreManager } from "./secretCoreManager";
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
 import { SecretCoreFacade } from "./secretCoreFacade";
 import { buildPairingWorkflowStartRequestBodyFromApConfigure, validatePairingWorkflowStartRequestBody } from "./pairingWorkflowInput";
+import { mqttPayloadSecurityService, resolveMqttPayloadEncryptionMode } from "./mqttPayloadSecurity";
 
 const config = loadConfig();
 const app = express();
@@ -60,6 +62,7 @@ const secretCoreClient = new SecretCoreIpcClient(
 );
 const secretCoreFacade = new SecretCoreFacade(secretCoreClient);
 const localKeyService = new keyService(config, secretCoreFacade, USE_SECRET_CORE);
+const serverPayloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
 const gateway: deviceTransport = new mqttGateway(
   config,
   registry,
@@ -69,6 +72,8 @@ const gateway: deviceTransport = new mqttGateway(
 );
 const adminSessionMap = new Map<string, number>();
 const adminSessionTtlMs = 3 * 60 * 60 * 1000;
+const adminLoginLockoutThreshold = 3;
+const adminLoginLockoutDurationMs = 5 * 60 * 1000;
 const securityStateFilePath = path.resolve(process.cwd(), "data", "securityState.json");
 const securityAuditDirectoryPath = path.resolve(process.cwd(), "logs");
 const securityAuditFilePath = path.join(securityAuditDirectoryPath, "security-audit.log");
@@ -100,6 +105,13 @@ app.use(express.static(path.resolve(process.cwd(), "public")));
 interface adminLoginRequestBody {
   username: string;
   password: string;
+}
+
+interface adminLoginLockState {
+  username: string;
+  remoteAddress: string;
+  consecutiveFailureCount: number;
+  lockedUntilEpochMs: number;
 }
 
 interface adminPasswordChangeRequestBody {
@@ -237,6 +249,7 @@ interface apManagedFileDeleteRequestBody {
 }
 
 const runtimeSecurityState = loadSecurityState();
+const adminLoginLockStateMap = new Map<string, adminLoginLockState>();
 const apBatchRunMap = new Map<string, apBatchRunResult>();
 
 /**
@@ -332,15 +345,66 @@ app.post("/api/admin/auth/login", (request: Request, response: Response) => {
     if (username.length === 0 || password.length === 0) {
       throw new Error("admin login failed. username/password is required.");
     }
-    if (username !== runtimeSecurityState.adminUsername || password !== runtimeSecurityState.adminPassword) {
-      response.status(401).json({
+    const remoteAddress = resolveAdminLoginRemoteAddress(request);
+    const adminLoginLockKey = resolveAdminLoginLockKey(username, remoteAddress);
+    const activeAdminLoginLock = getActiveAdminLoginLockState(adminLoginLockKey);
+    if (activeAdminLoginLock !== null) {
+      appendSecurityAuditLog("localAdminLoginLocked", {
+        username,
+        remoteAddress,
+        consecutiveFailureCount: activeAdminLoginLock.consecutiveFailureCount,
+        retryAfterSeconds: activeAdminLoginLock.retryAfterSeconds,
+        lockedUntil: activeAdminLoginLock.lockedUntilIso,
+        reason: "lockout active"
+      });
+      response.status(403).json({
         result: "NG",
-        detail: "authentication failed"
+        detail: "too many failed attempts. wait 5 minutes before retrying.",
+        retryAfterSeconds: activeAdminLoginLock.retryAfterSeconds,
+        lockedUntil: activeAdminLoginLock.lockedUntilIso
       });
       return;
     }
+    if (username !== runtimeSecurityState.adminUsername || password !== runtimeSecurityState.adminPassword) {
+      const failedLoginResult = registerAdminLoginFailure(adminLoginLockKey, username, remoteAddress);
+      if (failedLoginResult.isLocked) {
+        appendSecurityAuditLog("localAdminLoginLocked", {
+          username,
+          remoteAddress,
+          consecutiveFailureCount: failedLoginResult.consecutiveFailureCount,
+          retryAfterSeconds: failedLoginResult.retryAfterSeconds,
+          lockedUntil: failedLoginResult.lockedUntilIso,
+          reason: "threshold reached"
+        });
+        response.status(403).json({
+          result: "NG",
+          detail: "too many failed attempts. wait 5 minutes before retrying.",
+          retryAfterSeconds: failedLoginResult.retryAfterSeconds,
+          lockedUntil: failedLoginResult.lockedUntilIso
+        });
+        return;
+      }
+      appendSecurityAuditLog("localAdminLoginRejected", {
+        username,
+        remoteAddress,
+        consecutiveFailureCount: failedLoginResult.consecutiveFailureCount,
+        remainingAttempts: failedLoginResult.remainingAttempts
+      });
+      response.status(401).json({
+        result: "NG",
+        detail: "authentication failed",
+        remainingAttempts: failedLoginResult.remainingAttempts
+      });
+      return;
+    }
+    clearAdminLoginLockState(adminLoginLockKey);
     const nextToken = crypto.randomUUID();
     adminSessionMap.set(nextToken, Date.now() + adminSessionTtlMs);
+    appendSecurityAuditLog("localAdminLoginSucceeded", {
+      username,
+      remoteAddress,
+      sessionExpiresInSeconds: Math.floor(adminSessionTtlMs / 1000)
+    });
     response.json({
       result: "OK",
       token: nextToken,
@@ -1525,6 +1589,86 @@ app.get("/api/workflows/:workflowId", async (request: Request, response: Respons
 });
 
 /**
+ * @description OTA 不正署名 command を管理者限定で publish する試験API。
+ * @remarks
+ * - [重要] 実鍵を返さずに「署名不一致時の拒否」を再現するため、サーバー内で正規署名生成後に1文字だけ改ざんする。
+ * - [厳守] `signature` 以外の payload は正規値を使い、失敗要因を署名不一致へ限定する。
+ * - [禁止] 本APIを通常運用導線へ組み込まない。試験専用とする。
+ */
+app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    if (!USE_SECRET_CORE) {
+      throw new Error("tampered ota signature test failed. SecretCore is disabled.");
+    }
+    const requestBody = request.body as otaTamperedSignatureTestRequestBody;
+    const targetDeviceName = String(requestBody?.targetDeviceName ?? "").trim();
+    if (targetDeviceName.length === 0) {
+      throw new Error("tampered ota signature test failed. targetDeviceName is required.");
+    }
+    const currentSettings = settingsStore.getSettings();
+    const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
+    const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
+    const otaManifestUrl = requestBody.manifestUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/manifest.json`;
+    const otaFirmwareUrl = requestBody.firmwareUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`;
+    const otaFirmwareVersion = requestBody.firmwareVersion ?? currentSettings.otaFirmwareVersion;
+    const otaSha256 = requestBody.sha256 ?? otaFirmwareMetadata.sha256;
+    const timeoutSeconds = requestBody.timeoutSeconds ?? 120;
+    const unsignedPayload = {
+      v: 1,
+      DstID: targetDeviceName,
+      SrcID: config.sourceId,
+      id: `tampered-ota-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+      ts: new Date().toISOString(),
+      op: "call",
+      sub: "otaStart",
+      sigAlg: "HMAC-SHA256",
+      args: {
+        requestType: "otaStart",
+        manifestUrl: otaManifestUrl,
+        firmwareUrl: otaFirmwareUrl,
+        firmwareVersion: otaFirmwareVersion,
+        sha256: otaSha256,
+        timeoutSeconds
+      }
+    };
+    const normalizedPayloadText = JSON.stringify(unsignedPayload);
+    const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
+    const originalSignatureBase64 = signatureResult.signatureBase64;
+    const tamperedLastCharacter = originalSignatureBase64.endsWith("A") ? "B" : "A";
+    const tamperedSignatureBase64 = `${originalSignatureBase64.slice(0, -1)}${tamperedLastCharacter}`;
+    const tamperedPayload = {
+      ...unsignedPayload,
+      signature: tamperedSignatureBase64
+    };
+    const topic = `esp32lab/call/otaStart/${targetDeviceName}`;
+    const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(targetDeviceName, JSON.stringify(tamperedPayload));
+    await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
+    response.json({
+      result: "OK",
+      command: "otaStart",
+      mode: "tampered-signature",
+      targetDeviceName,
+      firmwareVersion: otaFirmwareVersion,
+      topic,
+      requestId: unsignedPayload.id,
+      originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
+      tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
  * @description rollback試験モードを切替えるコマンド発行API。
  */
 app.post("/api/commands/rollback-test", async (request: Request, response: Response) => {
@@ -2503,6 +2647,104 @@ function appendSecurityAuditLog(eventType: string, detailJson: Record<string, un
     detail: detailJson
   };
   fs.appendFileSync(securityAuditFilePath, `${JSON.stringify(logRecord)}\n`, "utf-8");
+}
+
+/**
+ * @description 管理者ログイン時の送信元IPを取得する。
+ * @param request Express の request。
+ * @returns 監査・ロック判定に使う送信元識別子。
+ */
+function resolveAdminLoginRemoteAddress(request: Request): string {
+  const forwardedForHeader = request.headers["x-forwarded-for"];
+  if (typeof forwardedForHeader === "string" && forwardedForHeader.trim().length > 0) {
+    return forwardedForHeader.split(",")[0].trim();
+  }
+  if (Array.isArray(forwardedForHeader) && forwardedForHeader.length > 0) {
+    return String(forwardedForHeader[0] ?? "").trim();
+  }
+  return request.ip || request.socket.remoteAddress || "unknown";
+}
+
+/**
+ * @description 管理者ログイン失敗回数を管理するキーを生成する。
+ * @param username 入力されたユーザー名。
+ * @param remoteAddress 送信元IP。
+ * @returns ユーザー名と送信元IPの複合キー。
+ */
+function resolveAdminLoginLockKey(username: string, remoteAddress: string): string {
+  return `${username.trim().toLowerCase()}@@${remoteAddress.trim()}`;
+}
+
+/**
+ * @description 現在有効な管理者ログインロック状態を取得する。
+ * @param adminLoginLockKey ロック管理キー。
+ * @returns 有効なロック情報。ロックされていない場合は null。
+ */
+function getActiveAdminLoginLockState(
+  adminLoginLockKey: string
+): { consecutiveFailureCount: number; retryAfterSeconds: number; lockedUntilIso: string } | null {
+  const storedState = adminLoginLockStateMap.get(adminLoginLockKey);
+  if (storedState === undefined) {
+    return null;
+  }
+  if (storedState.lockedUntilEpochMs <= 0) {
+    return null;
+  }
+  const currentEpochMs = Date.now();
+  if (storedState.lockedUntilEpochMs <= currentEpochMs) {
+    adminLoginLockStateMap.delete(adminLoginLockKey);
+    return null;
+  }
+  return {
+    consecutiveFailureCount: storedState.consecutiveFailureCount,
+    retryAfterSeconds: Math.max(1, Math.ceil((storedState.lockedUntilEpochMs - currentEpochMs) / 1000)),
+    lockedUntilIso: new Date(storedState.lockedUntilEpochMs).toISOString()
+  };
+}
+
+/**
+ * @description 管理者ログイン失敗を記録し、必要ならロック状態へ移行する。
+ * @param adminLoginLockKey ロック管理キー。
+ * @param username 入力されたユーザー名。
+ * @param remoteAddress 送信元IP。
+ * @returns 失敗回数とロック状態の要約。
+ */
+function registerAdminLoginFailure(
+  adminLoginLockKey: string,
+  username: string,
+  remoteAddress: string
+): {
+  consecutiveFailureCount: number;
+  isLocked: boolean;
+  remainingAttempts: number;
+  retryAfterSeconds: number;
+  lockedUntilIso: string | null;
+} {
+  const previousState = adminLoginLockStateMap.get(adminLoginLockKey);
+  const nextFailureCount = (previousState?.consecutiveFailureCount ?? 0) + 1;
+  const thresholdReached = nextFailureCount >= adminLoginLockoutThreshold;
+  const nextLockedUntilEpochMs = thresholdReached ? Date.now() + adminLoginLockoutDurationMs : 0;
+  adminLoginLockStateMap.set(adminLoginLockKey, {
+    username,
+    remoteAddress,
+    consecutiveFailureCount: nextFailureCount,
+    lockedUntilEpochMs: nextLockedUntilEpochMs
+  });
+  return {
+    consecutiveFailureCount: nextFailureCount,
+    isLocked: thresholdReached,
+    remainingAttempts: Math.max(0, adminLoginLockoutThreshold - nextFailureCount),
+    retryAfterSeconds: thresholdReached ? Math.ceil(adminLoginLockoutDurationMs / 1000) : 0,
+    lockedUntilIso: thresholdReached ? new Date(nextLockedUntilEpochMs).toISOString() : null
+  };
+}
+
+/**
+ * @description 管理者ログイン成功後に失敗回数とロック状態を解除する。
+ * @param adminLoginLockKey ロック管理キー。
+ */
+function clearAdminLoginLockState(adminLoginLockKey: string): void {
+  adminLoginLockStateMap.delete(adminLoginLockKey);
 }
 
 /**

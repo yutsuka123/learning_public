@@ -51,6 +51,7 @@
 ## 2. HTTPS OTA IF（ESP側）
 - [重要] OTA方式/安全要件は `OTA仕様書.md`、HTTP/HTTPS API詳細は `OTA_HTTPコマンド仕様書.md` を参照する。
 - [厳守] OTA開始は MQTT `otaStart` 指令で実施し、ESP32はHTTPSで `manifest` と `firmware.bin` を取得する。
+- [厳守][2026-05-07変更] `otaStart` 指令の復号後payloadには `sigAlg=HMAC-SHA256` と `signature` を含め、ESP32 は `k-device` による HMAC 検証失敗時に OTA を開始しない。理由: MQTT command 本文の改ざんやなりすまし開始を拒否するため。
 - [厳守] ESP32は分割書込み時に進捗をLCD表示し、MQTTで `otaProgress` 通知する。
 - [厳守] リトライは「同一進捗率停止: 5秒間隔3回」「最初から再試行: 3回」を上限とする。
 - [厳守] サーバー提示SHA256とESP32計算SHA256を一致確認できた場合のみ更新確定する。
@@ -538,6 +539,7 @@
 - [重要] `ProductionTool` のログ保存先は `ProductionTool画面仕様書.md` の既定候補と整合させる。
 
 ## 7. 変更履歴
+- 2026-05-07: `otaStart` の復号後payloadへ `sigAlg=HMAC-SHA256` と `signature` を必須化し、ESP32 が `k-device` で検証失敗時に開始拒否する条件を追記。理由: `008-0006` 実装に合わせ、OTA command の改ざん検知条件を IF 契約へ固定するため。
 - 2026-03-16: AP Pairing secure bundle apply IF（`POST /api/pairing/secure-bundle`）を追加。理由: `009-0019` の encrypted bundle 本体送達 / 復号 / NVS 保存実装に合わせ、送受信契約（AES-256-GCM + 固定AAD + payloadSha256）を IF として固定するため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` と別ソフト・独立動作であることを追記。理由: AP 共通画面や基本機能 IF における名称統一と、共通化/分離の解釈ずれを防ぐため。
 - 2026-03-16: `6.6 ProductionTool 基本機能 IF` を追加。理由: `004-0008`〜`004-0010` の起動・追加認証・対象機確認・dry-run・監査ログ導線を、不可逆処理本体と分離して IF 契約として先に固定するため。

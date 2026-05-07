@@ -77,6 +77,7 @@ TPM
 ## 4. TS本体と SecretCore の責務分担
 ### 4.0 現在の到達点と残課題
 - [重要][2026-03-15] 現在の実装では、`SecretCore` は鍵管理、暗号化/復号、バックアップ、fingerprint 取得に加え、Stage1 の MQTT command publish、Stage2 の notice subscribe / 受信イベントキュー、Stage3 の `k-device` 復号と最小DTO正規化、Stage4 の `deviceState` 完成スナップショット統合、Stage5 の `offline timeout` 判定、Stage6 の `status recovery wait`、Stage7 の OTA workflow 開始/監視/状態取得を担当する。
+- [進捗][2026-05-07] `runSignedOtaCommand()` は `otaStart` 復号後payloadへ `sigAlg=HMAC-SHA256` と `signature` を付与して publish し、ESP32 側で `k-device` による検証失敗時は開始拒否する構成へ更新した。理由: 高リスク command の改ざん検知を OTA 経路にも適用するため。
 - [重要][2026-03-15] 現在の実装では、`LocalServer` は Rust から受けた `deviceState` を保持し、WebSocket/UI 更新、OTA HTTPS 配布、REST 公開を担当している。
 - [重要][2026-03-15] 上記は最終要件「高リスク通信を含む通信まで Rust 主導」との間に差分があるため、`003-0012` は [部分完了] として扱う。
 - [厳守][2026-03-15] `003-0013` 対応として、TypeScript から SecretCore を呼ぶ窓口は `SecretCoreFacade` のみとし、`SecretCoreIpcClient` の直接利用を禁止する。
@@ -143,6 +144,7 @@ TPM
 - `offline timeout` 判定と `deviceStateUpdated` 生成（Stage5）
 - `status recovery wait` と online 復帰結果返却（Stage6）
 - OTA workflow `run_signed_ota_command` / `get_workflow_status`（Stage7）
+- OTA command payload の `HMAC-SHA256` 署名生成（`sigAlg` / `signature`）
 - workflow 内部での `createPairingBundle` 生成
 - AP モード ECDH セッション鍵生成
 - 高リスク処理の対ESP32通信開始、進捗管理、完了判定
@@ -398,6 +400,7 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-05-07: `runSignedOtaCommand()` と通常 OTA command publish の双方で `otaStart` に `HMAC-SHA256` + `signature` を付与し、ESP32 側で検証失敗時に開始拒否する構成を追記。理由: `008-0006` 実装に合わせ、高リスク OTA command の真正性保護責務を別層仕様へ固定するため。
 - 2026-04-21: `wrapped_secret` / `device_db` の復元と、秘密を含まないサポートパッケージ分離の方針を追加。理由: 011 章の文書・設計管理で、復旧経路と問い合わせ資料を分けて管理するため。
 - 2026-03-22: ESP32 AP 側 `POST /api/production/precheck` / `GET /api/production/state` と、Rust 側 workflow の AP ログイン経由 precheck 自動取得を追記。理由: `runProductionSecureFlow()` の dry-run 段階で、TS 側へ高リスク通信手順を戻さずに ESP32 実測値の取得経路を固定するため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`SecretCore` 共通化は `LocalServer` 側共通部の再利用を意味し、ソフト自体は分離・独立動作させる前提を追記。理由: `ProductionTool` の名称統一と、共通化/分離の解釈ずれを防ぐため。

@@ -157,6 +157,7 @@ pub struct DeviceStateSummaryDto {
     pub ota_phase: String,
     pub ota_detail: String,
     pub ota_progress_percent: Option<f64>,
+    pub ota_updated_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -323,6 +324,7 @@ impl MqttReceiverManager {
             ota_phase: device_state.ota_phase.clone(),
             ota_detail: device_state.ota_detail.clone(),
             ota_progress_percent: device_state.ota_progress_percent,
+            ota_updated_at: device_state.ota_updated_at.clone(),
         }))
     }
 

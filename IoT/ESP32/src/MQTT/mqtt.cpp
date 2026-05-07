@@ -353,16 +353,18 @@ bool buildSignedPayloadForVerification(const String& payloadText,
 }
 
 /**
- * @brief fileSync系コマンドの署名検証を行う。
+ * @brief 高リスク call コマンドの署名検証を行う。
  * @details
  * - [厳守] `signature` 未指定または検証失敗時は拒否する。
  * - [重要] 現行は `HMAC-SHA256`（`k-device` 鍵）を正規方式として検証する。
+ * - [重要][2026-05-07] `otaStart` も署名必須対象とする。
  * @param normalizedSubName サブコマンド。
  * @param payloadText 入力payload。
  * @return 検証成功時true。
  */
-bool verifyFileSyncCommandSignature(const String& normalizedSubName, const String& payloadText) {
-  if (!(normalizedSubName.equalsIgnoreCase("fileSyncPlan") ||
+bool verifySignedCallCommandSignature(const String& normalizedSubName, const String& payloadText) {
+  if (!(normalizedSubName.equalsIgnoreCase("otaStart") ||
+        normalizedSubName.equalsIgnoreCase("fileSyncPlan") ||
         normalizedSubName.equalsIgnoreCase("fileSyncChunk") ||
         normalizedSubName.equalsIgnoreCase("fileSyncCommit") ||
         normalizedSubName.equalsIgnoreCase("imagePackageApply"))) {
@@ -373,11 +375,11 @@ bool verifyFileSyncCommandSignature(const String& normalizedSubName, const Strin
   String signatureBase64;
   String signatureAlgorithm;
   if (!buildSignedPayloadForVerification(payloadText, &normalizedPayload, &signatureBase64, &signatureAlgorithm)) {
-    appLogError("verifyFileSyncCommandSignature failed. signature field is invalid. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCallCommandSignature failed. signature field is invalid. sub=%s", normalizedSubName.c_str());
     return false;
   }
   if (!(signatureAlgorithm.equalsIgnoreCase("HMAC-SHA256") || signatureAlgorithm.length() == 0)) {
-    appLogError("verifyFileSyncCommandSignature failed. unsupported sigAlg=%s sub=%s",
+    appLogError("verifySignedCallCommandSignature failed. unsupported sigAlg=%s sub=%s",
                 signatureAlgorithm.c_str(),
                 normalizedSubName.c_str());
     return false;
@@ -385,21 +387,21 @@ bool verifyFileSyncCommandSignature(const String& normalizedSubName, const Strin
 
   std::vector<uint8_t> expectedMacBytes;
   if (!decodeBase64Text(signatureBase64, &expectedMacBytes)) {
-    appLogError("verifyFileSyncCommandSignature failed. signature base64 decode error. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCallCommandSignature failed. signature base64 decode error. sub=%s", normalizedSubName.c_str());
     return false;
   }
   std::vector<uint8_t> keyBytes;
   if (!loadKDeviceBytes(&keyBytes)) {
-    appLogError("verifyFileSyncCommandSignature failed. no valid k-device. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCallCommandSignature failed. no valid k-device. sub=%s", normalizedSubName.c_str());
     return false;
   }
   std::vector<uint8_t> actualMacBytes;
   if (!computeHmacSha256(keyBytes, normalizedPayload, &actualMacBytes)) {
-    appLogError("verifyFileSyncCommandSignature failed. computeHmacSha256 error. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCallCommandSignature failed. computeHmacSha256 error. sub=%s", normalizedSubName.c_str());
     return false;
   }
   if (actualMacBytes.size() != expectedMacBytes.size()) {
-    appLogError("verifyFileSyncCommandSignature failed. signature length mismatch. expected=%ld actual=%ld sub=%s",
+    appLogError("verifySignedCallCommandSignature failed. signature length mismatch. expected=%ld actual=%ld sub=%s",
                 static_cast<long>(expectedMacBytes.size()),
                 static_cast<long>(actualMacBytes.size()),
                 normalizedSubName.c_str());
@@ -407,7 +409,7 @@ bool verifyFileSyncCommandSignature(const String& normalizedSubName, const Strin
   }
   for (size_t index = 0; index < actualMacBytes.size(); ++index) {
     if (actualMacBytes[index] != expectedMacBytes[index]) {
-      appLogError("verifyFileSyncCommandSignature failed. signature mismatch. sub=%s index=%ld",
+      appLogError("verifySignedCallCommandSignature failed. signature mismatch. sub=%s index=%ld",
                   normalizedSubName.c_str(),
                   static_cast<long>(index));
       return false;
@@ -2668,7 +2670,7 @@ bool handleSetOrGetSubCommand(const char* commandName,
 bool handleCallSubCommand(const String& normalizedSubName,
                           const String& payloadText,
                           const mqtt::mqttIncomingMessage& parsedMessage) {
-  if (!verifyFileSyncCommandSignature(normalizedSubName, payloadText)) {
+  if (!verifySignedCallCommandSignature(normalizedSubName, payloadText)) {
     if (normalizedSubName.equalsIgnoreCase("imagePackageApply")) {
       String sessionId;
       String destinationDir;
@@ -2923,6 +2925,13 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
     payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.sha256", &otaRequestContext.firmwareSha256);
     if (otaRequestContext.firmwareSha256.length() == 0) {
       payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.firmwareSha256", &otaRequestContext.firmwareSha256);
+    }
+    if (!verifySignedCallCommandSignature(normalizedSubName, effectivePayloadText)) {
+      appLogError("onMqttMessageReceived rejected otaStart. signature verification failed. topic=%s srcId=%s dstId=%s",
+                  (topicName == nullptr ? "(null)" : topicName),
+                  parsedMessage.srcId.c_str(),
+                  parsedMessage.dstId.c_str());
+      return;
     }
 
     if (otaRequestContext.firmwareUrl.length() == 0) {

@@ -377,6 +377,27 @@ impl KeyManager {
         k_device
     }
 
+    /// k-device で HMAC-SHA256 署名を生成する。
+    ///
+    /// [重要] 高リスク command は `signature` 追加前の JSON 文字列へ本署名を付与する。
+    /// [厳守] ESP32 側の `signature` 除去後 JSON 再構築方式と一致する文字列を入力する。
+    pub fn sign_by_k_device(&self, target_device_name: &str, message_text: &str) -> Result<String, String> {
+        if target_device_name.trim().is_empty() {
+            return Err("sign_by_k_device failed. target_device_name is empty.".to_string());
+        }
+        if message_text.is_empty() {
+            return Err("sign_by_k_device failed. message_text is empty.".to_string());
+        }
+        let key_device = self.get_k_device(target_device_name);
+        type HmacSha256 = Hmac<Sha256>;
+        let mut hmac_state = <HmacSha256 as Mac>::new_from_slice(&key_device)
+            .map_err(|e| format!("sign_by_k_device failed. init error={}", e))?;
+        hmac_state.update(message_text.as_bytes());
+        let signature_bytes = hmac_state.finalize().into_bytes();
+        use base64::prelude::*;
+        Ok(BASE64_STANDARD.encode(signature_bytes))
+    }
+
     /// k-device で平文を AES-256-GCM 暗号化する。
     pub fn encrypt_by_k_device(&self, target_device_name: &str, plain_text: &str) -> Result<(String, String, String), String> {
         let key = self.get_k_device(target_device_name);

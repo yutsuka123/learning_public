@@ -45,6 +45,7 @@ class typedEmitter extends EventEmitter {
 export class mqttGateway implements deviceTransport {
   private readonly config: appConfig;
   private readonly registry: DeviceRegistry;
+  private readonly localKeyService: keyService;
   private readonly payloadSecurityService: mqttPayloadSecurityService;
   private readonly secretCoreFacade?: SecretCoreFacade;
   private readonly mqttTransportMode: "ts" | "rust";
@@ -77,6 +78,7 @@ export class mqttGateway implements deviceTransport {
   ) {
     this.config = config;
     this.registry = registry;
+    this.localKeyService = localKeyService;
     this.sourceId = config.sourceId;
     this.payloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
     this.secretCoreFacade = secretCoreFacade;
@@ -251,6 +253,13 @@ export class mqttGateway implements deviceTransport {
         sub: subCommand,
         args
       };
+      // [重要][2026-05-07] otaStart は高リスク操作のため、復号後payloadへ HMAC 署名を付けてから暗号化する。
+      // 理由: ESP32 側で command 本文の改ざんを検知し、署名不一致時に OTA を開始させないため。
+      if (commandKind === "call" && subCommand === "otaStart") {
+        nextPayload.sigAlg = "HMAC-SHA256";
+        const signatureResult = await this.localKeyService.signByKDevice(destinationName, JSON.stringify(nextPayload));
+        nextPayload.signature = signatureResult.signatureBase64;
+      }
       const nextTopic = `esp32lab/${commandKind}/${subCommand}/${destinationName}`;
       const plainPayloadText = JSON.stringify(nextPayload);
       const encodedPayloadText = await this.payloadSecurityService.encodeOutgoingPayload(destinationName, plainPayloadText);

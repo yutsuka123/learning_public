@@ -121,7 +121,7 @@ JSON形式とし、リクエスト（Request）とレスポンス（Response）�
 | 期限 | `exp` | string | Rec | ISO8601 UTC。期限切れ要求を拒否する。 |
 
 - [厳守] `fileSyncPlan` / `fileSyncChunk` / `fileSyncCommit` / `imagePackageApply` は `signature` を必須扱いにする。
-- [推奨] `otaStart` も同等に署名保護する。
+- [厳守][2026-05-07変更] `otaStart` も `sigAlg=HMAC-SHA256` と `signature` を必須扱いにする。署名対象は `signature` 追加前の復号後JSON文字列とし、ESP32 は `k-device` で検証する。
 - [禁止] 検証失敗要求を「ログのみ」で継続実行しない。
 
 ### 3.1.2 payload全文暗号化エンベロープ（k-device）
@@ -1088,6 +1088,7 @@ ESP32からサーバーへ進捗を通知する。
 - デバイス接続時にMQTTブローカへ登録しておくこと。
 
 ## 5. 変更履歴
+- 2026-05-07: `otaStart` を `HMAC-SHA256` + `signature` 必須へ更新した。理由: `008-0006` 実装に合わせ、OTA 開始 command も `fileSync` 系と同じ真正性検証対象として固定するため。
 - 2026-03-12: `imagePackageApply` 展開本体の実装進捗（安全パス検証、`overwrite` 制御、`tmp` + `rename`）と制限事項（ZIP `stored` 方式のみ）を追記。理由: 実装と仕様の差分を解消し、試験時の前提条件を明確化するため。
 - 2026-03-15: `notice/trh` を温湿度・気圧通知へ更新し、`pressureHpa` と `sensorAddress` を追加。理由: `BME280` を I2C 共有で接続し、LocalServer 画面へ気圧も表示できるようにするため。
 - 2026-03-12: `imagePackageApply` を「段階実装中」へ更新し、`imagePackageStatus` 通知仕様と現行実装範囲（署名検証/HTTPS取得/SHA-256検証/展開未実装）を追記。理由: コード実装状態と仕様書の整合を保ち、残課題を明示するため。

@@ -183,6 +183,37 @@ export class keyService {
   }
 
   /**
+   * @description k-device を用いて HMAC-SHA256 署名を生成する。
+   * @param targetDeviceName 対象デバイス名。
+   * @param messageText 署名対象文字列。
+   * @returns 署名結果。
+   */
+  public async signByKDevice(
+    targetDeviceName: string,
+    messageText: string
+  ): Promise<{ signatureBase64: string; signatureAlgorithm: "HMAC-SHA256" }> {
+    if (targetDeviceName.trim().length === 0) {
+      throw new Error("signByKDevice failed. targetDeviceName is empty.");
+    }
+    if (messageText.length === 0) {
+      throw new Error("signByKDevice failed. messageText is empty.");
+    }
+    if (this.useSecretCore && this.secretCoreFacade) {
+      return await this.secretCoreFacade.signByKDevice(targetDeviceName, messageText);
+    }
+    const keyBase64 = await this.getKDeviceBase64(targetDeviceName);
+    const keyDeviceBuffer = Buffer.from(keyBase64, "base64");
+    if (keyDeviceBuffer.length !== 32) {
+      throw new Error(`signByKDevice failed. key length must be 32 bytes. targetDeviceName=${targetDeviceName} actual=${keyDeviceBuffer.length}`);
+    }
+    const signatureBase64 = crypto.createHmac("sha256", keyDeviceBuffer).update(messageText, "utf8").digest("base64");
+    return {
+      signatureBase64,
+      signatureAlgorithm: "HMAC-SHA256"
+    };
+  }
+
+  /**
    * @description k-device で AES-256-GCM 復号する。
    * @param targetDeviceName 対象デバイス名。
    * @param encrypted 暗号化オブジェクト。
