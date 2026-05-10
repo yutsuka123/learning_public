@@ -86,7 +86,7 @@
   - Wi-Fi接続失敗回数しきい値超過
 - **AP設定**:
   - SSID: `AP-esp32lab-<MAC(no colon)>` (例: `AP-esp32lab-A1B2C3D4E5F6`)
-  - Pass: `<AP_WIFI_PASSWORD>`
+  - Pass: `IoT/LocalServer/.env` の `AP_WIFI_PASSWORD`
 - **機能**:
   - Webサーバーを起動し、設定画面を提供する。
   - Wi-Fi SSID/Pass, MQTT接続情報, HTTPS接続先, 時刻同期設定, その他運用設定の変更が可能。
@@ -132,7 +132,7 @@
   - 既存設定でWi-Fi接続できない場合、救済措置として特定の設定用APを探して接続する。
 - **AP設定**:
   - SSID: `AP-esp32lab-setting`
-  - Pass: `<AP_WIFI_PASSWORD>`
+  - Pass: `IoT/LocalServer/.env` の `AP_WIFI_PASSWORD`
 - **動作**:
   - 接続成功後、デバイスは設定待ち受け状態（Webサーバー起動または所定のMQTT接続）となる。
   - 基本的にモード②と同様の設定機能を提供する。

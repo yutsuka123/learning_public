@@ -26,7 +26,7 @@
 ## 3. APネットワーク仕様
 - AP URL: `http://192.168.4.1/`
 - SSID: `AP-esp32lab-<MAC(no colon)>`
-- AP パスワード: `<AP_WIFI_PASSWORD>`
+- AP パスワード: `IoT/LocalServer/.env` の `AP_WIFI_PASSWORD`
 
 ## 4. 認証ロール仕様
 [重要] 下記は初期ロール定義である。運用段階では変更可能とし、固定値の継続利用は避ける。
