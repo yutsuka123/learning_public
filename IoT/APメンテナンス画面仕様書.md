@@ -36,12 +36,12 @@
 
 [推奨] AP Web UI ロール別パスワードに限らず、LocalServer 管理者パスワードや関連サービス認証情報も同様に変更運用し、変更履歴（対象・日時・実施者・理由）を監査ログへ残す。
 
-| ロール | user | password（初期値） | 主な権限 |
+| ロール | user | password（`.env` 参照） | 主な権限 |
 |---|---|---|---|
-| 閲覧用 | `user` | `<AP_ROLE_USER_PASSWORD>` | メイン画面の閲覧のみ |
-| メンテナンス者 | `maintenance` | `<AP_ROLE_MAINTENANCE_PASSWORD>` | メイン画面、ネットワーク設定変更 |
-| 管理者 | `admin` | `<AP_ROLE_ADMIN_PASSWORD>` | メンテナンス者権限 + `k-device` + MQTT証明書設定 |
-| メーカー | `mfg` | `<AP_ROLE_MFG_PASSWORD>` | 管理者権限 + ProductionTool 起動案内（eFuse 設定は実行しない） |
+| 閲覧用 | `user` | `IoT/LocalServer/.env` の `AP_ROLE_USER_PASSWORD` を参照 | メイン画面の閲覧のみ |
+| メンテナンス者 | `maintenance` | `IoT/LocalServer/.env` の `AP_ROLE_MAINTENANCE_PASSWORD` を参照 | メイン画面、ネットワーク設定変更 |
+| 管理者 | `admin` | `IoT/LocalServer/.env` の `AP_ROLE_ADMIN_PASSWORD` を参照 | メンテナンス者権限 + `k-device` + MQTT証明書設定 |
+| メーカー | `mfg` | `IoT/LocalServer/.env` の `AP_ROLE_MFG_PASSWORD` を参照 | 管理者権限 + ProductionTool 起動案内（eFuse 設定は実行しない） |
 
 ## 5. 画面仕様
 ### 5.1 メイン画面

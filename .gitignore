@@ -21,3 +21,8 @@ IoT/ESP32/.pio/
 node_modules
 node_modules
 node_modules
+
+# [重要] ルート直下に作成される IoT の配布・複製zipはGit管理対象外
+# 理由: 正規表現ではなく glob で管理し、番号付き複製もまとめて除外するため
+IoT.zip
+IoT (*.zip
