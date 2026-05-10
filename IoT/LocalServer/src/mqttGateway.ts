@@ -253,9 +253,9 @@ export class mqttGateway implements deviceTransport {
         sub: subCommand,
         args
       };
-      // [重要][2026-05-07] otaStart は高リスク操作のため、復号後payloadへ HMAC 署名を付けてから暗号化する。
-      // 理由: ESP32 側で command 本文の改ざんを検知し、署名不一致時に OTA を開始させないため。
-      if (commandKind === "call" && subCommand === "otaStart") {
+      // [重要][2026-05-10] 高リスクコマンドは復号後payloadへ HMAC 署名を付けてから暗号化する。
+      // 理由: ESP32 側で command 本文の改ざんを検知し、OTA 開始や重要設定変更を未署名で通さないため。
+      if (this.requiresCommandSignature(commandKind, subCommand)) {
         nextPayload.sigAlg = "HMAC-SHA256";
         const signatureResult = await this.localKeyService.signByKDevice(destinationName, JSON.stringify(nextPayload));
         nextPayload.signature = signatureResult.signatureBase64;
@@ -267,6 +267,22 @@ export class mqttGateway implements deviceTransport {
     });
 
     await Promise.all(publishTasks);
+  }
+
+  /**
+   * @description HMAC 署名が必須の高リスクコマンドか判定する。
+   * @param commandKind コマンド種別。
+   * @param subCommand サブコマンド。
+   * @returns 署名必須なら true。
+   */
+  private requiresCommandSignature(commandKind: mqttCommandKind, subCommand: string): boolean {
+    if (commandKind === "call" && subCommand === "otaStart") {
+      return true;
+    }
+    if (commandKind === "set" && (subCommand === "keyDeviceSet" || subCommand === "fileLogSet")) {
+      return true;
+    }
+    return false;
   }
 
   /**

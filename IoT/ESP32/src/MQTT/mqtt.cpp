@@ -353,21 +353,31 @@ bool buildSignedPayloadForVerification(const String& payloadText,
 }
 
 /**
- * @brief 高リスク call コマンドの署名検証を行う。
+ * @brief 高リスク MQTT コマンドの署名検証を行う。
  * @details
  * - [厳守] `signature` 未指定または検証失敗時は拒否する。
  * - [重要] 現行は `HMAC-SHA256`（`k-device` 鍵）を正規方式として検証する。
- * - [重要][2026-05-07] `otaStart` も署名必須対象とする。
+ * - [重要][2026-05-10] `keyDeviceSet` / `fileLogSet` も署名必須対象とする。
+ * @param commandName コマンド名。
  * @param normalizedSubName サブコマンド。
  * @param payloadText 入力payload。
  * @return 検証成功時true。
  */
-bool verifySignedCallCommandSignature(const String& normalizedSubName, const String& payloadText) {
-  if (!(normalizedSubName.equalsIgnoreCase("otaStart") ||
-        normalizedSubName.equalsIgnoreCase("fileSyncPlan") ||
-        normalizedSubName.equalsIgnoreCase("fileSyncChunk") ||
-        normalizedSubName.equalsIgnoreCase("fileSyncCommit") ||
-        normalizedSubName.equalsIgnoreCase("imagePackageApply"))) {
+bool verifySignedCommandSignature(const char* commandName, const String& normalizedSubName, const String& payloadText) {
+  const bool isSignedCallCommand =
+      commandName != nullptr &&
+      strcmp(commandName, "call") == 0 &&
+      (normalizedSubName.equalsIgnoreCase("otaStart") ||
+       normalizedSubName.equalsIgnoreCase("fileSyncPlan") ||
+       normalizedSubName.equalsIgnoreCase("fileSyncChunk") ||
+       normalizedSubName.equalsIgnoreCase("fileSyncCommit") ||
+       normalizedSubName.equalsIgnoreCase("imagePackageApply"));
+  const bool isSignedSetCommand =
+      commandName != nullptr &&
+      strcmp(commandName, "set") == 0 &&
+      (normalizedSubName.equalsIgnoreCase("keyDeviceSet") ||
+       normalizedSubName.equalsIgnoreCase("fileLogSet"));
+  if (!(isSignedCallCommand || isSignedSetCommand)) {
     return true;
   }
 
@@ -375,41 +385,52 @@ bool verifySignedCallCommandSignature(const String& normalizedSubName, const Str
   String signatureBase64;
   String signatureAlgorithm;
   if (!buildSignedPayloadForVerification(payloadText, &normalizedPayload, &signatureBase64, &signatureAlgorithm)) {
-    appLogError("verifySignedCallCommandSignature failed. signature field is invalid. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCommandSignature failed. signature field is invalid. command=%s sub=%s",
+                commandName == nullptr ? "(null)" : commandName,
+                normalizedSubName.c_str());
     return false;
   }
   if (!(signatureAlgorithm.equalsIgnoreCase("HMAC-SHA256") || signatureAlgorithm.length() == 0)) {
-    appLogError("verifySignedCallCommandSignature failed. unsupported sigAlg=%s sub=%s",
+    appLogError("verifySignedCommandSignature failed. unsupported sigAlg=%s command=%s sub=%s",
                 signatureAlgorithm.c_str(),
+                commandName == nullptr ? "(null)" : commandName,
                 normalizedSubName.c_str());
     return false;
   }
 
   std::vector<uint8_t> expectedMacBytes;
   if (!decodeBase64Text(signatureBase64, &expectedMacBytes)) {
-    appLogError("verifySignedCallCommandSignature failed. signature base64 decode error. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCommandSignature failed. signature base64 decode error. command=%s sub=%s",
+                commandName == nullptr ? "(null)" : commandName,
+                normalizedSubName.c_str());
     return false;
   }
   std::vector<uint8_t> keyBytes;
   if (!loadKDeviceBytes(&keyBytes)) {
-    appLogError("verifySignedCallCommandSignature failed. no valid k-device. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCommandSignature failed. no valid k-device. command=%s sub=%s",
+                commandName == nullptr ? "(null)" : commandName,
+                normalizedSubName.c_str());
     return false;
   }
   std::vector<uint8_t> actualMacBytes;
   if (!computeHmacSha256(keyBytes, normalizedPayload, &actualMacBytes)) {
-    appLogError("verifySignedCallCommandSignature failed. computeHmacSha256 error. sub=%s", normalizedSubName.c_str());
+    appLogError("verifySignedCommandSignature failed. computeHmacSha256 error. command=%s sub=%s",
+                commandName == nullptr ? "(null)" : commandName,
+                normalizedSubName.c_str());
     return false;
   }
   if (actualMacBytes.size() != expectedMacBytes.size()) {
-    appLogError("verifySignedCallCommandSignature failed. signature length mismatch. expected=%ld actual=%ld sub=%s",
+    appLogError("verifySignedCommandSignature failed. signature length mismatch. expected=%ld actual=%ld command=%s sub=%s",
                 static_cast<long>(expectedMacBytes.size()),
                 static_cast<long>(actualMacBytes.size()),
+                commandName == nullptr ? "(null)" : commandName,
                 normalizedSubName.c_str());
     return false;
   }
   for (size_t index = 0; index < actualMacBytes.size(); ++index) {
     if (actualMacBytes[index] != expectedMacBytes[index]) {
-      appLogError("verifySignedCallCommandSignature failed. signature mismatch. sub=%s index=%ld",
+      appLogError("verifySignedCommandSignature failed. signature mismatch. command=%s sub=%s index=%ld",
+                  commandName == nullptr ? "(null)" : commandName,
                   normalizedSubName.c_str(),
                   static_cast<long>(index));
       return false;
@@ -2531,6 +2552,7 @@ bool handleFileSyncCommitCommand(const String& payloadText, const String& destin
  */
 bool handleSetOrGetSubCommand(const char* commandName,
                               const String& normalizedSubName,
+                              const String& payloadText,
                               const mqtt::mqttIncomingMessage& parsedMessage) {
   if (commandName == nullptr || strlen(commandName) == 0) {
     return false;
@@ -2540,12 +2562,30 @@ bool handleSetOrGetSubCommand(const char* commandName,
     return false;
   }
 
+  if (strcmp(commandName, "set") == 0 && !verifySignedCommandSignature(commandName, normalizedSubName, payloadText)) {
+    appLogError("handleSetOrGetSubCommand rejected. signature verification failed. command=%s sub=%s srcId=%s dstId=%s",
+                commandName,
+                normalizedSubName.c_str(),
+                parsedMessage.srcId.c_str(),
+                parsedMessage.dstId.c_str());
+    return true;
+  }
+
   if (strcmp(commandName, "set") == 0 && normalizedSubName.equalsIgnoreCase("keyDeviceSet")) {
     jsonService payloadJsonService;
     String keyDeviceBase64;
     payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.keyDevice", &keyDeviceBase64);
     if (keyDeviceBase64.length() == 0) {
       appLogError("handleSetOrGetSubCommand failed. keyDeviceSet requires args.keyDevice.");
+      return true;
+    }
+    std::vector<uint8_t> nextKeyDeviceBytes;
+    if (!decodeBase64Text(keyDeviceBase64, &nextKeyDeviceBytes) || nextKeyDeviceBytes.size() != 32) {
+      // [重要][修正 2026-05-10] keyDeviceSet は署名検証後でも、保存前に鍵形式を検証する。
+      // 理由: payload 取り出し異常や不正な Base64 を保存すると、以後の MQTT 暗号通信が復旧不能になるため。
+      appLogError("handleSetOrGetSubCommand failed. keyDeviceSet invalid key format. base64Length=%ld decodedLength=%ld",
+                  static_cast<long>(keyDeviceBase64.length()),
+                  static_cast<long>(nextKeyDeviceBytes.size()));
       return true;
     }
     if (!ensureMqttSensitiveDataReady()) {
@@ -2670,7 +2710,7 @@ bool handleSetOrGetSubCommand(const char* commandName,
 bool handleCallSubCommand(const String& normalizedSubName,
                           const String& payloadText,
                           const mqtt::mqttIncomingMessage& parsedMessage) {
-  if (!verifySignedCallCommandSignature(normalizedSubName, payloadText)) {
+  if (!verifySignedCommandSignature("call", normalizedSubName, payloadText)) {
     if (normalizedSubName.equalsIgnoreCase("imagePackageApply")) {
       String sessionId;
       String destinationDir;
@@ -2926,7 +2966,7 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
     if (otaRequestContext.firmwareSha256.length() == 0) {
       payloadJsonService.getValueByPath(parsedMessage.rawPayload, "args.firmwareSha256", &otaRequestContext.firmwareSha256);
     }
-    if (!verifySignedCallCommandSignature(normalizedSubName, effectivePayloadText)) {
+    if (!verifySignedCommandSignature("call", normalizedSubName, effectivePayloadText)) {
       appLogError("onMqttMessageReceived rejected otaStart. signature verification failed. topic=%s srcId=%s dstId=%s",
                   (topicName == nullptr ? "(null)" : topicName),
                   parsedMessage.srcId.c_str(),
@@ -2980,12 +3020,12 @@ void onMqttMessageReceived(char* topicName, byte* payloadBuffer, unsigned int pa
   }
 
   const bool isSetTopic = (topicName != nullptr && strstr(topicName, "esp32lab/set/") != nullptr);
-  if (isSetTopic && handleSetOrGetSubCommand("set", normalizedSubName, parsedMessage)) {
+  if (isSetTopic && handleSetOrGetSubCommand("set", normalizedSubName, effectivePayloadText, parsedMessage)) {
     return;
   }
 
   const bool isGetTopic = (topicName != nullptr && strstr(topicName, "esp32lab/get/") != nullptr);
-  if (isGetTopic && handleSetOrGetSubCommand("get", normalizedSubName, parsedMessage)) {
+  if (isGetTopic && handleSetOrGetSubCommand("get", normalizedSubName, effectivePayloadText, parsedMessage)) {
     return;
   }
 }

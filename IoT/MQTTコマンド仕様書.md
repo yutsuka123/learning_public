@@ -110,7 +110,7 @@ JSON形式とし、リクエスト（Request）とレスポンス（Response）�
 | 応答結果 | `Res` | string | Rec | 要求を受けた側の実行結果。`OK` / `NG` / `BUSY` を使用する。`NG` の場合は `detail` に理由を記載する。 |
 
 ### 3.1.1 セキュリティ拡張ヘッダ（推奨/一部厳守）
-[重要] `fileSync` 系と `otaStart` は高リスク操作のため、HMAC/署名検証前提の拡張ヘッダを定義する。
+[重要] `fileSync` 系、`otaStart`、重要設定変更 `set` コマンドは高リスク操作のため、HMAC/署名検証前提の拡張ヘッダを定義する。
 
 | フィールド | キー | 型 | 必須 | 説明 |
 | :--- | :--- | :--- | :--- | :--- |
@@ -122,6 +122,7 @@ JSON形式とし、リクエスト（Request）とレスポンス（Response）�
 
 - [厳守] `fileSyncPlan` / `fileSyncChunk` / `fileSyncCommit` / `imagePackageApply` は `signature` を必須扱いにする。
 - [厳守][2026-05-07変更] `otaStart` も `sigAlg=HMAC-SHA256` と `signature` を必須扱いにする。署名対象は `signature` 追加前の復号後JSON文字列とし、ESP32 は `k-device` で検証する。
+- [厳守][2026-05-10変更] `set/keyDeviceSet` と `set/fileLogSet` も `sigAlg=HMAC-SHA256` と `signature` を必須扱いにする。署名対象は `signature` 追加前の復号後JSON文字列とし、ESP32 は `k-device` で検証する。
 - [禁止] 検証失敗要求を「ログのみ」で継続実行しない。
 
 ### 3.1.2 payload全文暗号化エンベロープ（k-device）
@@ -1088,6 +1089,7 @@ ESP32からサーバーへ進捗を通知する。
 - デバイス接続時にMQTTブローカへ登録しておくこと。
 
 ## 5. 変更履歴
+- 2026-05-10: `set/keyDeviceSet` と `set/fileLogSet` を `HMAC-SHA256` + `signature` 必須へ更新した。理由: `008-0007` として、`k-device` 更新やログ制御のような重要設定変更を未署名のまま実行させないため。
 - 2026-05-07: `otaStart` を `HMAC-SHA256` + `signature` 必須へ更新した。理由: `008-0006` 実装に合わせ、OTA 開始 command も `fileSync` 系と同じ真正性検証対象として固定するため。
 - 2026-03-12: `imagePackageApply` 展開本体の実装進捗（安全パス検証、`overwrite` 制御、`tmp` + `rename`）と制限事項（ZIP `stored` 方式のみ）を追記。理由: 実装と仕様の差分を解消し、試験時の前提条件を明確化するため。
 - 2026-03-15: `notice/trh` を温湿度・気圧通知へ更新し、`pressureHpa` と `sensorAddress` を追加。理由: `BME280` を I2C 共有で接続し、LocalServer 画面へ気圧も表示できるようにするため。

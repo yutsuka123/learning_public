@@ -144,6 +144,13 @@ export interface otaTamperedSignatureTestRequestBody extends otaCommandRequestBo
 }
 
 /**
+ * @description 重要設定変更コマンドの不正署名試験APIの要求パラメータ。
+ */
+export interface settingTamperedSignatureTestRequestBody {
+  targetDeviceName: string;
+}
+
+/**
  * @description AP単体設定投入APIの要求パラメータ。
  */
 export interface apConfigureRequestBody {

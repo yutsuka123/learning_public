@@ -1,0 +1,23 @@
+# [重要] LocalServer生成物の除外設定
+node_modules/
+dist/
+.env
+certs/
+logs/*.log
+ota/*.bin
+# build
+.pio/
+IoT/ESP32/.pio/
+# C# build
+csharp/**/bin/
+csharp/**/obj/
+
+# PlatformIO
+IoT/ESP32/.pio/
+
+# C/C++ build outputs
+*.obj
+*.exe
+node_modules
+node_modules
+node_modules

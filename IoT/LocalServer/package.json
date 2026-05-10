@@ -25,6 +25,7 @@
     "test:7081": "node scripts/test7081BasicStability.mjs",
     "test:7082": "node scripts/test7082SecuredE2E.mjs",
     "test:7042": "node scripts/test7042SignedOtaHmacVerification.mjs",
+    "test:7052": "node scripts/test7052KeyDeviceHmacVerification.mjs",
     "keys:vault:setup": "node scripts/setupKiotKeyVault.mjs",
     "keys:vault:unlock": "node scripts/unlockKiotKeyVault.mjs",
     "test:7087": "node scripts/unlockKiotKeyVault.mjs && node scripts/test7087ProductionToolSmoke.mjs",

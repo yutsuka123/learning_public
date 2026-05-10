@@ -1,0 +1,37 @@
+# [厳守] 認証情報・秘密鍵・証明書などの機密はGit管理禁止
+# 理由: 誤公開による不正アクセス・インシデントを防止するため
+
+# 認証関連ファイル
+auth/
+credentials/
+secrets/
+**/secrets/
+**/credentials/
+**/auth/
+
+# 秘密鍵 / 証明書
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.crt
+*.der
+
+# 代表的な設定ファイル
+.env
+.env.*
+*.secret.json
+*credentials*.json
+*service-account*.json
+aws-credentials*
+gcp-credentials*
+
+# ESP系で機密を含みやすいローカル設定
+*.private.h
+private_config.h
+
+# [厳守] ESP32機密設定の正ファイルはGit管理禁止
+# 理由: 実運用のWi-Fi/MQTT接続情報漏えいを防ぐため
+ESP32/data/sensitiveData.json
+ESP32/header/sensitiveData.h

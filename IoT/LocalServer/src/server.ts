@@ -31,6 +31,7 @@ import {
   keyRotationWorkflowStartRequestBody,
   otaCommandRequestBody,
   otaTamperedSignatureTestRequestBody,
+  settingTamperedSignatureTestRequestBody,
   pairingRequestedSettings,
   pairingWorkflowStartRequestBody,
   productionWorkflowPrecheckSnapshot,
@@ -1635,8 +1636,10 @@ app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, res
     const normalizedPayloadText = JSON.stringify(unsignedPayload);
     const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
     const originalSignatureBase64 = signatureResult.signatureBase64;
-    const tamperedLastCharacter = originalSignatureBase64.endsWith("A") ? "B" : "A";
-    const tamperedSignatureBase64 = `${originalSignatureBase64.slice(0, -1)}${tamperedLastCharacter}`;
+    // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
+    // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
+    const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
+    const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
     const tamperedPayload = {
       ...unsignedPayload,
       signature: tamperedSignatureBase64
@@ -1652,6 +1655,78 @@ app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, res
       firmwareVersion: otaFirmwareVersion,
       topic,
       requestId: unsignedPayload.id,
+      originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
+      tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description `keyDeviceSet` の不正署名 command を管理者限定で publish する試験API。
+ * @remarks
+ * - [重要] 実鍵を返さずに「署名不一致時の拒否」を再現するため、サーバー内で正規署名生成後に1文字だけ改ざんする。
+ * - [厳守] `signature` 以外の payload は正規値を使い、失敗要因を署名不一致へ限定する。
+ * - [禁止] 本APIを通常運用導線へ組み込まない。試験専用とする。
+ */
+app.post("/api/admin/tests/settings/key-device/tampered-signature", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as settingTamperedSignatureTestRequestBody;
+    const targetDeviceName = String(requestBody?.targetDeviceName ?? "").trim();
+    if (targetDeviceName.length === 0) {
+      throw new Error("tampered keyDeviceSet signature test failed. targetDeviceName is required.");
+    }
+    const tamperedKeyDeviceBase64 = crypto.randomBytes(32).toString("base64");
+    const unsignedPayload = {
+      v: 1,
+      DstID: targetDeviceName,
+      SrcID: config.sourceId,
+      id: `tampered-key-device-${Date.now()}-${Math.floor(Math.random() * 100000)}`,
+      ts: new Date().toISOString(),
+      op: "set",
+      sub: "keyDeviceSet",
+      sigAlg: "HMAC-SHA256",
+      args: {
+        keyDevice: tamperedKeyDeviceBase64
+      }
+    };
+    const normalizedPayloadText = JSON.stringify(unsignedPayload);
+    const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
+    const originalSignatureBase64 = signatureResult.signatureBase64;
+    // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
+    // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
+    const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
+    const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
+    const tamperedPayload = {
+      ...unsignedPayload,
+      signature: tamperedSignatureBase64
+    };
+    const topic = `esp32lab/set/keyDeviceSet/${targetDeviceName}`;
+    const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(targetDeviceName, JSON.stringify(tamperedPayload));
+    if (MQTT_TRANSPORT_MODE === "rust") {
+      await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
+    } else {
+      throw new Error("tampered keyDeviceSet signature test failed. rust transport is required for direct tampered publish.");
+    }
+    response.json({
+      result: "OK",
+      command: "keyDeviceSet",
+      mode: "tampered-signature",
+      targetDeviceName,
+      topic,
+      requestId: unsignedPayload.id,
+      tamperedKeyDeviceFingerprint: crypto.createHash("sha256").update(Buffer.from(tamperedKeyDeviceBase64, "base64")).digest("hex").slice(0, 16),
+      tamperedKeyDevicePreview: `${tamperedKeyDeviceBase64.slice(0, 8)}...`,
       originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
       tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
     });

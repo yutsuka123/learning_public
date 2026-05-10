@@ -1,0 +1,13 @@
+# ESP32-S3 16MB old partition table
+# [旧仕様][念のため保存] 2026-02-24 に COM9 実機から読み出した旧パーティション表。
+# [新規利用禁止] app0/app1 が各 0x140000 と小さく、現行ファームサイズおよび2面OTA運用に不足するため。
+# [重要] 現行正規表は `esp32s3_16MB_current.csv` を使用する。
+# [禁止] 差分解析や旧環境復元以外でこのファイルを `board_build.partitions` に指定しない。
+#
+# name,      type, subtype,  offset,   size,     flags
+nvs,         data, nvs,      0x9000,   0x5000,
+otadata,     data, ota,      0xe000,   0x2000,
+app0,        app,  ota_0,    0x10000,  0x140000,
+app1,        app,  ota_1,    0x150000, 0x140000,
+spiffs,      data, spiffs,   0x290000, 0x160000,
+coredump,    data, coredump, 0x3f0000, 0x010000,
