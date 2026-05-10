@@ -1,0 +1,14 @@
+# [重要] ESP32 ローカル設定・生成物の除外設定
+# [厳守] `.env` は機密値を含むためコミット禁止。
+# [推奨] 共有サンプルは `.env.example.sample.txt` を参照する。
+
+# secret environment file
+.env
+
+# platformio artifacts
+.pio/
+.vscode/
+
+# runtime logs / temporary files
+logs/
+*.log

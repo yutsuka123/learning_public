@@ -1,0 +1,23 @@
+# [重要] ProductionTool のビルド成果物と実行時ファイルを除外する。
+# 理由: 生成物や機微を含みうるログを誤ってリポジトリへ含めないため。
+
+# build outputs
+/build/
+/dist/
+/target/
+/bin/
+/obj/
+
+# runtime files
+/logs/*.json
+/logs/*.log
+/logs/*.txt
+/tests/logs/
+/temp/
+/tmp/
+
+# local configuration
+/.env
+/.env.local
+/config/*.local.*
+/config/*.secret.*

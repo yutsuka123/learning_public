@@ -1,0 +1,12 @@
+# [重要] LocalServer生成物の除外設定
+node_modules/
+dist/
+.env
+certs/
+logs/*.log
+ota/*.bin
+# build
+.pio/
+IoT/ESP32/.pio/
+csharp/modern-features/ModernCSharpApp/bin/
+csharp/modern-features/ModernCSharpApp/obj/

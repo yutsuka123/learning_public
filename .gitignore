@@ -1,28 +1,38 @@
-# [重要] LocalServer生成物の除外設定
+# [重要] 生成物・一時ファイル・機密の除外設定
+# 理由: 再生成できる成果物や実行時データを Git 管理すると、差分ノイズや誤コミットが増えるため。
+
+# Node / frontend
 node_modules/
 dist/
 .env
 certs/
-logs/*.log
-ota/*.bin
-# build
+logs/
+
+# PlatformIO / ESP32
 .pio/
 IoT/ESP32/.pio/
-# C# build
+IoT/ESP32/src/Untitled
+IoT/ESP32/sdkconfig.defaults
+
+# LocalServer generated data
+IoT/LocalServer/data/secure-backups/
+IoT/LocalServer/data/securityState.json
+IoT/LocalServer/data/wrapped_*.bin
+IoT/LocalServer/public/assets/images-pack.zip
+IoT/LocalServer/data/wifi-profiles/*.xml
+IoT/LocalServer/scripts/wifi-profile-*.xml
+IoT/LocalServer/tmp/
+
+# ProductionTool / SecretCore / C# build outputs
+IoT/ProductionTool/target/
+IoT/SecretCore/target/
 csharp/**/bin/
 csharp/**/obj/
 
-# PlatformIO
-IoT/ESP32/.pio/
+# Workspace helper data
+.serena/
+IoT*.zip
 
 # C/C++ build outputs
 *.obj
 *.exe
-node_modules
-node_modules
-node_modules
-
-# [重要] ルート直下に作成される IoT の配布・複製zipはGit管理対象外
-# 理由: 正規表現ではなく glob で管理し、番号付き複製もまとめて除外するため
-IoT.zip
-IoT (*.zip

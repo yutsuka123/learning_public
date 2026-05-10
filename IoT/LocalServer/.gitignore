@@ -1,0 +1,23 @@
+# [重要] LocalServer 生成物・機密設定の除外設定
+# [厳守] `.env` は実運用の機密値を保持するため、Gitへコミットしない。
+# [推奨] 共有が必要な設定例は `.env.example.sample.txt` を更新する。
+
+# package build artifacts
+node_modules/
+dist/
+
+# secret environment file
+.env
+
+# generated files
+certs/
+# [厳守] logs 配下は実行・診断・調査の生成物を置くためGit管理しない
+# 理由: 再生成可能で差分ノイズが多く、誤って機密や大量データを含みやすいため
+logs/
+ota/*.bin
+data/keyStore.json
+data/secure-key-cache/
+
+# embedded build cache (IDEから混在する可能性があるため明示除外)
+.pio/
+IoT/ESP32/.pio/
