@@ -5,17 +5,19 @@
 //   (b) wrapped_k_user.bin からDPAPI復号（TS版からのインポート時）
 // [厳守] wrapped_k_user.bin が存在する場合は (b) を優先する。
 // [厳守] k-user の平文をファイル保存しない（DPAPI暗号化のみ）。
-// 変更日: 2026-03-15 import/export と fingerprint 取得機能を追加。理由: TS-Rust 境界IFを固定するため。
+// 変更日: 2026-05-11 wrapped_secret に version / createdAt / integrity を追加。理由: 008-0013 対応のため。
 
 use crate::dpapi;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
+use base64::Engine;
+use chrono::DateTime;
 use hkdf::Hkdf;
 use hmac::{Hmac, Mac};
 use rand::Rng;
 use scrypt::{Params as ScryptParams, scrypt};
 use serde::{Deserialize, Serialize};
-use sha2::Sha256;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
@@ -28,6 +30,8 @@ const BACKUP_KDF_N_LOG2: u8 = 15;
 const BACKUP_KDF_R: u32 = 8;
 const BACKUP_KDF_P: u32 = 1;
 const BACKUP_KDF_SALT_BYTES: usize = 16;
+const WRAPPED_SECRET_FILE_VERSION: u32 = 1;
+const WRAPPED_SECRET_ALG: &str = "DPAPI";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct KUserBackupKdfParams {
@@ -56,6 +60,15 @@ struct KUserBackupEnvelope {
     exported_at: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct WrappedSecretEnvelope {
+    version: u32,
+    created_at: String,
+    alg: String,
+    payload_base64: String,
+    payload_sha256_base64: String,
+}
+
 /// 鍵管理構造体。s_random による HKDF 導出とインポート済み k-user の双方に対応する。
 pub struct KeyManager {
     s_random: [u8; 32],
@@ -82,7 +95,7 @@ impl KeyManager {
         let path = Path::new(WRAPPED_SECRET_PATH);
         if path.exists() {
             let encrypted = fs::read(path).map_err(|e| format!("Read error: {}", e))?;
-            let decrypted = dpapi::unprotect_data(&encrypted)?;
+            let decrypted = Self::decode_wrapped_secret_blob(&encrypted)?;
             if decrypted.len() != 32 {
                 return Err("Invalid S_random length".to_string());
             }
@@ -92,7 +105,7 @@ impl KeyManager {
         } else {
             let mut s_random = [0u8; 32];
             rand::rng().fill_bytes(&mut s_random);
-            let encrypted = dpapi::protect_data(&s_random)?;
+            let encrypted = Self::create_wrapped_secret_blob(&s_random)?;
             if let Some(parent) = path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
@@ -108,7 +121,7 @@ impl KeyManager {
             return None;
         }
         let encrypted = fs::read(path).ok()?;
-        let decrypted = dpapi::unprotect_data(&encrypted).ok()?;
+        let decrypted = Self::decode_wrapped_secret_blob(&encrypted).ok()?;
         if decrypted.len() != 32 {
             eprintln!("Warning: wrapped_k_user.bin has invalid length {}. Ignoring.", decrypted.len());
             return None;
@@ -208,6 +221,80 @@ impl KeyManager {
         use sha2::Digest;
         let digest = Sha256::digest(key_bytes);
         hex::encode(&digest[0..8])
+    }
+
+    /// wrapped_secret の保存データを作成する。
+    ///
+    /// [重要] DPAPI で保護した後に version / createdAt / integrity を付与する。
+    fn create_wrapped_secret_blob(secret_bytes: &[u8; 32]) -> Result<Vec<u8>, String> {
+        let protected_bytes = dpapi::protect_data(secret_bytes)?;
+        let integrity_digest = Sha256::digest(&protected_bytes);
+        let envelope = WrappedSecretEnvelope {
+            version: WRAPPED_SECRET_FILE_VERSION,
+            created_at: chrono::Utc::now().to_rfc3339(),
+            alg: WRAPPED_SECRET_ALG.to_string(),
+            payload_base64: base64::prelude::BASE64_STANDARD.encode(&protected_bytes),
+            payload_sha256_base64: base64::prelude::BASE64_STANDARD.encode(integrity_digest),
+        };
+        serde_json::to_vec_pretty(&envelope)
+            .map_err(|e| format!("create_wrapped_secret_blob failed. serialize error={}", e))
+    }
+
+    /// wrapped_secret を読み込み、整合性を検証して DPAPI 復号する。
+    ///
+    /// [厳守] 新形式は version / createdAt / SHA-256 を必ず検証する。
+    /// [旧仕様] 旧形式の raw DPAPI blob は互換のため読み込みだけ許可する。
+    fn decode_wrapped_secret_blob(wrapped_secret_blob: &[u8]) -> Result<Vec<u8>, String> {
+        match serde_json::from_slice::<WrappedSecretEnvelope>(wrapped_secret_blob) {
+            Ok(envelope) => Self::decode_wrapped_secret_envelope(envelope),
+            Err(_) => {
+                eprintln!("Warning: wrapped_secret.bin is legacy raw DPAPI blob. integrity metadata is unavailable.");
+                dpapi::unprotect_data(wrapped_secret_blob)
+            }
+        }
+    }
+
+    /// 新形式 wrapped_secret の整合性チェックを行う。
+    fn decode_wrapped_secret_envelope(envelope: WrappedSecretEnvelope) -> Result<Vec<u8>, String> {
+        if envelope.version != WRAPPED_SECRET_FILE_VERSION {
+            return Err(format!(
+                "wrapped_secret version mismatch. expected={} actual={}",
+                WRAPPED_SECRET_FILE_VERSION, envelope.version
+            ));
+        }
+        if envelope.alg != WRAPPED_SECRET_ALG {
+            return Err(format!(
+                "wrapped_secret algorithm mismatch. expected={} actual={}",
+                WRAPPED_SECRET_ALG, envelope.alg
+            ));
+        }
+        if envelope.created_at.trim().is_empty() {
+            return Err("wrapped_secret created_at is empty.".to_string());
+        }
+        let created_at = DateTime::parse_from_rfc3339(&envelope.created_at).map_err(|e| {
+            format!(
+                "wrapped_secret created_at parse failed. createdAt={} detail={}",
+                envelope.created_at, e
+            )
+        })?;
+        if created_at.timestamp() <= 0 {
+            return Err(format!(
+                "wrapped_secret created_at is invalid. createdAt={}",
+                envelope.created_at
+            ));
+        }
+        let protected_bytes = base64::prelude::BASE64_STANDARD
+            .decode(&envelope.payload_base64)
+            .map_err(|e| format!("wrapped_secret payload decode failed. detail={}", e))?;
+        let expected_digest = base64::prelude::BASE64_STANDARD
+            .decode(&envelope.payload_sha256_base64)
+            .map_err(|e| format!("wrapped_secret integrity decode failed. detail={}", e))?;
+        let actual_digest = Sha256::digest(&protected_bytes);
+        if expected_digest.as_slice() != actual_digest.as_slice() {
+            return Err("wrapped_secret integrity mismatch.".to_string());
+        }
+        dpapi::unprotect_data(&protected_bytes)
+            .map_err(|e| format!("wrapped_secret dpapi unprotect failed. detail={}", e))
     }
 
     /// 現在の k-user をパスワード暗号化バックアップJSONへ変換する。

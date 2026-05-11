@@ -19,12 +19,15 @@ use key_manager::KeyManager;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::convert::TryInto;
 use std::env;
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::windows::named_pipe::ServerOptions;
+use base64::Engine;
+use sha2::{Digest, Sha256};
 
 const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\iot-secret-core-ipc";
 const IPC_SCHEMA_VERSION: u32 = 1;
@@ -66,6 +69,26 @@ struct IpcProtectedResponseEnvelope {
     tag_base64: String,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IpcBootstrapEnvelope {
+    version: u32,
+    pipe_name: String,
+    ipc_session_key_base64: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct IpcBootstrapAckEnvelope {
+    version: u32,
+    status: String,
+}
+
+struct IpcBootstrapContext {
+    pipe_name: String,
+    session_key: Option<[u8; 32]>,
+}
+
 struct IpcSecurityContext {
     pipe_name: String,
     session_key: Option<[u8; 32]>,
@@ -78,20 +101,21 @@ struct IpcSecurityContext {
 /// 以後は接続ごとに非同期タスクへ処理を委譲する。
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    let ipc_bootstrap_context = load_ipc_bootstrap_context().await?;
     let ipc_security_context = Arc::new(IpcSecurityContext {
-        pipe_name: env::var("SECRET_CORE_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.to_string()),
-        session_key: load_ipc_session_key_from_env()?,
+        pipe_name: ipc_bootstrap_context.pipe_name,
+        session_key: ipc_bootstrap_context.session_key,
         replay_cache: Mutex::new(HashMap::new()),
     });
     let mqtt_receiver_manager = Arc::new(mqtt_transport::MqttReceiverManager::new());
     let ota_workflow_manager = Arc::new(ota_workflow::OtaWorkflowManager::new());
     let pairing_workflow_manager = Arc::new(pairing_workflow::PairingWorkflowManager::new());
     let production_workflow_manager = Arc::new(generic_workflow::ProductionWorkflowManager::new());
-    println!("SecretCore started. Listening on {}", ipc_security_context.pipe_name);
+    eprintln!("SecretCore started. Listening on {}", ipc_security_context.pipe_name);
     if ipc_security_context.session_key.is_some() {
-        println!("SecretCore IPC protection mode=secure");
+        eprintln!("SecretCore IPC protection mode=secure");
     } else {
-        println!("SecretCore IPC protection mode=legacy-compatible");
+        eprintln!("SecretCore IPC protection mode=legacy-compatible");
     }
 
     // KeyManager 初期化
@@ -714,30 +738,71 @@ async fn handle_client(
     Ok(())
 }
 
-fn load_ipc_session_key_from_env() -> io::Result<Option<[u8; 32]>> {
-    let session_key_b64 = match env::var("SECRET_CORE_IPC_SESSION_KEY_B64") {
-        Ok(v) => v,
-        Err(_) => return Ok(None),
+async fn load_ipc_bootstrap_context() -> io::Result<IpcBootstrapContext> {
+    let bootstrap_mode = env::var("SECRET_CORE_IPC_BOOTSTRAP_MODE").unwrap_or_default();
+    if bootstrap_mode.eq_ignore_ascii_case("stdin") {
+        let stdin = tokio::io::stdin();
+        let mut stdin_reader = BufReader::new(stdin);
+        let mut bootstrap_text = String::new();
+        let bytes_read = stdin_reader.read_line(&mut bootstrap_text).await?;
+        if bytes_read == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "stdin bootstrap failed. handshake line is empty.",
+            ));
+        }
+        let bootstrap_envelope: IpcBootstrapEnvelope = serde_json::from_str(bootstrap_text.trim_end()).map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidInput, format!("stdin bootstrap failed. invalid envelope: {}", e))
+        })?;
+        if bootstrap_envelope.version != IPC_SCHEMA_VERSION {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "stdin bootstrap failed. unsupported version={}",
+                    bootstrap_envelope.version
+                ),
+            ));
+        }
+        let session_key = decode_ipc_session_key(&bootstrap_envelope.ipc_session_key_base64)?;
+        let ack_envelope = IpcBootstrapAckEnvelope {
+            version: IPC_SCHEMA_VERSION,
+            status: "ok".to_string(),
+        };
+        let ack_text = serde_json::to_string(&ack_envelope).map_err(|e| {
+            io::Error::new(io::ErrorKind::Other, format!("stdin bootstrap ack serialize failed: {}", e))
+        })?;
+        let mut stdout = tokio::io::stdout();
+        stdout.write_all(ack_text.as_bytes()).await?;
+        stdout.write_all(b"\n").await?;
+        stdout.flush().await?;
+        return Ok(IpcBootstrapContext {
+            pipe_name: bootstrap_envelope.pipe_name,
+            session_key: Some(session_key),
+        });
+    }
+
+    let pipe_name = env::var("SECRET_CORE_PIPE_NAME").unwrap_or_else(|_| DEFAULT_PIPE_NAME.to_string());
+    let session_key = match env::var("SECRET_CORE_IPC_SESSION_KEY_B64") {
+        Ok(v) => Some(decode_ipc_session_key(&v)?),
+        Err(_) => None,
     };
+    Ok(IpcBootstrapContext { pipe_name, session_key })
+}
+
+fn decode_ipc_session_key(session_key_b64: &str) -> io::Result<[u8; 32]> {
     use base64::prelude::*;
     let session_key_vec = BASE64_STANDARD.decode(session_key_b64).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("SECRET_CORE_IPC_SESSION_KEY_B64 decode failed: {}", e),
-        )
+        io::Error::new(io::ErrorKind::InvalidInput, format!("session key decode failed: {}", e))
     })?;
     if session_key_vec.len() != 32 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "SECRET_CORE_IPC_SESSION_KEY_B64 length invalid. expected=32 actual={}",
-                session_key_vec.len()
-            ),
+            format!("session key length invalid. expected=32 actual={}", session_key_vec.len()),
         ));
     }
     let mut session_key = [0u8; 32];
     session_key.copy_from_slice(&session_key_vec);
-    Ok(Some(session_key))
+    Ok(session_key)
 }
 
 fn get_current_time_ms() -> i64 {
@@ -779,18 +844,23 @@ fn decrypt_ipc_request_text(
     let nonce_vec = BASE64_STANDARD
         .decode(&envelope.nonce_base64)
         .map_err(|e| format!("nonce decode failed: {}", e))?;
-    if nonce_vec.len() != 12 {
+    if nonce_vec.len() != 16 {
         return Err(format!("nonce length invalid. actual={}", nonce_vec.len()));
     }
+    let nonce_array: [u8; 16] = nonce_vec
+        .as_slice()
+        .try_into()
+        .map_err(|_| format!("nonce length invalid. actual={}", nonce_vec.len()))?;
     let mut cipher_vec = BASE64_STANDARD
         .decode(&envelope.cipher_base64)
         .map_err(|e| format!("cipher decode failed: {}", e))?;
     let tag_vec = BASE64_STANDARD
         .decode(&envelope.tag_base64)
         .map_err(|e| format!("tag decode failed: {}", e))?;
+    let cipher_nonce = derive_cipher_nonce(&nonce_array, &envelope.request_id, envelope.timestamp);
     let cipher = Aes256Gcm::new(session_key.as_ref().into());
-    let nonce = Nonce::from_slice(&nonce_vec);
-    let aad_text = create_request_aad_text(&envelope.request_id, envelope.timestamp);
+    let nonce = Nonce::from_slice(&cipher_nonce);
+    let aad_text = create_request_aad_text(&envelope.request_id, envelope.timestamp, &nonce_array);
     cipher
         .decrypt_in_place_detached(nonce, aad_text.as_bytes(), &mut cipher_vec, tag_vec.as_slice().into())
         .map_err(|e| format!("request decrypt failed: {:?}", e))?;
@@ -804,11 +874,12 @@ fn encrypt_ipc_response_text(
     session_key: &[u8; 32],
 ) -> io::Result<String> {
     let timestamp = get_current_time_ms();
-    let mut nonce_bytes = [0u8; 12];
+    let mut nonce_bytes = [0u8; 16];
     rand::rng().fill_bytes(&mut nonce_bytes);
+    let cipher_nonce = derive_cipher_nonce(&nonce_bytes, request_id, timestamp);
     let cipher = Aes256Gcm::new(session_key.as_ref().into());
-    let nonce = Nonce::from_slice(&nonce_bytes);
-    let aad_text = create_response_aad_text(request_id, timestamp);
+    let nonce = Nonce::from_slice(&cipher_nonce);
+    let aad_text = create_response_aad_text(request_id, timestamp, &nonce_bytes);
     let mut buffer = response_plain_text.as_bytes().to_vec();
     let tag = cipher
         .encrypt_in_place_detached(nonce, aad_text.as_bytes(), &mut buffer)
@@ -832,10 +903,31 @@ fn extract_request_id_from_envelope(raw_request_text: &str) -> Option<String> {
         .map(|v| v.request_id)
 }
 
-fn create_request_aad_text(request_id: &str, timestamp: i64) -> String {
-    format!("v=1|rid={}|ts={}", request_id, timestamp)
+fn create_request_aad_text(request_id: &str, timestamp: i64, nonce_bytes: &[u8; 16]) -> String {
+    format!(
+        "v=1|rid={}|ts={}|nonce={}",
+        request_id,
+        timestamp,
+        base64::prelude::BASE64_STANDARD.encode(nonce_bytes)
+    )
 }
 
-fn create_response_aad_text(response_to_request_id: &str, timestamp: i64) -> String {
-    format!("v=1|rrid={}|ts={}", response_to_request_id, timestamp)
+fn create_response_aad_text(response_to_request_id: &str, timestamp: i64, nonce_bytes: &[u8; 16]) -> String {
+    format!(
+        "v=1|rrid={}|ts={}|nonce={}",
+        response_to_request_id,
+        timestamp,
+        base64::prelude::BASE64_STANDARD.encode(nonce_bytes)
+    )
+}
+
+fn derive_cipher_nonce(nonce_bytes: &[u8; 16], request_id: &str, timestamp: i64) -> [u8; 12] {
+    let mut hasher = Sha256::new();
+    hasher.update(nonce_bytes);
+    hasher.update(request_id.as_bytes());
+    hasher.update(timestamp.to_string().as_bytes());
+    let digest = hasher.finalize();
+    let mut cipher_nonce = [0u8; 12];
+    cipher_nonce.copy_from_slice(&digest[..12]);
+    cipher_nonce
 }

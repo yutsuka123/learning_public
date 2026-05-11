@@ -182,7 +182,7 @@ TPM
 
 ### 5.3 保存方針
 - [厳守] `wrapped_secret` 保存先は一般設定ファイルと分離する。
-- [厳守] `wrapped_secret` 改ざん検知のため、ヘッダに `version` と `createdAt` を持たせる。
+- [厳守] `wrapped_secret` 改ざん検知のため、ヘッダに `version` と `createdAt` を持たせ、DPAPI 復号前に整合性チェックを行う。
 - [禁止] `S_random` を復号後にディスクへ書き戻さない。
 
 ## 6. IPC 設計
@@ -208,16 +208,17 @@ DACL:
 - [厳守] `machineId` を Pipe 名へ含める。
 - [厳守] `sessionId` は LocalServer 起動ごとにランダム生成し、固定化しない。
 - [厳守] SecretCore は LocalServer の子プロセスとして起動する。
-- [重要] 現在実装では、LocalServer 親プロセスがランダムな Pipe 名と 32byte セッション鍵を生成し、環境変数で SecretCore 子プロセスへ渡す。
+- [重要] 現在実装では、LocalServer 親プロセスがランダムな Pipe 名と 32byte セッション鍵を生成し、`stdin` で 1 回だけ SecretCore 子プロセスへ渡す。SecretCore は `stdout` で bootstrap ack を返した後、named pipe 受付へ移行する。
+- [重要] 業務 IPC 本体は引き続き named pipe + AES-256-GCM を用いるが、起動時の秘密ブートストラップは stdin/stdout へ分離する。
 
 ### 6.3 IPC通信保護
-- [厳守] IPC チャネルは AES-256-GCM + nonce + requestId で保護する。
-- [厳守] `nonce` は再利用禁止とする。
+- [厳守] IPC チャネルは 16 byte の IPC nonce + requestId + timestamp を持ち、AES-256-GCM の実IV はそこから導出して保護する。
+- [厳守] `nonce` は再利用禁止とし、16 byte 以上の暗号学的乱数で生成する。
 - [厳守] `requestId` は `crypto.randomUUID()` 等の暗号学的乱数で生成する。
 - [厳守] `timestamp` は ±30秒以内のみ受理する。
 - [厳守] SecretCore は受信済み `requestId` を短時間キャッシュし、同一 `requestId` の再送を拒否する。
 - [重要] 現在実装では、AAD を `v=1|rid=<requestId>|ts=<timestamp>` / `v=1|rrid=<requestId>|ts=<timestamp>` の固定文字列で構成し、Node/Rust 間の順序差による検証不一致を防ぐ。
-- [旧仕様] `SECRET_CORE_IPC_SESSION_KEY_B64` 未指定の手動起動時のみ、互換の平文IPCを許可する。理由: 既存保守スクリプトとの互換維持のため。ただし通常運用では使用しない。
+- [旧仕様] `SECRET_CORE_IPC_SESSION_KEY_B64` 未指定の手動起動時のみ、互換の平文IPCを許可する。理由: 既存保守スクリプトとの互換維持のため。ただし通常運用では使用しない。`stdin` ブートストラップが使えない古い起動手順のため残す。
 
 ## 7. SecretCore の公開 API（限定）
 ### 7.1 許可 API

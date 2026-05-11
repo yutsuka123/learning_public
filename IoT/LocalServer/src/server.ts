@@ -14,7 +14,7 @@ import crypto from "crypto";
 import os from "os";
 import net from "net";
 import dgram from "dgram";
-import { exec } from "child_process";
+import { exec, spawnSync } from "child_process";
 import { promisify } from "util";
 import express, { Request, Response } from "express";
 import multer from "multer";
@@ -1283,22 +1283,38 @@ app.post("/api/admin/commands/secure-ping", async (request: Request, response: R
       pingText: requestBody?.plainText ?? "secure ping from localserver",
       sentAt: new Date().toISOString()
     });
-    const encryptedRequest = await localKeyService.encryptByKDevice(targetDeviceName, plainPayloadText);
-    const secureEcho = await gateway.requestSecurePing(
-      targetDeviceName,
-      requestId,
-      {
-        ivBase64: encryptedRequest.ivBase64,
-        cipherBase64: encryptedRequest.cipherBase64,
-        tagBase64: encryptedRequest.tagBase64
-      },
-      requestBody?.timeoutMs ?? 15000
-    );
-    const decryptedResponseText = await localKeyService.decryptByKDevice(targetDeviceName, {
-      ivBase64: secureEcho.ivBase64,
-      cipherBase64: secureEcho.cipherBase64,
-      tagBase64: secureEcho.tagBase64
-    });
+    const secureEcho = await (async () => {
+      const encryptedRequest = await localKeyService.encryptByKDevice(targetDeviceName, plainPayloadText);
+      try {
+        return await gateway.requestSecurePing(
+          targetDeviceName,
+          requestId,
+          {
+            ivBase64: encryptedRequest.ivBase64,
+            cipherBase64: encryptedRequest.cipherBase64,
+            tagBase64: encryptedRequest.tagBase64
+          },
+          requestBody?.timeoutMs ?? 15000
+        );
+      } finally {
+        encryptedRequest.ivBase64 = "";
+        encryptedRequest.cipherBase64 = "";
+        encryptedRequest.tagBase64 = "";
+      }
+    })();
+    const decryptedResponseText = await (async () => {
+      try {
+        return await localKeyService.decryptByKDevice(targetDeviceName, {
+          ivBase64: secureEcho.ivBase64,
+          cipherBase64: secureEcho.cipherBase64,
+          tagBase64: secureEcho.tagBase64
+        });
+      } finally {
+        secureEcho.ivBase64 = "";
+        secureEcho.cipherBase64 = "";
+        secureEcho.tagBase64 = "";
+      }
+    })();
     response.json({
       result: "OK",
       requestId,
@@ -1634,19 +1650,31 @@ app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, res
       }
     };
     const normalizedPayloadText = JSON.stringify(unsignedPayload);
-    const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
-    const originalSignatureBase64 = signatureResult.signatureBase64;
-    // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
-    // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
-    const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
-    const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
-    const tamperedPayload = {
-      ...unsignedPayload,
-      signature: tamperedSignatureBase64
-    };
     const topic = `esp32lab/call/otaStart/${targetDeviceName}`;
-    const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(targetDeviceName, JSON.stringify(tamperedPayload));
-    await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
+    const tamperedSignatureResult = await (async () => {
+      const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
+      try {
+        const originalSignatureBase64 = signatureResult.signatureBase64;
+        // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
+        // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
+        const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
+        const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
+        const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(
+          targetDeviceName,
+          JSON.stringify({
+            ...unsignedPayload,
+            signature: tamperedSignatureBase64
+          })
+        );
+        await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
+        return {
+          originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
+          tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+        };
+      } finally {
+        signatureResult.signatureBase64 = "";
+      }
+    })();
     response.json({
       result: "OK",
       command: "otaStart",
@@ -1655,8 +1683,8 @@ app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, res
       firmwareVersion: otaFirmwareVersion,
       topic,
       requestId: unsignedPayload.id,
-      originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
-      tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+      originalSignaturePreview: tamperedSignatureResult.originalSignaturePreview,
+      tamperedSignaturePreview: tamperedSignatureResult.tamperedSignaturePreview
     });
   } catch (apiError) {
     const errMsg = getErrorMessage(apiError);
@@ -1701,23 +1729,35 @@ app.post("/api/admin/tests/settings/key-device/tampered-signature", async (reque
       }
     };
     const normalizedPayloadText = JSON.stringify(unsignedPayload);
-    const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
-    const originalSignatureBase64 = signatureResult.signatureBase64;
-    // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
-    // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
-    const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
-    const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
-    const tamperedPayload = {
-      ...unsignedPayload,
-      signature: tamperedSignatureBase64
-    };
     const topic = `esp32lab/set/keyDeviceSet/${targetDeviceName}`;
-    const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(targetDeviceName, JSON.stringify(tamperedPayload));
-    if (MQTT_TRANSPORT_MODE === "rust") {
-      await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
-    } else {
-      throw new Error("tampered keyDeviceSet signature test failed. rust transport is required for direct tampered publish.");
-    }
+    const tamperedSignatureResult = await (async () => {
+      const signatureResult = await localKeyService.signByKDevice(targetDeviceName, normalizedPayloadText);
+      try {
+        const originalSignatureBase64 = signatureResult.signatureBase64;
+        // [重要][修正 2026-05-10] Base64末尾は padding / 未使用bit の影響を受けるため、先頭側の有効文字を改ざんする。
+        // 理由: デコード後の HMAC バイト列を確実に変化させ、署名不一致試験を正しく成立させるため。
+        const tamperedFirstCharacter = originalSignatureBase64.startsWith("A") ? "B" : "A";
+        const tamperedSignatureBase64 = `${tamperedFirstCharacter}${originalSignatureBase64.slice(1)}`;
+        const encodedPayloadText = await serverPayloadSecurityService.encodeOutgoingPayload(
+          targetDeviceName,
+          JSON.stringify({
+            ...unsignedPayload,
+            signature: tamperedSignatureBase64
+          })
+        );
+        if (MQTT_TRANSPORT_MODE === "rust") {
+          await secretCoreFacade.publishMqttMessage(topic, encodedPayloadText, 1);
+        } else {
+          throw new Error("tampered keyDeviceSet signature test failed. rust transport is required for direct tampered publish.");
+        }
+        return {
+          originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
+          tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+        };
+      } finally {
+        signatureResult.signatureBase64 = "";
+      }
+    })();
     response.json({
       result: "OK",
       command: "keyDeviceSet",
@@ -1727,8 +1767,8 @@ app.post("/api/admin/tests/settings/key-device/tampered-signature", async (reque
       requestId: unsignedPayload.id,
       tamperedKeyDeviceFingerprint: crypto.createHash("sha256").update(Buffer.from(tamperedKeyDeviceBase64, "base64")).digest("hex").slice(0, 16),
       tamperedKeyDevicePreview: `${tamperedKeyDeviceBase64.slice(0, 8)}...`,
-      originalSignaturePreview: `${originalSignatureBase64.slice(0, 8)}...`,
-      tamperedSignaturePreview: `${tamperedSignatureBase64.slice(0, 8)}...`
+      originalSignaturePreview: tamperedSignatureResult.originalSignaturePreview,
+      tamperedSignaturePreview: tamperedSignatureResult.tamperedSignaturePreview
     });
   } catch (apiError) {
     const errMsg = getErrorMessage(apiError);
@@ -2708,20 +2748,96 @@ function saveSecurityState(nextState: securityState): void {
 }
 
 /**
- * @description セキュリティ運用の監査ログを追記する。
+ * @description セキュリティ運用の監査ログを追記し、OS ログへも同内容を二重書き込みする。
+ * @remarks
+ * - [重要] 監査ログはファイル保存と OS ログ出力を同時に行う。
+ * - [厳守] 監査ファイルは 0600 相当へ寄せる。
+ * - [推奨] OS ログ出力は失敗してもファイル保存を優先する。
  * @param eventType 監査イベント種別。
  * @param detailJson 監査詳細。
  */
 function appendSecurityAuditLog(eventType: string, detailJson: Record<string, unknown>): void {
-  if (!fs.existsSync(securityAuditDirectoryPath)) {
-    fs.mkdirSync(securityAuditDirectoryPath, { recursive: true });
-  }
+  ensureSecurityAuditSinkReady();
   const logRecord = {
     loggedAt: new Date().toISOString(),
     eventType,
     detail: detailJson
   };
   fs.appendFileSync(securityAuditFilePath, `${JSON.stringify(logRecord)}\n`, "utf-8");
+  writeSecurityAuditOsLog(logRecord);
+}
+
+/**
+ * @description 監査ログの保存先ディレクトリとファイル権限を整える。
+ * @remarks
+ * - [厳守] 監査ログディレクトリは作成時に 0700 相当、ファイルは 0600 相当へ寄せる。
+ * - [禁止] 権限調整に失敗しても監査記録自体を止めない。理由: 記録欠落の方が危険なため。
+ */
+function ensureSecurityAuditSinkReady(): void {
+  if (!fs.existsSync(securityAuditDirectoryPath)) {
+    fs.mkdirSync(securityAuditDirectoryPath, { recursive: true, mode: 0o700 });
+  }
+  try {
+    fs.chmodSync(securityAuditDirectoryPath, 0o700);
+  } catch (chmodError) {
+    console.warn(`ensureSecurityAuditSinkReady warning. directory chmod failed. detail=${getErrorMessage(chmodError)}`);
+  }
+  if (!fs.existsSync(securityAuditFilePath)) {
+    fs.closeSync(fs.openSync(securityAuditFilePath, "a", 0o600));
+  }
+  try {
+    fs.chmodSync(securityAuditFilePath, 0o600);
+  } catch (chmodError) {
+    console.warn(`ensureSecurityAuditSinkReady warning. file chmod failed. detail=${getErrorMessage(chmodError)}`);
+  }
+}
+
+/**
+ * @description 監査ログを OS 側へ短い要約として書き込む。
+ * @remarks
+ * - [重要] Windows はイベントログ、macOS は syslog 相当の logger を優先する。
+ * - [厳守] OS ログ失敗は例外化せず、ファイル監査を優先する。
+ * @param logRecord 監査レコード。
+ */
+function writeSecurityAuditOsLog(logRecord: { loggedAt: string; eventType: string; detail: Record<string, unknown> }): void {
+  const detailText = JSON.stringify(logRecord.detail);
+  const summaryText = truncateSecurityAuditOsMessage(
+    `[LocalServer][security-audit] loggedAt=${logRecord.loggedAt} eventType=${logRecord.eventType} detail=${detailText}`
+  );
+  try {
+    if (process.platform === "win32") {
+      const result = spawnSync(
+        "eventcreate",
+        ["/T", "INFORMATION", "/ID", "1000", "/L", "APPLICATION", "/SO", "LocalServer", "/D", summaryText],
+        { windowsHide: true, stdio: "ignore" }
+      );
+      if (result.status !== 0) {
+        console.warn(
+          `writeSecurityAuditOsLog warning. eventcreate failed. status=${result.status} signal=${result.signal ?? ""}`
+        );
+      }
+      return;
+    }
+    const result = spawnSync("logger", ["-t", "LocalServer", summaryText], { windowsHide: true, stdio: "ignore" });
+    if (result.status !== 0) {
+      console.warn(`writeSecurityAuditOsLog warning. logger failed. status=${result.status} signal=${result.signal ?? ""}`);
+    }
+  } catch (osLogError) {
+    console.warn(`writeSecurityAuditOsLog warning. detail=${getErrorMessage(osLogError)}`);
+  }
+}
+
+/**
+ * @description OS ログ向けメッセージを安全な長さへ切り詰める。
+ * @param message 元メッセージ。
+ * @returns 切り詰め後メッセージ。
+ */
+function truncateSecurityAuditOsMessage(message: string): string {
+  const maxLength = 900;
+  if (message.length <= maxLength) {
+    return message;
+  }
+  return `${message.slice(0, maxLength - 20)}...(truncated)`;
 }
 
 /**

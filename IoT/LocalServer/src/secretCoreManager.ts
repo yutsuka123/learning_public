@@ -4,13 +4,14 @@
  * @remarks
  * - [重要] LocalServer 起動ごとにランダムな IPC セッション鍵を生成する。
  * - [厳守] SecretCore は LocalServer の子プロセスとして起動し、親子間だけで共有するセッション情報を持つ。
+ * - [厳守] 起動時の接続情報は stdin/stdout のブートストラップで渡し、Pipe 名やセッション鍵を環境変数へ恒久露出させない。
  * - [禁止] 固定 Pipe 名・固定セッション鍵の恒久運用。
- * - 変更日: 2026-03-15 IPC 認可・改ざん防止・リプレイ防止の基盤を追加。理由: 003-0014 対応のため。
+ * - 変更日: 2026-05-11 ブートストラップ情報を stdin/stdout に寄せた。理由: 008-0010 の IPC ハンドシェイクを子プロセス連携へ寄せるため。
  */
-import { spawn, ChildProcess } from "child_process";
-import crypto from "crypto";
-import os from "os";
-import path from "path";
+import { spawn, type ChildProcess } from "child_process";
+import * as crypto from "crypto";
+import * as os from "os";
+import * as path from "path";
 
 export class SecretCoreManager {
   private child: ChildProcess | null = null;
@@ -44,8 +45,7 @@ export class SecretCoreManager {
       windowsHide: true,
       env: {
         ...process.env,
-        SECRET_CORE_PIPE_NAME: this.pipeName,
-        SECRET_CORE_IPC_SESSION_KEY_B64: this.ipcSessionKeyBase64
+        SECRET_CORE_IPC_BOOTSTRAP_MODE: "stdin"
       }
     });
 
@@ -66,6 +66,8 @@ export class SecretCoreManager {
       console.error(`Failed to start SecretCore: ${err.message}`);
       this.child = null;
     });
+
+    this.sendBootstrapHandshake();
   }
 
   public stop(): void {
@@ -90,5 +92,37 @@ export class SecretCoreManager {
    */
   public getIpcSessionKeyBase64(): string {
     return this.ipcSessionKeyBase64;
+  }
+
+  /**
+   * @description SecretCore へブートストラップ情報を stdin で送信する。
+   * @remarks
+   * - [重要] 起動時の Pipe 名と IPC セッション鍵は、この 1 回の handshake でのみ渡す。
+   * - [厳守] 送信後は stdin を閉じ、以後の業務 IPC に使わない。
+   */
+  private sendBootstrapHandshake(): void {
+    if (this.child === null) {
+      console.error("sendBootstrapHandshake skipped. child process is unavailable.");
+      return;
+    }
+    if (this.child.stdin === null) {
+      console.error("sendBootstrapHandshake failed. child stdin is unavailable.");
+      return;
+    }
+
+    const bootstrapEnvelope = {
+      version: 1,
+      pipeName: this.pipeName,
+      ipcSessionKeyBase64: this.ipcSessionKeyBase64
+    };
+    const bootstrapText = `${JSON.stringify(bootstrapEnvelope)}\n`;
+
+    this.child.stdin.write(bootstrapText, (writeError) => {
+      if (writeError) {
+        console.error(`sendBootstrapHandshake failed. reason=${writeError.message}`);
+        return;
+      }
+      this.child?.stdin?.end();
+    });
   }
 }

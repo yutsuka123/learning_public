@@ -4,11 +4,11 @@
  * @remarks
  * - [厳守] 業務コードは本クラスを直接利用せず、`SecretCoreFacade` を経由する。
  * - [禁止] UI / REST handler / service 層が `sendRequest()` を直接呼ぶ構成。
- * - [厳守] IPC メッセージは AES-256-GCM + nonce + requestId + timestamp で保護する。
- * - 変更日: 2026-03-15 IPC 保護を追加。理由: 003-0014 対応のため。
+ * - [厳守] IPC メッセージは 16 byte の IPC nonce と requestId + timestamp を持ち、AES-256-GCM の実IV はそこから導出する。
+ * - 変更日: 2026-05-11 IPC nonce の 16 byte 化。理由: 008-0011 対応のため。
  */
-import crypto from "crypto";
-import net from "net";
+import * as crypto from "crypto";
+import * as net from "net";
 
 interface secretCoreProtectedRequestEnvelope {
   version: 1;
@@ -96,10 +96,11 @@ export class SecretCoreIpcClient {
     requestObject: { command: string; payload: any }
   ): secretCoreProtectedRequestEnvelope {
     const sessionKeyBuffer = this.getSessionKeyBuffer();
-    const nonceBuffer = crypto.randomBytes(12);
+    const nonceBuffer = crypto.randomBytes(16);
     const timestamp = Date.now();
-    const cipher = crypto.createCipheriv("aes-256-gcm", sessionKeyBuffer, nonceBuffer);
-    cipher.setAAD(Buffer.from(this.createRequestAadText(requestId, timestamp), "utf8"));
+    const cipherNonceBuffer = this.deriveCipherNonceBuffer(nonceBuffer, requestId, timestamp);
+    const cipher = crypto.createCipheriv("aes-256-gcm", sessionKeyBuffer, cipherNonceBuffer);
+    cipher.setAAD(Buffer.from(this.createRequestAadText(requestId, timestamp, nonceBuffer), "utf8"));
     const cipherBuffer = Buffer.concat([cipher.update(JSON.stringify(requestObject), "utf8"), cipher.final()]);
     const tagBuffer = cipher.getAuthTag();
     return {
@@ -125,10 +126,18 @@ export class SecretCoreIpcClient {
     const nonceBuffer = Buffer.from(responseEnvelope.nonceBase64, "base64");
     const cipherBuffer = Buffer.from(responseEnvelope.cipherBase64, "base64");
     const tagBuffer = Buffer.from(responseEnvelope.tagBase64, "base64");
-    const decipher = crypto.createDecipheriv("aes-256-gcm", sessionKeyBuffer, nonceBuffer);
+    if (nonceBuffer.length !== 16) {
+      throw new Error(`parseProtectedResponseEnvelope failed. nonce length must be 16 bytes. actual=${nonceBuffer.length}`);
+    }
+    const cipherNonceBuffer = this.deriveCipherNonceBuffer(
+      nonceBuffer,
+      responseEnvelope.responseToRequestId,
+      responseEnvelope.timestamp
+    );
+    const decipher = crypto.createDecipheriv("aes-256-gcm", sessionKeyBuffer, cipherNonceBuffer);
     decipher.setAAD(
       Buffer.from(
-        this.createResponseAadText(responseEnvelope.responseToRequestId, responseEnvelope.timestamp),
+        this.createResponseAadText(responseEnvelope.responseToRequestId, responseEnvelope.timestamp, nonceBuffer),
         "utf8"
       )
     );
@@ -149,11 +158,21 @@ export class SecretCoreIpcClient {
     return sessionKeyBuffer;
   }
 
-  private createRequestAadText(requestId: string, timestamp: number): string {
-    return `v=1|rid=${requestId}|ts=${timestamp}`;
+  private createResponseAadText(responseToRequestId: string, timestamp: number, nonceBuffer: Buffer): string {
+    return `v=1|rrid=${responseToRequestId}|ts=${timestamp}|nonce=${nonceBuffer.toString("base64")}`;
   }
 
-  private createResponseAadText(responseToRequestId: string, timestamp: number): string {
-    return `v=1|rrid=${responseToRequestId}|ts=${timestamp}`;
+  private createRequestAadText(requestId: string, timestamp: number, nonceBuffer: Buffer): string {
+    return `v=1|rid=${requestId}|ts=${timestamp}|nonce=${nonceBuffer.toString("base64")}`;
+  }
+
+  private deriveCipherNonceBuffer(nonceBuffer: Buffer, requestId: string, timestamp: number): Buffer {
+    const hashBuffer = crypto
+      .createHash("sha256")
+      .update(nonceBuffer)
+      .update(requestId, "utf8")
+      .update(String(timestamp), "utf8")
+      .digest();
+    return hashBuffer.subarray(0, 12);
   }
 }
