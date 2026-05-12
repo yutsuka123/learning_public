@@ -16,7 +16,9 @@
 #include <cctype>
 #include <cstring>
 #include <esp_system.h>
+#include <esp_secure_boot.h>
 #include <esp_ota_ops.h>
+#include <hal/efuse_hal.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <mbedtls/base64.h>
@@ -334,6 +336,177 @@ String formatCompactMacAsColonSeparated(const String& compactMacText) {
     formattedMacText += static_cast<char>(toupper(compactMacText[index]));
   }
   return formattedMacText;
+}
+
+/**
+ * @brief 文字列をHTML表示向けにエスケープする。
+ * @param rawText エスケープ対象文字列。
+ * @return HTML表示用に変換した文字列。
+ */
+String escapeHtmlText(const String& rawText) {
+  String escapedText = rawText;
+  escapedText.replace("&", "&amp;");
+  escapedText.replace("<", "&lt;");
+  escapedText.replace(">", "&gt;");
+  escapedText.replace("\"", "&quot;");
+  escapedText.replace("'", "&#39;");
+  return escapedText;
+}
+
+/**
+ * @brief eFuse由来MACから短縮IDを生成する。
+ * @details
+ * - [重要] AP 共通トップ画面の `shortId` は、固定長で短く読める識別子として末尾6桁を採用する。
+ * - [厳守] 画面表示と AP 名の元データを同じ eFuse MAC に揃え、説明が食い違わないようにする。
+ * @param compactMacText 12桁の16進MAC文字列。
+ * @return 短縮ID。
+ */
+String resolveShortIdText(const String& compactMacText) {
+  if (compactMacText.length() <= 6) {
+    return compactMacText;
+  }
+  return compactMacText.substring(compactMacText.length() - 6);
+}
+
+/**
+ * @brief 画面表示用の public_id を生成する。
+ * @details
+ * - [重要] 現行の AP/MQTT 運用では `IoT_<BaseMacNoColon>` 形式を公開IDとして扱う。
+ * - [将来対応] `public_id` 正式定義が別メタ情報へ移行したら、ここを差し替える。
+ * @param compactMacText 12桁の16進MAC文字列。
+ * @return public_id。
+ */
+String resolvePublicIdText(const String& compactMacText) {
+  return String("IoT_") + compactMacText;
+}
+
+/**
+ * @brief Production対応可否を表示用文字列へ変換する。
+ * @return 「対応」または「非対応」。
+ */
+String resolveProductionReadyText() {
+  return firmwareMode::kFactoryApisEnabled ? String("対応") : String("非対応");
+}
+
+/**
+ * @brief eFuse 適用状態を表示用文字列へ変換する。
+ * @param secureBootEnabled Secure Boot 有効時true。
+ * @param flashEncryptionEnabled Flash Encryption 有効時true。
+ * @return 「実施済」または「未実施」。
+ */
+String resolveEfuseAppliedText(bool secureBootEnabled, bool flashEncryptionEnabled) {
+  return (secureBootEnabled && flashEncryptionEnabled) ? String("実施済") : String("未実施");
+}
+
+/**
+ * @brief Secure Boot の状態を表示用文字列へ変換する。
+ * @param secureBootEnabled Secure Boot 有効時true。
+ * @return 「有効」または「無効」。
+ */
+String resolveSecureBootStatusText(bool secureBootEnabled) {
+  return secureBootEnabled ? String("有効") : String("無効");
+}
+
+/**
+ * @brief Flash Encryption の状態を表示用文字列へ変換する。
+ * @param flashEncryptionEnabled Flash Encryption 有効時true。
+ * @return 「有効」または「無効」。
+ */
+String resolveFlashEncryptionStatusText(bool flashEncryptionEnabled) {
+  return flashEncryptionEnabled ? String("有効") : String("無効");
+}
+
+/**
+ * @brief シリアル状態を表示用文字列へ変換する。
+ * @details
+ * - [重要] 診断用FWでは「開放」、通常運用FWでは「制限」として表示する。
+ * - [将来対応] シリアル完全停止を採用したFWが出たら「停止」を返す分岐を追加する。
+ * @return シリアル状態。
+ */
+String resolveSerialStateText() {
+  return String(firmwareMode::kSerialOutputMode) == "diagnostic" ? String("開放") : String("制限");
+}
+
+/**
+ * @brief AP共通トップ画面の1行分を生成する。
+ * @param labelText 項目名。
+ * @param valueText 値。
+ * @return HTMLの<tr>文字列。
+ */
+String createHtmlTableRow(const String& labelText, const String& valueText) {
+  return String("<tr><th>") + escapeHtmlText(labelText) + "</th><td>" + escapeHtmlText(valueText) + "</td></tr>";
+}
+
+/**
+ * @brief AP共通トップ画面HTMLを生成する。
+ * @return HTML本文。
+ */
+String createApCommonTopPageHtml() {
+  const uint64_t efuseMac = ESP.getEfuseMac();
+  char compactMacBuffer[13] = {};
+  const int writtenLength = snprintf(compactMacBuffer,
+                                     sizeof(compactMacBuffer),
+                                     "%02X%02X%02X%02X%02X%02X",
+                                     static_cast<unsigned>((efuseMac >> 40) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 32) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 24) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 16) & 0xFF),
+                                     static_cast<unsigned>((efuseMac >> 8) & 0xFF),
+                                     static_cast<unsigned>(efuseMac & 0xFF));
+  const String compactMacText = (writtenLength > 0 && writtenLength < static_cast<int>(sizeof(compactMacBuffer)))
+                                    ? String(compactMacBuffer)
+                                    : String("000000000000");
+  const String shortIdText = resolveShortIdText(compactMacText);
+  const String publicIdText = resolvePublicIdText(compactMacText);
+  const String firmwareVersionText = String(appVersion::kFirmwareVersion);
+  const bool secureBootEnabled = esp_secure_boot_enabled();
+  const bool flashEncryptionEnabled = efuse_hal_flash_encryption_enabled();
+  const String efuseAppliedText = resolveEfuseAppliedText(secureBootEnabled, flashEncryptionEnabled);
+  const String productionReadyText = resolveProductionReadyText();
+  const String serialStateText = resolveSerialStateText();
+  const String productionToolTransitionText = firmwareMode::kFactoryApisEnabled ? String("可能") : String("不可");
+  const String currentKeyVersionText = lastPairingSavedCurrentKeyVersion.length() > 0 ? lastPairingSavedCurrentKeyVersion : String("(empty)");
+  const String previousKeyStateText = lastPairingPreviousKeyState.length() > 0 ? lastPairingPreviousKeyState : String("(empty)");
+  const String apSsidText = currentApSsid.length() > 0 ? currentApSsid : String("(未起動)");
+  const String activeRoleText = toRoleText(activeRole);
+
+  String htmlText;
+  htmlText.reserve(4096);
+  htmlText += "<!DOCTYPE html><html lang='ja'><head><meta charset='UTF-8'>";
+  htmlText += "<meta name='viewport' content='width=device-width, initial-scale=1'>";
+  htmlText += "<title>AP 共通トップ画面</title>";
+  htmlText += "<style>";
+  htmlText += "body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;margin:24px;line-height:1.5;background:#f7f7f7;color:#222;}";
+  htmlText += "h1{margin:0 0 12px 0;font-size:24px;}";
+  htmlText += ".note{margin:0 0 16px 0;color:#444;}";
+  htmlText += "table{border-collapse:collapse;width:100%;max-width:980px;background:#fff;}";
+  htmlText += "th,td{border:1px solid #ccc;padding:10px 12px;vertical-align:top;text-align:left;}";
+  htmlText += "th{width:280px;background:#f0f3f7;}";
+  htmlText += ".summary{margin:0 0 16px 0;padding:12px 14px;background:#fff;border:1px solid #ccc;max-width:980px;}";
+  htmlText += ".ok{color:#0a6;}.ng{color:#b00;}.warn{color:#a60;}";
+  htmlText += "</style></head><body>";
+  htmlText += "<h1>AP 共通トップ画面</h1>";
+  htmlText += "<p class='note'>共通パスワード認証後の状態確認用トップです。ProductionTool 画面は追加認証が必要です。</p>";
+  htmlText += "<div class='summary'>";
+  htmlText += "<div>AP SSID: <strong>" + escapeHtmlText(apSsidText) + "</strong></div>";
+  htmlText += "<div>Current Role: <strong>" + escapeHtmlText(activeRoleText) + "</strong></div>";
+  htmlText += "<div>ProductionTool 遷移: <strong class='" + String(firmwareMode::kFactoryApisEnabled ? "ok" : "ng") + "'>" + escapeHtmlText(productionToolTransitionText) + "</strong></div>";
+  htmlText += "</div>";
+  htmlText += "<table>";
+  htmlText += createHtmlTableRow("shortId", shortIdText);
+  htmlText += createHtmlTableRow("public_id", publicIdText);
+  htmlText += createHtmlTableRow("firmwareVersion", firmwareVersionText);
+  htmlText += createHtmlTableRow("Production対応 / 非対応", productionReadyText);
+  htmlText += createHtmlTableRow("eFuse 実施済 / 未実施", efuseAppliedText);
+  htmlText += createHtmlTableRow("Secure Boot 有効 / 無効", resolveSecureBootStatusText(secureBootEnabled));
+  htmlText += createHtmlTableRow("Flash Encryption 有効 / 無効", resolveFlashEncryptionStatusText(flashEncryptionEnabled));
+  htmlText += createHtmlTableRow("シリアル状態", serialStateText);
+  htmlText += createHtmlTableRow("current keyVersion", currentKeyVersionText);
+  htmlText += createHtmlTableRow("previous key 状態", previousKeyStateText);
+  htmlText += createHtmlTableRow("ProductionTool 画面遷移可否", productionToolTransitionText);
+  htmlText += "</table>";
+  htmlText += "</body></html>";
+  return htmlText;
 }
 
 String normalizeMacTextForComparison(const String& rawMacText) {
@@ -2265,12 +2438,11 @@ void handleRebootApi() {
 }
 
 void handleRootPage() {
-  const String htmlText =
-      "<html><head><meta charset='UTF-8'><title>Maintenance AP</title></head>"
-      "<body><h1>Maintenance AP</h1><p>Use LocalServer admin API.</p><p>firmwareOperationMode=" +
-      String(firmwareMode::kFirmwareOperationMode) + " / factoryApisEnabled=" +
-      String(firmwareMode::kFactoryApisEnabled ? "true" : "false") + "</p></body></html>";
-  maintenanceWebServer.send(200, "text/html", htmlText);
+  if (!isAuthorized(maintenanceRole::kUser)) {
+    maintenanceWebServer.send(401, "text/plain", "unauthorized");
+    return;
+  }
+  maintenanceWebServer.send(200, "text/html", createApCommonTopPageHtml());
 }
 
 }  // namespace
