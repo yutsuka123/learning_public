@@ -390,8 +390,12 @@ DACL:
 1. `runKeyRotationSession`
 2. `runProductionSecureFlow`
 3. 障害時再登録フロー
-4. TPM初期化検知
-5. 将来 macOS 対応の整理
+   - 同一PC復旧では `wrapped_secret` と `device_db` を先に復元し、その後に `runKeyRotationSession()` の要否を判定する
+   - 別PC / 機材交換では暗号化バックアップから `k-user` を復元し、個体ごとに `runPairingSession()` を再実行する
+   - [厳守] いずれの場合も raw key を返さず、復旧の完了判定は SecretCore 側 workflow の `completed` / `failed` で行う
+   - [補足][2026-05-13] LocalServer には `POST /api/admin/recovery/re-registration/plan` を追加し、既存 API の実施順を管理画面へ案内する。理由: 実行系を増やさず、同一PC復旧と別PC再登録の操作順を誤らせないため。
+4. [将来対応] macOS 対応の整理は `020` 章へ移管する
+5. [対象外] TPM初期化検知は本 Phase4 の対象外とする
 
 ## 12. 関連文書
 - `鍵管理および初期セットアップ設計仕様書.md`
@@ -402,6 +406,9 @@ DACL:
 
 ## 13. 変更履歴
 - 2026-05-07: `runSignedOtaCommand()` と通常 OTA command publish の双方で `otaStart` に `HMAC-SHA256` + `signature` を付与し、ESP32 側で検証失敗時に開始拒否する構成を追記。理由: `008-0006` 実装に合わせ、高リスク OTA command の真正性保護責務を別層仕様へ固定するため。
+- 2026-05-13: Phase4 の末尾項目を再整理し、macOS 対応を `020` 章へ移管、TPM初期化検知を本 Phase4 の対象外へ変更した。理由: Phase4 は `runKeyRotationSession()` / `runProductionSecureFlow()` / 障害時再登録フローの本線に集中し、将来対応と対象外を切り分けるため。
+- 2026-05-13: 障害時再登録フローを同一PC復旧と別PC/機材交換の2経路へ分解し、`runKeyRotationSession()` / `runPairingSession()` の再利用関係を明示した。理由: 実装時に復旧経路の取り違えを防ぎ、`008-0031` の範囲を文書で固定するため。
+- 2026-05-13: LocalServer 側に障害時再登録フロー案内 API と復元実行 API / 一括実行 API を追加し、既存 API の実施順確認と device_db / k-user の復元・workflow 実行を分けて扱う方針を明確化した。理由: 管理画面から同一PC復旧と別PC再登録の操作順を確認しつつ、一括で復旧を進められるようにするため。
 - 2026-04-21: `wrapped_secret` / `device_db` の復元と、秘密を含まないサポートパッケージ分離の方針を追加。理由: 011 章の文書・設計管理で、復旧経路と問い合わせ資料を分けて管理するため。
 - 2026-03-22: ESP32 AP 側 `POST /api/production/precheck` / `GET /api/production/state` と、Rust 側 workflow の AP ログイン経由 precheck 自動取得を追記。理由: `runProductionSecureFlow()` の dry-run 段階で、TS 側へ高リスク通信手順を戻さずに ESP32 実測値の取得経路を固定するため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`SecretCore` 共通化は `LocalServer` 側共通部の再利用を意味し、ソフト自体は分離・独立動作させる前提を追記。理由: `ProductionTool` の名称統一と、共通化/分離の解釈ずれを防ぐため。

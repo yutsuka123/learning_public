@@ -268,6 +268,96 @@ export interface keyRotationWorkflowStartRequestBody {
 }
 
 /**
+ * @description 障害時再登録フローの案内要求。
+ * @remarks
+ * - [重要] 実行系ではなく、既存 API の実施順を返す案内用要求とする。
+ * - [厳守] raw key や復号済み秘密は含めない。
+ */
+export interface recoveryReRegistrationPlanRequestBody {
+  mode: "same-pc" | "external-device";
+  targetDeviceId?: string;
+  targetDeviceName?: string;
+  keyVersion?: string;
+}
+
+/**
+ * @description 障害時再登録フローの案内ステップ。
+ */
+export interface recoveryReRegistrationPlanStep {
+  title: string;
+  endpoint: string;
+  note: string;
+}
+
+/**
+ * @description 障害時再登録フローの案内結果。
+ */
+export interface recoveryReRegistrationPlanResponse {
+  mode: "same-pc" | "external-device";
+  title: string;
+  summary: string;
+  steps: recoveryReRegistrationPlanStep[];
+}
+
+/**
+ * @description 障害時再登録フローの復元実行要求。
+ * @remarks
+ * - [重要] 復元対象は device_db と k-user を独立して指定できる。
+ * - [厳守] k-user 復元では backupPassword と backupFilePath の両方を明示する。
+ */
+export interface recoveryReRegistrationRestoreRequestBody {
+  mode: "same-pc" | "external-device";
+  restoreDeviceDb: boolean;
+  deviceDbBackupDir?: string;
+  restoreKUser: boolean;
+  kUserBackupPassword?: string;
+  kUserBackupFilePath?: string;
+}
+
+/**
+ * @description 障害時再登録フローの復元結果。
+ */
+export interface recoveryReRegistrationRestoreResponse {
+  mode: "same-pc" | "external-device";
+  deviceDb?: {
+    backupDir: string;
+    restoredFileNames: string[];
+    restoredFileCount: number;
+  };
+  kUser?: {
+    imported: true;
+    keyFingerprint: string;
+    source: string;
+  };
+}
+
+/**
+ * @description 障害時再登録フローの一括実行要求。
+ * @remarks
+ * - [重要] `workflowRequestBody` は Pairing / KeyRotation の共通入力をそのまま受ける。
+ * - [厳守] `same-pc` では key-rotation、`external-device` では pairing を実行する。
+ */
+export interface recoveryReRegistrationExecuteRequestBody extends recoveryReRegistrationRestoreRequestBody {
+  workflowRequestBody: Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>;
+}
+
+/**
+ * @description 障害時再登録フローの一括実行結果。
+ */
+export interface recoveryReRegistrationExecuteResponse {
+  mode: "same-pc" | "external-device";
+  restore: recoveryReRegistrationRestoreResponse;
+  workflow: {
+    workflowId: string;
+    workflowType: "pairing" | "key-rotation";
+    state: string;
+    result?: string;
+    errorSummary?: string;
+    detail?: string;
+  };
+}
+
+/**
  * @description Production workflow の事前チェック観測値。
  * @remarks
  * - [重要] `ProductionTool` の 8 項目事前チェックを TS から Rust へ最小DTOで渡すための型。

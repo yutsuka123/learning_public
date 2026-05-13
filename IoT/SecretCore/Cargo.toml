@@ -21,3 +21,11 @@ serde_json = "1.0.149"
 sha2 = "0.10.9"
 tokio = { version = "1.50.0", features = ["full"] }
 winapi = { version = "0.3.9", features = ["dpapi", "winbase", "wincrypt"] }
+
+[profile.release]
+# [重要] SecretCore の配布物は、デバッグ情報と余計な巻き戻し面を減らす。
+# 理由: 高リスク処理の運用時に、解析面を小さくしつつ実行体を軽量化するため。
+codegen-units = 1
+lto = true
+panic = "abort"
+strip = "symbols"

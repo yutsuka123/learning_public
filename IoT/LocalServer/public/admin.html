@@ -160,6 +160,55 @@
       <button id="issueKDeviceButton">k-device発行</button>
     </div>
 
+    <div class="card hidden" id="recoveryReRegistrationCard">
+      <h2>障害時再登録フロー</h2>
+      <div class="fieldRow">
+        <label for="recoveryModeSelect">復旧モード</label>
+        <select id="recoveryModeSelect">
+          <option value="same-pc">同一PC復旧</option>
+          <option value="external-device">別PC / 機材交換</option>
+        </select>
+      </div>
+      <div class="fieldRow">
+        <label for="recoveryTargetDeviceIdInput">targetDeviceId</label>
+        <input id="recoveryTargetDeviceIdInput" type="text" value="IoT_TEST_DEVICE" />
+      </div>
+      <div class="fieldRow">
+        <label for="recoveryTargetDeviceNameInput">targetDeviceName</label>
+        <input id="recoveryTargetDeviceNameInput" type="text" value="IoT_TEST_DEVICE" />
+      </div>
+      <div class="fieldRow">
+        <label for="recoveryKeyVersionInput">keyVersion</label>
+        <input id="recoveryKeyVersionInput" type="text" value="v1" />
+      </div>
+      <button id="generateRecoveryPlanButton">再登録フロー案内を生成</button>
+      <hr />
+      <div class="fieldRow">
+        <label for="restoreDeviceDbInput">device_db を復元</label>
+        <div><input id="restoreDeviceDbInput" type="checkbox" checked /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="deviceDbBackupDirInput">device_db バックアップDir</label>
+        <input id="deviceDbBackupDirInput" type="text" placeholder="未指定なら最新スナップショット" />
+      </div>
+      <div class="fieldRow">
+        <label for="restoreKUserInput">k-user を復元</label>
+        <div><input id="restoreKUserInput" type="checkbox" checked /></div>
+      </div>
+      <div class="fieldRow">
+        <label for="kUserBackupPasswordInput">k-user バックアップパスワード</label>
+        <input id="kUserBackupPasswordInput" type="password" data-password-toggle="true" autocomplete="new-password" />
+      </div>
+      <div class="fieldRow">
+        <label for="kUserBackupFilePathInput">k-user バックアップファイル</label>
+        <input id="kUserBackupFilePathInput" type="text" placeholder="例: data/secure-backups/k-user-backup-....enc.json" />
+      </div>
+      <button id="runRecoveryRestoreButton">復元を実行</button>
+      <button id="runRecoveryExecuteButton">復元して再登録を実行</button>
+      <div class="muted">[重要] `same-pc` は `device_db` 復元→`key-rotation`、`external-device` は `k-user` 復元→`pairing` を実行します。</div>
+      <div id="recoveryPlanArea" class="muted" style="margin-top: 8px; white-space: pre-wrap;"></div>
+    </div>
+
     <div class="card hidden" id="wifiUsbCard">
       <h2>AP探索用 Wi-Fi USB 選択</h2>
       <div class="fieldRow">
@@ -690,7 +739,14 @@
        */
       function updateAuthUiState() {
         const isAuthenticated = getAdminToken().length > 0;
-        const secureCardIdList = ["adminActionsCard", "wifiUsbCard", "apWorkflowCard", "securePingCard", "deviceListCard"];
+        const secureCardIdList = [
+          "adminActionsCard",
+          "recoveryReRegistrationCard",
+          "wifiUsbCard",
+          "apWorkflowCard",
+          "securePingCard",
+          "deviceListCard"
+        ];
         secureCardIdList.forEach((cardId) => {
           const cardElement = document.getElementById(cardId);
           if (cardElement === null) {
@@ -865,6 +921,106 @@
         });
         appendLog(
           `secure-ping成功: requestId=${jsonObject.requestId} response=${JSON.stringify(jsonObject.decryptedResponse)}`,
+          "ok"
+        );
+      }
+
+      /**
+       * @description 障害時再登録フローの案内を生成する。
+       */
+      async function generateRecoveryRegistrationPlan() {
+        const mode = document.getElementById("recoveryModeSelect").value;
+        const targetDeviceId = document.getElementById("recoveryTargetDeviceIdInput").value.trim();
+        const targetDeviceName = document.getElementById("recoveryTargetDeviceNameInput").value.trim();
+        const keyVersion = document.getElementById("recoveryKeyVersionInput").value.trim();
+        const jsonObject = await callAdminApi("/api/admin/recovery/re-registration/plan", "POST", {
+          mode,
+          targetDeviceId,
+          targetDeviceName,
+          keyVersion
+        });
+        const planLines = [
+          `mode=${jsonObject.mode}`,
+          `title=${jsonObject.title}`,
+          `summary=${jsonObject.summary}`,
+          ""
+        ];
+        for (const [index, step] of (jsonObject.steps || []).entries()) {
+          planLines.push(`${index + 1}. ${step.title}`);
+          planLines.push(`   endpoint: ${step.endpoint}`);
+          planLines.push(`   note: ${step.note}`);
+        }
+        document.getElementById("recoveryPlanArea").textContent = planLines.join("\n");
+        appendLog(`障害時再登録フロー案内を生成しました。mode=${jsonObject.mode}`, "ok");
+      }
+
+      /**
+       * @description 障害時再登録フローの復元処理を実行する。
+       */
+      async function runRecoveryReRegistrationRestore() {
+        const mode = document.getElementById("recoveryModeSelect").value;
+        const restoreDeviceDb = document.getElementById("restoreDeviceDbInput").checked;
+        const deviceDbBackupDir = document.getElementById("deviceDbBackupDirInput").value.trim();
+        const restoreKUser = document.getElementById("restoreKUserInput").checked;
+        const kUserBackupPassword = document.getElementById("kUserBackupPasswordInput").value;
+        const kUserBackupFilePath = document.getElementById("kUserBackupFilePathInput").value.trim();
+        const jsonObject = await callAdminApi("/api/admin/recovery/re-registration/restore", "POST", {
+          mode,
+          restoreDeviceDb,
+          deviceDbBackupDir,
+          restoreKUser,
+          kUserBackupPassword,
+          kUserBackupFilePath
+        });
+        const planLines = [
+          `mode=${jsonObject.mode}`,
+          `deviceDb=${jsonObject.deviceDb ? `restored ${jsonObject.deviceDb.restoredFileCount} files from ${jsonObject.deviceDb.backupDir}` : "skipped"}`,
+          `kUser=${jsonObject.kUser ? `imported source=${jsonObject.kUser.source} fingerprint=${jsonObject.kUser.keyFingerprint}` : "skipped"}`
+        ];
+        document.getElementById("recoveryPlanArea").textContent = planLines.join("\n");
+        appendLog(`障害時再登録フローの復元を実行しました。mode=${jsonObject.mode}`, "ok");
+      }
+
+      /**
+       * @description 障害時再登録フローを復元から workflow 実行まで一括で進める。
+       */
+      async function runRecoveryReRegistrationExecute() {
+        const mode = document.getElementById("recoveryModeSelect").value;
+        const restoreDeviceDb = document.getElementById("restoreDeviceDbInput").checked;
+        const deviceDbBackupDir = document.getElementById("deviceDbBackupDirInput").value.trim();
+        const restoreKUser = document.getElementById("restoreKUserInput").checked;
+        const kUserBackupPassword = document.getElementById("kUserBackupPasswordInput").value;
+        const kUserBackupFilePath = document.getElementById("kUserBackupFilePathInput").value.trim();
+        const selectedApSsid = document.getElementById("apSsidSelect").value || "";
+        if (selectedApSsid.length === 0) {
+          throw new Error("障害時再登録フロー実行失敗: AP機体が未選択です。");
+        }
+        const recoveryTargetDeviceId = document.getElementById("recoveryTargetDeviceIdInput").value.trim();
+        const recoveryTargetDeviceName = document.getElementById("recoveryTargetDeviceNameInput").value.trim();
+        document.getElementById("apTargetDeviceNameInput").value = recoveryTargetDeviceName;
+        const workflowRequestBody = buildApConfigureRequestBody(selectedApSsid);
+        workflowRequestBody.targetDeviceId = recoveryTargetDeviceId;
+        workflowRequestBody.sessionId = `recovery-${Date.now()}-${Math.floor(Math.random() * 100000)}`;
+        workflowRequestBody.keyVersion = document.getElementById("recoveryKeyVersionInput").value.trim();
+        const jsonObject = await callAdminApi("/api/admin/recovery/re-registration/execute", "POST", {
+          mode,
+          restoreDeviceDb,
+          deviceDbBackupDir,
+          restoreKUser,
+          kUserBackupPassword,
+          kUserBackupFilePath,
+          workflowRequestBody
+        });
+        const planLines = [
+          `mode=${jsonObject.mode}`,
+          `restore.deviceDb=${jsonObject.restore?.deviceDb ? `restored ${jsonObject.restore.deviceDb.restoredFileCount} files` : "skipped"}`,
+          `restore.kUser=${jsonObject.restore?.kUser ? `imported fingerprint=${jsonObject.restore.kUser.keyFingerprint}` : "skipped"}`,
+          `workflow=${jsonObject.workflow?.workflowType ?? "(unknown)"} state=${jsonObject.workflow?.state ?? "(unknown)"} result=${jsonObject.workflow?.result ?? "(empty)"}`,
+          `workflowId=${jsonObject.workflow?.workflowId ?? "(unknown)"}`
+        ];
+        document.getElementById("recoveryPlanArea").textContent = planLines.join("\n");
+        appendLog(
+          `障害時再登録フローを実行しました。mode=${jsonObject.mode} workflowType=${jsonObject.workflow?.workflowType} workflowId=${jsonObject.workflow?.workflowId}`,
           "ok"
         );
       }
@@ -1297,6 +1453,15 @@
         });
         document.getElementById("issueKDeviceButton").addEventListener("click", () => {
           issueKDevice().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("generateRecoveryPlanButton").addEventListener("click", () => {
+          generateRecoveryRegistrationPlan().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("runRecoveryRestoreButton").addEventListener("click", () => {
+          runRecoveryReRegistrationRestore().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("runRecoveryExecuteButton").addEventListener("click", () => {
+          runRecoveryReRegistrationExecute().catch((error) => appendLog(error.message, "ng"));
         });
         document.getElementById("securePingButton").addEventListener("click", () => {
           runSecurePing().catch((error) => appendLog(error.message, "ng"));

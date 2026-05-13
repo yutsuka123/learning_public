@@ -77,6 +77,9 @@
 - `POST /api/admin/auth/logout`
 - `POST /api/admin/keys/k-user/issue`
 - `POST /api/admin/keys/k-device/issue`
+- `POST /api/admin/recovery/re-registration/plan`
+- `POST /api/admin/recovery/re-registration/restore`
+- `POST /api/admin/recovery/re-registration/execute`
 - `POST /api/settings/backups/device-db/export`
 - `POST /api/settings/backups/device-db/restore`
 - `POST /api/settings/backups/k-user/export`
@@ -94,6 +97,7 @@
 
 ## 9. 変更履歴
 - 2026-05-13: `settings.html` の復旧・バックアップ導線と `/api/settings/backups/*` を追加。理由: `device_db` 退避/復元と `k-user` 暗号化バックアップを LocalServer から直接扱えるようにするため。
+- 2026-05-13: `/api/admin/recovery/re-registration/plan` と `admin.html` の案内 UI を追加。理由: 障害時再登録フローの操作順を管理画面から参照できるようにするため。
 - 2026-04-18: §2 セットアップ冒頭に `日常運用_LocalServerとSTA接続_クイックリファレンス.md` への参照を追加。理由: STA 同一LAN運用時の起動順を README と索引の双方から辿れるようにするため。
 - 2026-03-21: `key-rotation/start` を [進捗] へ更新し、新 `k-user` 発行 + 新 `k-device` 再導出 + Pairing secure bundle 再利用、および `npm run test:7040` を追記。理由: README 上の workflow 現在地を最新実装へ合わせるため。
 - 2026-03-16: `ProductionTool` へ名称統一し、`LocalServer` とは別ソフト・独立動作であることを追記。理由: 通常運用 README でも名称統一と責務分離を明確化するため。

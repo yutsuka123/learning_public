@@ -29,6 +29,9 @@ import {
   apConfigureRequestBody,
   commandRequestBody,
   keyRotationWorkflowStartRequestBody,
+  recoveryReRegistrationPlanRequestBody,
+  recoveryReRegistrationExecuteRequestBody,
+  recoveryReRegistrationRestoreRequestBody,
   otaCommandRequestBody,
   otaTamperedSignatureTestRequestBody,
   settingTamperedSignatureTestRequestBody,
@@ -38,11 +41,12 @@ import {
   productionWorkflowStartRequestBody,
   rollbackTestCommandRequestBody,
   localServerSettings,
-  genericCommandRequestBody
+  genericCommandRequestBody,
+  recoveryReRegistrationExecuteResponse
 } from "./types";
 import { SecretCoreManager } from "./secretCoreManager";
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
-import { SecretCoreFacade } from "./secretCoreFacade";
+import { SecretCoreFacade, secretCoreWorkflowStatusResult } from "./secretCoreFacade";
 import { buildPairingWorkflowStartRequestBodyFromApConfigure, validatePairingWorkflowStartRequestBody } from "./pairingWorkflowInput";
 import { mqttPayloadSecurityService, resolveMqttPayloadEncryptionMode } from "./mqttPayloadSecurity";
 
@@ -366,6 +370,29 @@ interface kUserBackupRequestBody {
   backupFilePath?: string;
 }
 
+interface recoveryRegistrationPlanStepDetail {
+  title: string;
+  endpoint: string;
+  note: string;
+}
+
+interface recoveryRegistrationPlanResult {
+  mode: "same-pc" | "external-device";
+  title: string;
+  summary: string;
+  steps: recoveryRegistrationPlanStepDetail[];
+}
+
+interface recoveryRegistrationRestoreResult {
+  mode: "same-pc" | "external-device";
+  deviceDb?: deviceDbBackupRestoreResult;
+  kUser?: {
+    imported: true;
+    keyFingerprint: string;
+    source: string;
+  };
+}
+
 interface securePingRequestBody {
   targetDeviceName: string;
   plainText?: string;
@@ -465,6 +492,200 @@ interface apManagedFileDeleteRequestBody {
 const runtimeSecurityState = loadSecurityState();
 const adminLoginLockStateMap = new Map<string, adminLoginLockState>();
 const apBatchRunMap = new Map<string, apBatchRunResult>();
+
+/**
+ * @description 障害時再登録フローの案内を組み立てる。
+ * @param requestBody 再登録案内要求。
+ * @returns 案内結果。
+ */
+function buildRecoveryReRegistrationPlan(requestBody: recoveryReRegistrationPlanRequestBody): recoveryRegistrationPlanResult {
+  const targetDeviceId = (requestBody.targetDeviceId ?? "").trim();
+  const targetDeviceName = (requestBody.targetDeviceName ?? "").trim();
+  const keyVersion = (requestBody.keyVersion ?? "").trim();
+  if (requestBody.mode === "same-pc") {
+    return {
+      mode: "same-pc",
+      title: "同一PC復旧プラン",
+      summary: "wrapped_secret/device_db を先に戻し、必要なら key-rotation で current/previous 整合を閉じる。",
+      steps: [
+        {
+          title: "device_db を復元する",
+          endpoint: "POST /api/settings/backups/device-db/restore",
+          note: "settings.html から device_db を復元し、wrapped_secret.bin / wrapped_k_user.bin を含む最小集合を戻す。"
+        },
+        {
+          title: "k-user 状態を確認する",
+          endpoint: "GET /api/admin/keys/k-user/status",
+          note: "発行済みか、fingerprint と deviceKeyCount が期待どおりかを確認する。"
+        },
+        {
+          title: "必要なら key-rotation を実行する",
+          endpoint: "POST /api/workflows/key-rotation/start",
+          note: `targetDeviceId=${targetDeviceId || "(未指定)"} targetDeviceName=${targetDeviceName || "(未指定)"} keyVersion=${keyVersion || "(未指定)"}`.trim()
+        },
+        {
+          title: "workflow の完了判定を確認する",
+          endpoint: "GET /api/workflows/{workflowId}",
+          note: "completed/OK か failed を確認し、失敗時は証跡を残して再試行可否を判断する。"
+        }
+      ]
+    };
+  }
+  return {
+    mode: "external-device",
+    title: "別PC・機材交換時の再登録プラン",
+    summary: "暗号化バックアップから k-user を復元し、対象個体ごとに pairing をやり直す。",
+    steps: [
+      {
+        title: "k-user 暗号化バックアップを復元する",
+        endpoint: "POST /api/settings/backups/k-user/import",
+        note: "LocalServer の settings.html または管理画面の導線から暗号化バックアップファイルを戻す。"
+      },
+      {
+        title: "対象個体の pairing をやり直す",
+        endpoint: "POST /api/workflows/pairing/start",
+        note: `targetDeviceId=${targetDeviceId || "(未指定)"} targetDeviceName=${targetDeviceName || "(未指定)"}`.trim()
+      },
+      {
+        title: "k-device / 状態更新を確認する",
+        endpoint: "GET /api/pairing/state",
+        note: "raw key を表示せず、completed/OK と AP 側 state=applied を確認する。"
+      },
+      {
+        title: "workflow の完了判定を確認する",
+        endpoint: "GET /api/workflows/{workflowId}",
+        note: "completed/OK か failed を確認し、失敗時は証跡を残して再試行可否を判断する。"
+      }
+    ]
+  };
+}
+
+/**
+ * @description 障害時再登録フローの復元処理を実行する。
+ * @param requestBody 復元要求。
+ * @returns 復元結果。
+ */
+async function runRecoveryReRegistrationRestore(
+  requestBody: recoveryReRegistrationRestoreRequestBody
+): Promise<recoveryRegistrationRestoreResult> {
+  const mode = requestBody.mode;
+  const restoreDeviceDb = requestBody.restoreDeviceDb === true;
+  const restoreKUser = requestBody.restoreKUser === true;
+  if (!restoreDeviceDb && !restoreKUser) {
+    throw new Error("runRecoveryReRegistrationRestore failed. at least one restore target is required.");
+  }
+
+  const restoreResult: recoveryRegistrationRestoreResult = {
+    mode
+  };
+
+  if (restoreDeviceDb) {
+    restoreResult.deviceDb = restoreDeviceDbBackupSnapshot(requestBody.deviceDbBackupDir);
+  }
+
+  if (restoreKUser) {
+    const backupPassword = (requestBody.kUserBackupPassword ?? "").trim();
+    const backupFilePath = (requestBody.kUserBackupFilePath ?? "").trim();
+    if (backupPassword.length === 0) {
+      throw new Error("runRecoveryReRegistrationRestore failed. kUserBackupPassword is required when restoreKUser is true.");
+    }
+    if (backupFilePath.length === 0) {
+      throw new Error("runRecoveryReRegistrationRestore failed. kUserBackupFilePath is required when restoreKUser is true.");
+    }
+    restoreResult.kUser = await localKeyService.importKUserBackup(backupPassword, backupFilePath);
+  }
+
+  return restoreResult;
+}
+
+/**
+ * @description Pairing workflow を直接開始する。
+ * @param rawRequestBody workflow 開始要求の生データ。
+ * @returns workflow 状態。
+ */
+async function startPairingWorkflowFromRequestBody(
+  rawRequestBody: Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+): Promise<secretCoreWorkflowStatusResult> {
+  if (!USE_SECRET_CORE) {
+    throw new Error("pairing workflow start failed. SecretCore is disabled.");
+  }
+  const requestBody = await resolvePairingWorkflowStartRequestBody(rawRequestBody);
+  return await secretCoreFacade.runPairingSession(requestBody);
+}
+
+/**
+ * @description KeyRotation workflow を直接開始する。
+ * @param rawRequestBody workflow 開始要求の生データ。
+ * @returns workflow 状態。
+ */
+async function startKeyRotationWorkflowFromRequestBody(
+  rawRequestBody: Partial<keyRotationWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+): Promise<secretCoreWorkflowStatusResult> {
+  if (!USE_SECRET_CORE) {
+    throw new Error("key-rotation workflow start failed. SecretCore is disabled.");
+  }
+  // [重要] 新しい k-user を先に発行し、その後に k-device を再導出した request を workflow へ渡す。
+  // 理由: KeyRotation は旧系統の鍵を再投入する処理ではなく、新系統への切替を対象とするため。
+  await localKeyService.issueKUser();
+  const requestBody = await resolvePairingWorkflowStartRequestBody(rawRequestBody);
+  return await secretCoreFacade.runKeyRotationSession(requestBody);
+}
+
+/**
+ * @description 障害時再登録フローの一括実行を行う。
+ * @param requestBody 一括実行要求。
+ * @returns 一括実行結果。
+ */
+async function runRecoveryReRegistrationExecute(
+  requestBody: recoveryReRegistrationExecuteRequestBody
+): Promise<recoveryReRegistrationExecuteResponse> {
+  const workflowRequestBody = requestBody.workflowRequestBody ?? {};
+  if (requestBody.mode === "same-pc") {
+    const restoreResult = await runRecoveryReRegistrationRestore({
+      mode: requestBody.mode,
+      restoreDeviceDb: requestBody.restoreDeviceDb,
+      deviceDbBackupDir: requestBody.deviceDbBackupDir,
+      restoreKUser: false
+    });
+    const workflowStatus = await startKeyRotationWorkflowFromRequestBody(
+      workflowRequestBody as Partial<keyRotationWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+    );
+    return {
+      mode: requestBody.mode,
+      restore: restoreResult,
+      workflow: {
+        workflowId: workflowStatus.workflowId,
+        workflowType: "key-rotation",
+        state: workflowStatus.state,
+        result: workflowStatus.result,
+        errorSummary: workflowStatus.errorSummary,
+        detail: workflowStatus.detail
+      }
+    };
+  }
+  const restoreResult = await runRecoveryReRegistrationRestore({
+    mode: requestBody.mode,
+    restoreDeviceDb: false,
+    restoreKUser: requestBody.restoreKUser,
+    kUserBackupPassword: requestBody.kUserBackupPassword,
+    kUserBackupFilePath: requestBody.kUserBackupFilePath
+  });
+  const workflowStatus = await startPairingWorkflowFromRequestBody(
+    workflowRequestBody as Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
+  );
+  return {
+    mode: requestBody.mode,
+    restore: restoreResult,
+    workflow: {
+      workflowId: workflowStatus.workflowId,
+      workflowType: "pairing",
+      state: workflowStatus.state,
+      result: workflowStatus.result,
+      errorSummary: workflowStatus.errorSummary,
+      detail: workflowStatus.detail
+    }
+  };
+}
 
 /**
  * @description [003-0011][厳守] eFuse 操作 API 拒否。
@@ -1585,6 +1806,85 @@ app.post("/api/admin/keys/k-device/issue", async (request: Request, response: Re
 });
 
 /**
+ * @description 障害時再登録フローの案内を返すAPI。
+ * @remarks
+ * - [重要] 実処理は既存の device_db 退避/復元、k-user 暗号化バックアップ、pairing / key-rotation API を組み合わせる。
+ * - [厳守] このAPIは案内専用とし、raw key や秘密復元結果を返さない。
+ */
+app.post("/api/admin/recovery/re-registration/plan", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as recoveryReRegistrationPlanRequestBody;
+    const mode = requestBody?.mode;
+    if (mode !== "same-pc" && mode !== "external-device") {
+      throw new Error("recovery re-registration plan failed. mode is required.");
+    }
+    const result = buildRecoveryReRegistrationPlan(requestBody);
+    response.json({
+      result: "OK",
+      ...result
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 障害時再登録フローの復元処理を実行するAPI。
+ * @remarks
+ * - [重要] 同一PC復旧と別PC再登録のどちらでも、まず保存状態を戻すことを優先する。
+ * - [厳守] k-user 復元時は backupPassword と backupFilePath の両方が必要。
+ */
+app.post("/api/admin/recovery/re-registration/restore", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as recoveryReRegistrationRestoreRequestBody;
+    if (requestBody.mode !== "same-pc" && requestBody.mode !== "external-device") {
+      throw new Error("recovery re-registration restore failed. mode is required.");
+    }
+    const restoreResult = await runRecoveryReRegistrationRestore(requestBody);
+    response.json({
+      result: "OK",
+      ...restoreResult
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description 障害時再登録フローを復元から workflow 実行まで一括で進めるAPI。
+ * @remarks
+ * - [重要] `same-pc` は `device_db` 復元後に key-rotation を開始する。
+ * - [重要] `external-device` は `k-user` 復元後に pairing を開始する。
+ */
+app.post("/api/admin/recovery/re-registration/execute", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as recoveryReRegistrationExecuteRequestBody;
+    if (requestBody.mode !== "same-pc" && requestBody.mode !== "external-device") {
+      throw new Error("recovery re-registration execute failed. mode is required.");
+    }
+    const executeResult = await runRecoveryReRegistrationExecute(requestBody);
+    response.json({
+      result: "OK",
+      ...executeResult
+    });
+  } catch (apiError) {
+    response.status(400).json({
+      result: "NG",
+      detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
  * @description MQTT接続中ESP32へメンテナンス再起動指令を送信するAPI。
  */
 app.post("/api/admin/commands/maintenance-reboot", async (request: Request, response: Response) => {
@@ -1779,13 +2079,9 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
 app.post("/api/workflows/pairing/start", async (request: Request, response: Response) => {
   try {
     requireAdminSession(request);
-    if (!USE_SECRET_CORE) {
-      throw new Error("pairing workflow start failed. SecretCore is disabled.");
-    }
-    const requestBody = await resolvePairingWorkflowStartRequestBody(
+    const workflowStatus = await startPairingWorkflowFromRequestBody(
       request.body as Partial<pairingWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
     );
-    const workflowStatus = await secretCoreFacade.runPairingSession(requestBody);
     response.json({
       result: "OK",
       workflow: workflowStatus
@@ -1812,16 +2108,9 @@ app.post("/api/workflows/pairing/start", async (request: Request, response: Resp
 app.post("/api/workflows/key-rotation/start", async (request: Request, response: Response) => {
   try {
     requireAdminSession(request);
-    if (!USE_SECRET_CORE) {
-      throw new Error("key-rotation workflow start failed. SecretCore is disabled.");
-    }
-    // [重要] 新しい k-user を先に発行し、その後に k-device を再導出した request を workflow へ渡す。
-    // 理由: KeyRotation は旧系統の鍵を再投入する処理ではなく、新系統への切替を対象とするため。
-    await localKeyService.issueKUser();
-    const requestBody = await resolvePairingWorkflowStartRequestBody(
+    const workflowStatus = await startKeyRotationWorkflowFromRequestBody(
       request.body as Partial<keyRotationWorkflowStartRequestBody & apConfigureRequestBody & { keyDeviceBase64?: string }>
     );
-    const workflowStatus = await secretCoreFacade.runKeyRotationSession(requestBody);
     response.json({
       result: "OK",
       workflow: workflowStatus
