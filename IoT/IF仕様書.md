@@ -410,6 +410,50 @@
 - [重要] `k-user` 保護方式は `TPM由来方式` または `暗号化ファイル + パスワード方式` を許容し、復号処理は `SecretCore` の Rust モジュール内で完結する。
 - [厳守] `k-device` は `Server` ごとに分離する運用と、複数 `Server` 間で共通利用する運用をユーザー選択で切り替える。
 
+### 4.13 LocalServer 設定復旧 IF
+- 目的: LocalServer の設定画面から `device_db` スナップショットの退避・復元を行う。
+- HTTP:
+  - `POST /api/settings/backups/device-db/export`
+  - `POST /api/settings/backups/device-db/restore`
+- 要求項目:
+  - `backupRoot`（退避時、任意）
+  - `backupDir`（復元時、任意）
+- 応答項目例:
+  - `result`
+  - `backupDir`
+  - `manifestPath`
+  - `memoPath`
+  - `fileCount`
+  - `restoredFileNames`
+  - `restoredFileCount`
+  - `detail`
+- [重要] 退避/復元対象は `settings.json` / `securityState.json` / `keyStore.json` / `wrapped_secret.bin` / `wrapped_k_user.bin` を最小集合とする。
+- [厳守] 復元元未指定時は `data/secure-backups` 配下の最新スナップショットを使う。
+- [厳守] 退避先は既定で `data/secure-backups` 配下へ保存し、設定画面上で変更先を明示できるようにする。
+- [禁止] `device_db` に raw `k-user` を含める前提の保存形式へ戻さない。
+
+### 4.14 `k-user` 暗号化バックアップ IF
+- 目的: LocalServer の設定画面から `SecretCore` を経由して `k-user` の暗号化バックアップを出力・復元する。
+- HTTP:
+  - `POST /api/settings/backups/k-user/export`
+  - `POST /api/settings/backups/k-user/import`
+- 要求項目:
+  - `backupPassword`
+  - `backupFilePath`（任意、export 時）
+- 応答項目例:
+  - `result`
+  - `exported`
+  - `imported`
+  - `backupFilePath`
+  - `keyFingerprint`
+  - `source`
+  - `format`
+  - `detail`
+- [厳守] raw `k-user` は REST 応答、UI、ログへ含めない。
+- [厳守] バックアップファイルは `scrypt + AES-256-GCM` の暗号化形式を使う。
+- [重要] export 時の既定出力先は `data/secure-backups` 配下のタイムスタンプ付きファイルとし、import 時は明示ファイルパスを必須とする。
+- [禁止] `k-user` の平文バックアップファイルを新規作成しない。
+
 ## 5. Cloud IF [将来対応]
 - AWS IoT Core または Google Cloud IoT相当サービスを候補とする。
 - 認証フロー、デバイス証明書配布、更新承認フローは第4段階で確定する。

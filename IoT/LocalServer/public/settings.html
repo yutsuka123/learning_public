@@ -1,7 +1,8 @@
 <!--
   @file settings.html
-  @description LocalServer設定画面（時刻表示/OTAファームウェア）を提供する。
+  @description LocalServer設定画面（時刻表示/OTAファームウェア/復旧・バックアップ）を提供する。
   @important [重要] 設定は `/api/settings` を通じて保存し、再起動後も保持する。
+  @important [重要] device_db の退避・復元と k-user 暗号化バックアップの出力・復元は管理者認証後のみ実行する。
   @strict [厳守] 設定項目は将来追加を前提に、セクション分割で拡張しやすく構成する。
   @future [将来対応] ネットワーク、通知、認証などの設定項目を追加予定。
 -->
@@ -110,6 +111,45 @@
     </div>
 
     <div class="card">
+      <h2>復旧・バックアップ</h2>
+      <div class="muted">[重要] ここで扱う操作は管理者認証が必要です。未ログイン時は先に管理者画面へ移動してください。</div>
+
+      <div class="card" style="margin-top: 12px">
+        <h3>device_db 復旧</h3>
+        <div class="fieldRow">
+          <label for="deviceDbBackupRootInput">バックアップルート</label>
+          <input id="deviceDbBackupRootInput" type="text" placeholder="空欄時は data/secure-backups を使用" />
+        </div>
+        <div class="fieldRow">
+          <label for="deviceDbRestoreDirInput">復元元ディレクトリ</label>
+          <input id="deviceDbRestoreDirInput" type="text" placeholder="空欄時は最新スナップショットを使用" />
+        </div>
+        <div class="toolbar">
+          <button id="deviceDbExportButton" type="button">device_db 退避</button>
+          <button id="deviceDbRestoreButton" type="button">device_db 復元</button>
+        </div>
+        <div class="muted">[厳守] 復元対象は settings.json / securityState.json / keyStore.json / wrapped_secret.bin / wrapped_k_user.bin の最小集合です。</div>
+      </div>
+
+      <div class="card" style="margin-top: 12px">
+        <h3>k-user 暗号化バックアップ</h3>
+        <div class="fieldRow">
+          <label for="kUserBackupPasswordInput">バックアップパスワード</label>
+          <input id="kUserBackupPasswordInput" type="password" placeholder="12文字以上を推奨" />
+        </div>
+        <div class="fieldRow">
+          <label for="kUserBackupFilePathInput">バックアップファイルパス</label>
+          <input id="kUserBackupFilePathInput" type="text" placeholder="空欄時は data/secure-backups 配下へ出力" />
+        </div>
+        <div class="toolbar">
+          <button id="kUserExportButton" type="button">k-user バックアップ出力</button>
+          <button id="kUserImportButton" type="button">k-user バックアップ復元</button>
+        </div>
+        <div class="muted">[禁止] raw k-user は表示しません。出力されるのは暗号化バックアップファイルのみです。</div>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>将来拡張</h2>
       <div class="muted">設定項目は今後増える想定です。ネットワーク・通知・認証などを順次追加します。</div>
     </div>
@@ -123,6 +163,10 @@
       const firmwareUploadInput = document.getElementById("firmwareUploadInput");
       const activeFirmwarePathText = document.getElementById("activeFirmwarePathText");
       const firmwareInfoText = document.getElementById("firmwareInfoText");
+      const deviceDbBackupRootInput = document.getElementById("deviceDbBackupRootInput");
+      const deviceDbRestoreDirInput = document.getElementById("deviceDbRestoreDirInput");
+      const kUserBackupPasswordInput = document.getElementById("kUserBackupPasswordInput");
+      const kUserBackupFilePathInput = document.getElementById("kUserBackupFilePathInput");
 
       function appendLog(text) {
         const nowText = new Date().toISOString();
@@ -142,6 +186,19 @@
         }
       }
 
+      async function callJsonApi(url, method, body) {
+        const response = await fetch(url, {
+          method,
+          headers: body ? { "Content-Type": "application/json" } : undefined,
+          body: body ? JSON.stringify(body) : undefined
+        });
+        const jsonObject = await response.json();
+        if (!response.ok) {
+          throw new Error(jsonObject.detail || `${method} ${url} failed. status=${response.status}`);
+        }
+        return jsonObject;
+      }
+
       function renderSettingsResponse(jsonObject) {
         const settings = jsonObject.settings || {};
         timeZoneInput.value = settings.timeZone || "";
@@ -152,6 +209,51 @@
         activeFirmwarePathText.textContent = jsonObject.activeFirmwarePath || "(未設定)";
         const info = jsonObject.firmwareInfo || {};
         firmwareInfoText.textContent = `exists=${info.fileExists} file=${info.fileName || ""} size=${info.fileSize || 0} sha256=${info.sha256 || ""}`;
+      }
+
+      async function exportDeviceDbBackup() {
+        const jsonObject = await callJsonApi("/api/settings/backups/device-db/export", "POST", {
+          backupRoot: deviceDbBackupRootInput.value.trim()
+        });
+        appendLog(`device_db を退避しました。backupDir=${jsonObject.backupDir} fileCount=${jsonObject.fileCount}`);
+        deviceDbRestoreDirInput.value = jsonObject.backupDir;
+      }
+
+      async function restoreDeviceDbBackup() {
+        const jsonObject = await callJsonApi("/api/settings/backups/device-db/restore", "POST", {
+          backupDir: deviceDbRestoreDirInput.value.trim()
+        });
+        appendLog(`device_db を復元しました。backupDir=${jsonObject.backupDir} restoredFileCount=${jsonObject.restoredFileCount}`);
+        await loadSettings();
+      }
+
+      async function exportKUserBackup() {
+        const backupPassword = kUserBackupPasswordInput.value.trim();
+        if (backupPassword.length === 0) {
+          throw new Error("k-user バックアップ出力にはパスワードが必要です。");
+        }
+        const jsonObject = await callJsonApi("/api/settings/backups/k-user/export", "POST", {
+          backupPassword,
+          backupFilePath: kUserBackupFilePathInput.value.trim()
+        });
+        appendLog(`k-user 暗号化バックアップを出力しました。backupFilePath=${jsonObject.backupFilePath} fingerprint=${jsonObject.keyFingerprint}`);
+        kUserBackupFilePathInput.value = jsonObject.backupFilePath;
+      }
+
+      async function importKUserBackup() {
+        const backupPassword = kUserBackupPasswordInput.value.trim();
+        const backupFilePath = kUserBackupFilePathInput.value.trim();
+        if (backupPassword.length === 0) {
+          throw new Error("k-user バックアップ復元にはパスワードが必要です。");
+        }
+        if (backupFilePath.length === 0) {
+          throw new Error("k-user バックアップ復元にはファイルパスが必要です。");
+        }
+        const jsonObject = await callJsonApi("/api/settings/backups/k-user/import", "POST", {
+          backupPassword,
+          backupFilePath
+        });
+        appendLog(`k-user バックアップを復元しました。keyFingerprint=${jsonObject.keyFingerprint} source=${jsonObject.source}`);
       }
 
       async function loadSettings() {
@@ -216,6 +318,18 @@
       });
       document.getElementById("uploadButton").addEventListener("click", () => {
         uploadFirmware().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("deviceDbExportButton").addEventListener("click", () => {
+        exportDeviceDbBackup().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("deviceDbRestoreButton").addEventListener("click", () => {
+        restoreDeviceDbBackup().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("kUserExportButton").addEventListener("click", () => {
+        exportKUserBackup().catch((error) => appendLog(error.message));
+      });
+      document.getElementById("kUserImportButton").addEventListener("click", () => {
+        importKUserBackup().catch((error) => appendLog(error.message));
       });
 
       loadSettings().catch((error) => appendLog(error.message));

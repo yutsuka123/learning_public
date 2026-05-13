@@ -1,6 +1,6 @@
 /**
  * @file server.ts
- * @description LocalServer本体。Web UI・REST API・MQTT連携・OTA配布エンドポイントを提供する。
+ * @description LocalServer本体。Web UI・REST API・MQTT連携・OTA配布エンドポイント・設定復旧導線を提供する。
  * @remarks
  * - [重要] 起動時にstatus要求を送信し、ESP32オンライン状態を初期同期する。
  * - [厳守] OTA配布はHTTPSを優先し、証明書未配置時は警告を出して無効化する。
@@ -100,6 +100,206 @@ const firmwareUploadMiddleware = multer({
   }
 });
 
+interface deviceDbBackupFileSpec {
+  readonly fileName: string;
+  readonly required: boolean;
+}
+
+interface deviceDbBackupManifestItem {
+  fileName: string;
+  copied: boolean;
+  required: boolean;
+  sizeBytes: number;
+}
+
+interface deviceDbBackupExportResult {
+  backupDir: string;
+  manifestPath: string;
+  memoPath: string;
+  fileCount: number;
+}
+
+interface deviceDbBackupRestoreResult {
+  backupDir: string;
+  restoredFileNames: string[];
+  restoredFileCount: number;
+}
+
+const localServerDataDirectoryPath = path.resolve(process.cwd(), "data");
+const localServerSecureBackupDirectoryPath = path.join(localServerDataDirectoryPath, "secure-backups");
+const deviceDbBackupFileSpecs: ReadonlyArray<deviceDbBackupFileSpec> = [
+  { fileName: "settings.json", required: true },
+  { fileName: "securityState.json", required: true },
+  { fileName: "keyStore.json", required: true },
+  { fileName: "wrapped_secret.bin", required: false },
+  { fileName: "wrapped_k_user.bin", required: false }
+];
+
+/**
+ * @description バックアップや証跡ファイル名に使うタイムスタンプ文字列を返す。
+ * @returns タイムスタンプ文字列。
+ */
+function createTimestampText(): string {
+  return new Date().toISOString().replace(/[:.]/g, "-");
+}
+
+/**
+ * @description 指定ディレクトリを必要に応じて作成する。
+ * @param directoryPath 作成対象ディレクトリ。
+ */
+function ensureDirectoryExists(directoryPath: string): void {
+  if (!fs.existsSync(directoryPath)) {
+    fs.mkdirSync(directoryPath, { recursive: true });
+  }
+}
+
+/**
+ * @description 受け取ったバックアップルートを絶対パスへ正規化する。
+ * @param backupRootText ユーザー指定のバックアップルート。
+ * @returns 絶対パス。
+ */
+function resolveBackupRootDirectoryPath(backupRootText?: string): string {
+  if (backupRootText === undefined || backupRootText.trim().length === 0) {
+    return localServerSecureBackupDirectoryPath;
+  }
+  return path.isAbsolute(backupRootText) ? backupRootText : path.resolve(process.cwd(), backupRootText);
+}
+
+/**
+ * @description device_db バックアップの最新スナップショットを探す。
+ * @param backupRootDirectoryPath バックアップルート。
+ * @returns 最新スナップショットの絶対パス。
+ */
+function resolveLatestDeviceDbBackupDirectoryPath(backupRootDirectoryPath: string): string {
+  if (!fs.existsSync(backupRootDirectoryPath)) {
+    throw new Error(`device_db backup root is not found. path=${backupRootDirectoryPath}`);
+  }
+  const latestSnapshotName = fs
+    .readdirSync(backupRootDirectoryPath, { withFileTypes: true })
+    .filter((dirent) => dirent.isDirectory() && dirent.name.startsWith("device-db-backup-"))
+    .map((dirent) => dirent.name)
+    .sort((left, right) => right.localeCompare(left))[0];
+  if (latestSnapshotName === undefined) {
+    throw new Error(`No device_db backup snapshot is found. path=${backupRootDirectoryPath}`);
+  }
+  return path.join(backupRootDirectoryPath, latestSnapshotName);
+}
+
+/**
+ * @description device_db バックアップを作成する。
+ * @param backupRootText バックアップルートの指定。
+ * @returns バックアップ結果。
+ */
+function createDeviceDbBackupSnapshot(backupRootText?: string): deviceDbBackupExportResult {
+  const backupRootDirectoryPath = resolveBackupRootDirectoryPath(backupRootText);
+  ensureDirectoryExists(backupRootDirectoryPath);
+
+  const timestampText = createTimestampText();
+  const backupDir = path.join(backupRootDirectoryPath, `device-db-backup-${timestampText}`);
+  ensureDirectoryExists(backupDir);
+
+  const manifestItems: deviceDbBackupManifestItem[] = [];
+  for (const fileSpec of deviceDbBackupFileSpecs) {
+    const sourcePath = path.join(localServerDataDirectoryPath, fileSpec.fileName);
+    const destinationPath = path.join(backupDir, fileSpec.fileName);
+    if (fs.existsSync(sourcePath)) {
+      fs.copyFileSync(sourcePath, destinationPath);
+      const fileInfo = fs.statSync(sourcePath);
+      manifestItems.push({
+        fileName: fileSpec.fileName,
+        copied: true,
+        required: fileSpec.required,
+        sizeBytes: fileInfo.size
+      });
+      continue;
+    }
+    if (fileSpec.required) {
+      throw new Error(`Required device_db file is not found. path=${sourcePath}`);
+    }
+    manifestItems.push({
+      fileName: fileSpec.fileName,
+      copied: false,
+      required: false,
+      sizeBytes: 0
+    });
+  }
+
+  const manifestPath = path.join(backupDir, "backup-manifest.json");
+  const manifest = {
+    backupType: "device-db-snapshot",
+    version: 1,
+    createdAt: new Date().toISOString(),
+    installRoot: process.cwd(),
+    sourceDataDirectory: localServerDataDirectoryPath,
+    files: manifestItems
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+  const memoPath = path.join(backupDir, `restore-memo-device-db-${timestampText}.md`);
+  const memoText = [
+    `# 復旧メモ (${timestampText})`,
+    "",
+    "- [重要] 目的: LocalServer の device_db を復旧可能な形で退避する。",
+    "- [厳守] このメモには機密値そのものを記載しない。",
+    "- [重要] バックアップ対象:",
+    ...manifestItems.map((item) => `  - ${item.fileName} (copied=${item.copied}, required=${item.required}, sizeBytes=${item.sizeBytes})`),
+    "- [重要] 復元時は settings.html または restore-device-db-after-7090.ps1 相当の導線を使う。",
+    "- [推奨] 復元後は settings.json、securityState.json、keyStore.json、wrapped_secret.bin、wrapped_k_user.bin の整合を確認する。",
+    "- [禁止] 退避先を通常のサポートパッケージと混在させない。"
+  ].join("\n");
+  fs.writeFileSync(memoPath, `${memoText}\n`, "utf8");
+
+  return {
+    backupDir,
+    manifestPath,
+    memoPath,
+    fileCount: manifestItems.length
+  };
+}
+
+/**
+ * @description device_db バックアップを復元する。
+ * @param backupDirText 復元元のバックアップディレクトリ。
+ * @returns 復元結果。
+ */
+function restoreDeviceDbBackupSnapshot(backupDirText?: string): deviceDbBackupRestoreResult {
+  const backupRootDirectoryPath = resolveBackupRootDirectoryPath(undefined);
+  const backupDir = backupDirText && backupDirText.trim().length > 0
+    ? (path.isAbsolute(backupDirText) ? backupDirText : path.resolve(process.cwd(), backupDirText))
+    : resolveLatestDeviceDbBackupDirectoryPath(backupRootDirectoryPath);
+
+  if (!fs.existsSync(backupDir)) {
+    throw new Error(`device_db backup directory is not found. path=${backupDir}`);
+  }
+
+  ensureDirectoryExists(localServerDataDirectoryPath);
+
+  const restoredFileNames: string[] = [];
+  for (const fileSpec of deviceDbBackupFileSpecs) {
+    const backupFilePath = path.join(backupDir, fileSpec.fileName);
+    const destinationPath = path.join(localServerDataDirectoryPath, fileSpec.fileName);
+    if (fs.existsSync(backupFilePath)) {
+      fs.copyFileSync(backupFilePath, destinationPath);
+      restoredFileNames.push(fileSpec.fileName);
+      continue;
+    }
+    if (fileSpec.required) {
+      throw new Error(`Required device_db backup file is not found. path=${backupFilePath}`);
+    }
+  }
+
+  const manifestPath = path.join(backupDir, "backup-manifest.json");
+  if (fs.existsSync(manifestPath)) {
+    fs.copyFileSync(manifestPath, path.join(localServerDataDirectoryPath, "device-db-restore-manifest.json"));
+  }
+
+  return {
+    backupDir,
+    restoredFileNames,
+    restoredFileCount: restoredFileNames.length
+  };
+}
+
 app.use(express.json({ limit: "1mb" }));
 app.use(express.static(path.resolve(process.cwd(), "public")));
 
@@ -151,6 +351,19 @@ interface securityState {
 interface issueKDeviceRequestBody {
   targetDeviceName: string;
   pushToDevice?: boolean;
+}
+
+interface deviceDbBackupRequestBody {
+  backupRoot?: string;
+}
+
+interface deviceDbRestoreRequestBody {
+  backupDir?: string;
+}
+
+interface kUserBackupRequestBody {
+  backupPassword: string;
+  backupFilePath?: string;
 }
 
 interface securePingRequestBody {
@@ -328,6 +541,135 @@ app.put("/api/settings", (request: Request, response: Response) => {
     response.status(400).json({
       result: "NG",
       detail: getErrorMessage(apiError)
+    });
+  }
+});
+
+/**
+ * @description device_db のバックアップを作成するAPI。
+ * @remarks
+ * - [重要] 退避先は既定で `data/secure-backups` とする。
+ * - [厳守] 管理者認証後にのみ実行できる。
+ */
+app.post("/api/settings/backups/device-db/export", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as deviceDbBackupRequestBody;
+    const backupResult = createDeviceDbBackupSnapshot(requestBody?.backupRoot);
+    response.json({
+      result: "OK",
+      ...backupResult
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description device_db のバックアップを復元するAPI。
+ * @remarks
+ * - [重要] 復元元未指定時は secure-backups 配下の最新スナップショットを使う。
+ * - [厳守] 管理者認証後にのみ実行できる。
+ */
+app.post("/api/settings/backups/device-db/restore", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as deviceDbRestoreRequestBody;
+    const restoreResult = restoreDeviceDbBackupSnapshot(requestBody?.backupDir);
+    response.json({
+      result: "OK",
+      ...restoreResult
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description k-user の暗号化バックアップを出力するAPI。
+ * @remarks
+ * - [重要] 既定の出力先は `data/secure-backups` 配下のタイムスタンプ付きファイルとする。
+ * - [厳守] バックアップパスワードが空文字のときは拒否する。
+ */
+app.post("/api/settings/backups/k-user/export", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as kUserBackupRequestBody;
+    const backupPassword = (requestBody?.backupPassword ?? "").trim();
+    if (backupPassword.length === 0) {
+      throw new Error("k-user backup export failed. backupPassword is required.");
+    }
+    const backupFilePathText = (requestBody?.backupFilePath ?? "").trim();
+    const backupFilePath = backupFilePathText.length > 0
+      ? path.resolve(process.cwd(), backupFilePathText)
+      : path.join(localServerSecureBackupDirectoryPath, `k-user-backup-${createTimestampText()}.enc.json`);
+    const exportResult = await localKeyService.exportKUserBackup(backupPassword, backupFilePath);
+    response.json({
+      result: "OK",
+      ...exportResult
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description k-user の暗号化バックアップを復元するAPI。
+ * @remarks
+ * - [重要] 復元先は SecretCore が wrapped_k_user.bin に書き戻す。
+ * - [厳守] バックアップパスワードとバックアップファイルパスの双方を明示する。
+ */
+app.post("/api/settings/backups/k-user/import", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as kUserBackupRequestBody;
+    const backupPassword = (requestBody?.backupPassword ?? "").trim();
+    const backupFilePathText = (requestBody?.backupFilePath ?? "").trim();
+    if (backupPassword.length === 0) {
+      throw new Error("k-user backup import failed. backupPassword is required.");
+    }
+    if (backupFilePathText.length === 0) {
+      throw new Error("k-user backup import failed. backupFilePath is required.");
+    }
+    const backupFilePath = path.resolve(process.cwd(), backupFilePathText);
+    const importResult = await localKeyService.importKUserBackup(backupPassword, backupFilePath);
+    response.json({
+      result: "OK",
+      ...importResult
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
     });
   }
 });

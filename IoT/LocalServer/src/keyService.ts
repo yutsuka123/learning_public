@@ -1,6 +1,6 @@
 /**
  * @file keyService.ts
- * @description LocalServerの k-user / k-device 発行と暗号化通信補助を提供する。
+ * @description LocalServerの k-user / k-device 発行、k-user 暗号化バックアップ、暗号化通信補助を提供する。
  * @remarks
  * - [重要] k-user はランダム32バイトで発行し、暗号化して永続化する。
  * - [厳守] k-device は `HMAC-SHA256(k-user, targetDeviceName)` で導出する。
@@ -211,6 +211,44 @@ export class keyService {
       signatureBase64,
       signatureAlgorithm: "HMAC-SHA256"
     };
+  }
+
+  /**
+   * @description k-user の暗号化バックアップを出力する。
+   * @param backupPassword バックアップパスワード。
+   * @param backupFilePath 出力先ファイルパス。
+   * @returns 出力結果。
+   * @remarks
+   * - [重要] 現行実装は SecretCore 経由を正とする。
+   * - [禁止] raw k-user をこの層で平文保存しない。
+   */
+  public async exportKUserBackup(
+    backupPassword: string,
+    backupFilePath?: string
+  ): Promise<{ exported: true; backupFilePath: string; keyFingerprint: string; source: string; format: string }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      return await this.secretCoreFacade.exportKUserBackup(backupPassword, backupFilePath);
+    }
+    throw new Error("exportKUserBackup failed. SecretCore backend is required.");
+  }
+
+  /**
+   * @description k-user の暗号化バックアップを復元する。
+   * @param backupPassword バックアップパスワード。
+   * @param backupFilePath 復元元ファイルパス。
+   * @returns 復元結果。
+   * @remarks
+   * - [重要] 現行実装は SecretCore 経由を正とする。
+   * - [禁止] raw k-user をこの層で平文保存しない。
+   */
+  public async importKUserBackup(
+    backupPassword: string,
+    backupFilePath?: string
+  ): Promise<{ imported: true; keyFingerprint: string; source: string }> {
+    if (this.useSecretCore && this.secretCoreFacade) {
+      return await this.secretCoreFacade.importKUserBackup(backupPassword, backupFilePath);
+    }
+    throw new Error("importKUserBackup failed. SecretCore backend is required.");
   }
 
   /**
