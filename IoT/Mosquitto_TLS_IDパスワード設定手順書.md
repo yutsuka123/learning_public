@@ -99,13 +99,38 @@ keyfile C:\mosquitto-data\server.key
 
 password_file C:\mosquitto-data\passwd
 allow_anonymous false
+acl_file C:\mosquitto-data\aclfile
 
 log_dest file C:\mosquitto-data\mosquitto.log
 log_type all
 ```
 
-[重要] `listener 8883`、`password_file`、`allow_anonymous false` の 3 点は必須とする。  
-理由: TLS のみでは認証が通らず、認証のみでは通信路保護が足りないため。
+[重要] `listener 8883`、`password_file`、`allow_anonymous false`、`acl_file` の 4 点は必須とする。  
+理由: TLS のみでは認証が通らず、認証のみでは Topic 単位の認可が足りないため。
+
+### 6.1 `acl_file` を作成する
+1. ACL ファイルを作成する。
+
+```conf
+# [重要] 例示用テンプレート。実ユーザー名や実 public_id はローカル環境で置き換える。
+# [禁止] 全Topicを許可する `topic readwrite #` を本番相当構成へ入れない。
+
+user <LOCAL_SERVER_MQTT_USERNAME>
+topic read esp32lab/notice/#
+topic write esp32lab/call/#
+
+user <DEVICE_MQTT_USERNAME>
+topic read esp32lab/call/+/<DEVICE_PUBLIC_ID>
+topic write esp32lab/notice/+/<DEVICE_PUBLIC_ID>
+```
+
+2. `C:\mosquitto-data\aclfile` として保存する。
+
+[厳守] device 用ユーザーは、自分の `public_id` または運用上必要な共通Topic以外へ publish / subscribe できないようにする。  
+理由: 認証済みデバイス1台の侵害が、他デバイスや管理Topicへ波及するのを防ぐため。
+
+[推奨] 将来 `device/<public_id>/wifi/update` / `confirm` へ topic 統一する場合は、`009-0014` と同時に ACL テンプレートも更新する。  
+理由: Topic 命名と ACL がずれると、認可失敗または過剰許可が発生するため。
 
 ## 7. 起動と確認
 ### 7.1 サービス起動
@@ -140,6 +165,7 @@ mosquitto_pub -h mqtt.esplab.home.arpa -p 8883 --cafile C:\mosquitto-data\ca.crt
 ### 8.3 追加確認
 - `LocalServer` の `npm run test:connect` を実行し、接続先と publish 成功を記録する。
 - `ESP32` 側は `connectToMqttBroker success` と `Reply` / `online` を確認する。
+- ACL 適用後は、許可Topicの publish / subscribe が成功し、禁止Topic（例: 他デバイス宛てTopic、`#` 相当の全Topic）へのアクセスが `Not authorized` で拒否されることを確認する。
 
 [厳守] 試験は `mosquitto_pub/sub` と `LocalServer`、`ESP32` の結果を同時に見る。  
 理由: 片側だけ成功しても、実運用で必要な経路が揃っているとは限らないため。
@@ -158,4 +184,5 @@ mosquitto_pub -h mqtt.esplab.home.arpa -p 8883 --cafile C:\mosquitto-data\ca.crt
 - `試験記録書.md`
 
 ## 11. 変更履歴
+- 2026-05-14: `acl_file` を必須構成へ追加し、device / LocalServer 用の最小 ACL テンプレートと禁止Topic確認を追記。理由: `020-0002` の検討結果として、ID/パスワードだけでなく Topic 単位の認可境界を標準手順へ入れるため。
 - 2026-04-21: `011-0006` 向けの独立手順書として新規作成。理由: Mosquitto の TLS 設定と ID/パスワード認証を、接続手順と分離して短く参照できるようにするため。

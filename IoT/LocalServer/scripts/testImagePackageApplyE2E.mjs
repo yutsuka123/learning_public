@@ -252,14 +252,22 @@ function publishAndWaitStatus(config, args, keyDeviceBase64, sessionId) {
     });
 
     client.on("connect", () => {
-      client.subscribe(statusTopic, { qos: 1 }, (subscribeError) => {
+      client.subscribe(statusTopic, { qos: 1 }, async (subscribeError) => {
         if (subscribeError) {
           cleanup();
           reject(new Error(`publishAndWaitStatus subscribe failed. topic=${statusTopic} detail=${subscribeError.message}`));
           return;
         }
 
-        const encryptedPayloadText = payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(signedPayload));
+        let encryptedPayloadText;
+        try {
+          encryptedPayloadText = await payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(signedPayload));
+        } catch (encodeError) {
+          cleanup();
+          const detail = encodeError instanceof Error ? encodeError.message : String(encodeError);
+          reject(new Error(`publishAndWaitStatus encode failed. topic=${callTopic} detail=${detail}`));
+          return;
+        }
         client.publish(callTopic, encryptedPayloadText, { qos: 1, retain: false }, (publishError) => {
           if (publishError) {
             cleanup();
@@ -269,14 +277,14 @@ function publishAndWaitStatus(config, args, keyDeviceBase64, sessionId) {
       });
     });
 
-    client.on("message", (topic, payloadBuffer) => {
+    client.on("message", async (topic, payloadBuffer) => {
       if (!topic.startsWith("esp32lab/notice/imagePackageStatus/")) {
         return;
       }
       const incomingPayloadText = payloadBuffer.toString("utf8");
       let decoded;
       try {
-        decoded = payloadSecurity.decodeIncomingPayload(args.targetName, incomingPayloadText);
+        decoded = await payloadSecurity.decodeIncomingPayload(args.targetName, incomingPayloadText);
       } catch (decodeError) {
         const detail = decodeError instanceof Error ? decodeError.message : String(decodeError);
         console.warn(`[WARN] status decode skipped. topic=${topic} detail=${detail}`);
@@ -337,7 +345,7 @@ async function main() {
   await issueAndPushKDevice(config, adminToken, args.targetName);
 
   const localKeyService = new keyService(config);
-  const keyDeviceBase64 = localKeyService.getKDeviceBase64(args.targetName);
+  const keyDeviceBase64 = await localKeyService.getKDeviceBase64(args.targetName);
   const sessionId = `imgpkg-e2e-${Date.now()}`;
   const statusResult = await publishAndWaitStatus(config, args, keyDeviceBase64, sessionId);
   const statusJsonText = JSON.stringify(statusResult.statusMessage);

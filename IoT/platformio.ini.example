@@ -11,6 +11,9 @@
 ;   python -m platformio run -e esp32s3_secure
 ;   python -m platformio run -e esp32s3_secure -t upload
 ;     （必要時）--upload-port COMx
+; [重要][2026-05-14] 現行実体 `IoT/ESP32/platformio.ini` は `board_upload.offset_address=0x30000` と
+;   `scripts/ensure_app0_upload_offset.py` により標準 upload の書込み先を app0=0x30000 に固定する。
+; [禁止] 旧 factory 相当の 0x10000 へ戻す設定変更を行わないこと。
 ;
 ; Pairing（009-0019）実機確認前に、上記で FW を書き込み、PC を AP（例: 192.168.4.1）に接続したうえで
 ;   IoT/LocalServer の `.env` で AP_HTTP_BASE_URL / AP_ROLE_ADMIN_* を実機と一致させ、

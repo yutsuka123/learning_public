@@ -559,6 +559,14 @@ bool sensitiveDataService::saveMqttConfig(const String& mqttUrl,
     return false;
   }
 
+  bool normalizedMqttTls = mqttTls;
+  if (mqttPort == 8883 && !normalizedMqttTls) {
+    // [重要][2026-05-14] 8883 は Mosquitto TLS listener の正規ポートである。
+    // NVS/AP設定に mqttTls=false が残ると TLS listener へ平文接続し、Broker 側で protocol error を繰り返すため保存時点で補正する。
+    appLogWarn("%s: mqttPort=8883 requires TLS. force mqttTls=true to prevent plain MQTT on TLS listener.", functionName);
+    normalizedMqttTls = true;
+  }
+
   String jsonText;
   if (!readJsonText(&jsonText, functionName)) {
     return false;
@@ -588,7 +596,7 @@ bool sensitiveDataService::saveMqttConfig(const String& mqttUrl,
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttUser, mqttUser, functionName) &&
       setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPass, mqttPass, functionName) &&
       setNumberItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttPort, mqttPort, functionName) &&
-      setBoolItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls, mqttTls, functionName);
+      setBoolItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttTls, normalizedMqttTls, functionName);
   if (!updateResult) {
     cJSON_Delete(rootObject);
     return false;
@@ -670,6 +678,12 @@ bool sensitiveDataService::loadMqttConfig(String* mqttUrlOut,
   *mqttPassOut = mqttPassItem->valuestring;
   *mqttPortOut = static_cast<int32_t>(mqttPortItem->valuedouble);
   *mqttTlsOut = cJSON_IsTrue(mqttTlsItem);
+  if (*mqttPortOut == 8883 && !*mqttTlsOut) {
+    // [重要][2026-05-14] 旧NVS/JSONに mqttTls=false が残っても、8883 では TLS を強制する。
+    // 理由: 現行 Broker は 8883/TLS のみであり、平文接続は Mosquitto の OpenSSL protocol error になるため。
+    appLogWarn("%s: loaded mqttPort=8883 with mqttTls=false. force mqttTls=true for current broker policy.", functionName);
+    *mqttTlsOut = true;
+  }
   cJSON_Delete(rootObject);
   return true;
 }

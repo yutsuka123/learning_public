@@ -770,6 +770,13 @@ void mainTaskEntry(void* taskParameter) {
   appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden.");
 #endif
 
+  if (mqttPort == 8883 && !mqttTls) {
+    // [重要][2026-05-14] 現行 Mosquitto は 8883/TLS のみを正規運用とする。
+    // NVSやAP設定に旧値 mqttTls=false が残っても、TLS listener への平文接続ループへ戻さないため起動時に補正する。
+    mqttTls = true;
+    appLogWarn("mainTaskEntry: mqttPort=8883 requires TLS. force mqttTls=true before MQTT init.");
+  }
+
   appLogInfo("mainTaskEntry: wifi loaded. ssid=%s, pass=%s",
              wifiSsid.c_str(),
              maskSecretForLog(wifiPass).c_str());

@@ -405,6 +405,7 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-05-14: `008-0031` の完了退避に合わせ、障害時再登録フローの UI / API 反映を完了扱いへ整理した。理由: `LocalServer/public/admin.html` の案内 UI と `POST /api/admin/recovery/re-registration/plan` / `restore` / `execute` の使い分けを固定し、Phase4 を完了退避できる状態へ揃えるため。
 - 2026-05-07: `runSignedOtaCommand()` と通常 OTA command publish の双方で `otaStart` に `HMAC-SHA256` + `signature` を付与し、ESP32 側で検証失敗時に開始拒否する構成を追記。理由: `008-0006` 実装に合わせ、高リスク OTA command の真正性保護責務を別層仕様へ固定するため。
 - 2026-05-13: Phase4 の末尾項目を再整理し、macOS 対応を `020` 章へ移管、TPM初期化検知を本 Phase4 の対象外へ変更した。理由: Phase4 は `runKeyRotationSession()` / `runProductionSecureFlow()` / 障害時再登録フローの本線に集中し、将来対応と対象外を切り分けるため。
 - 2026-05-13: 障害時再登録フローを同一PC復旧と別PC/機材交換の2経路へ分解し、`runKeyRotationSession()` / `runPairingSession()` の再利用関係を明示した。理由: 実装時に復旧経路の取り違えを防ぎ、`008-0031` の範囲を文書で固定するため。

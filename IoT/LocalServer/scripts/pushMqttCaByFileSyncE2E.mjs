@@ -238,9 +238,9 @@ function runFileSyncSession(config, args, keyDeviceBase64) {
       client.end(true);
     };
 
-    const publishEncrypted = (subCommand, payloadObject) => {
+    const publishEncrypted = async (subCommand, payloadObject) => {
       const callTopic = `esp32lab/call/${subCommand}/${args.targetName}`;
-      const encryptedPayload = payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(payloadObject));
+      const encryptedPayload = await payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(payloadObject));
       client.publish(callTopic, encryptedPayload, { qos: 1, retain: false }, (publishError) => {
         if (publishError) {
           cleanup();
@@ -266,17 +266,20 @@ function runFileSyncSession(config, args, keyDeviceBase64) {
           reject(new Error(`runFileSyncSession subscribe failed. topic=${statusTopic} detail=${subscribeError.message}`));
           return;
         }
-        publishEncrypted("fileSyncPlan", planPayload);
+        publishEncrypted("fileSyncPlan", planPayload).catch((error) => {
+          cleanup();
+          reject(error);
+        });
       });
     });
 
-    client.on("message", (topic, payloadBuffer) => {
+    client.on("message", async (topic, payloadBuffer) => {
       if (!topic.startsWith("esp32lab/notice/fileSyncStatus/")) {
         return;
       }
       let decoded;
       try {
-        decoded = payloadSecurity.decodeIncomingPayload(args.targetName, payloadBuffer.toString("utf8"));
+        decoded = await payloadSecurity.decodeIncomingPayload(args.targetName, payloadBuffer.toString("utf8"));
       } catch {
         return;
       }
@@ -303,12 +306,18 @@ function runFileSyncSession(config, args, keyDeviceBase64) {
 
       if (state === "waitingPlan" && phase === "planning" && result === "OK") {
         state = "waitingChunk";
-        publishEncrypted("fileSyncChunk", chunkPayload);
+        publishEncrypted("fileSyncChunk", chunkPayload).catch((error) => {
+          cleanup();
+          reject(error);
+        });
         return;
       }
       if (state === "waitingChunk" && phase === "receiving" && result === "OK") {
         state = "waitingCommit";
-        publishEncrypted("fileSyncCommit", commitPayload);
+        publishEncrypted("fileSyncCommit", commitPayload).catch((error) => {
+          cleanup();
+          reject(error);
+        });
         return;
       }
       if (state === "waitingCommit" && phase === "completed" && result === "OK") {
@@ -342,7 +351,7 @@ async function main() {
   const adminToken = await loginAdmin(config);
   await issueAndPushKDevice(config, adminToken, args.targetName);
   const localKeyService = new keyService(config);
-  const keyDeviceBase64 = localKeyService.getKDeviceBase64(args.targetName);
+  const keyDeviceBase64 = await localKeyService.getKDeviceBase64(args.targetName);
   if ((keyDeviceBase64 || "").trim().length === 0) {
     throw new Error(`main failed. k-device is empty. targetName=${args.targetName}`);
   }

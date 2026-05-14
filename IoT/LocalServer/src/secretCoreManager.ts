@@ -41,7 +41,9 @@ export class SecretCoreManager {
 
     console.log(`Starting SecretCore from: ${this.exePath}`);
     this.child = spawn(this.exePath, [], {
-      stdio: ["ignore", "pipe", "pipe"],
+      // [重要] stdin ブートストラップを成立させるため、子プロセス stdin を pipe で保持する。
+      // 以前の ignore 設定では child.stdin が null になり、SecretCore への初回連携が必ず失敗していた。
+      stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
       env: {
         ...process.env,

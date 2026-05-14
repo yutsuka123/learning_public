@@ -13,6 +13,7 @@ logs/
 IoT/ESP32/.pio/
 IoT/ESP32/src/Untitled
 IoT/ESP32/sdkconfig.defaults
+IoT/ESP32/data/sensitiveData.json
 
 # LocalServer generated data
 IoT/LocalServer/data/secure-backups/

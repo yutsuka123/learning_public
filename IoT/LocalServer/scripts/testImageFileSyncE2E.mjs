@@ -202,9 +202,9 @@ function buildFilePlan(localFilePath, imagesDir, destinationDir) {
  * @param {number} chunkCount チャンク総数（推定可）。
  * @param {string} dataBase64 チャンクbase64。
  * @param {boolean} isLast 最終チャンクか。
- * @returns {number} 推定MQTTパケットサイズ（byte）。
+ * @returns {Promise<number>} 推定MQTTパケットサイズ（byte）。
  */
-function estimateChunkPacketSize(
+async function estimateChunkPacketSize(
   config,
   args,
   payloadSecurity,
@@ -231,7 +231,7 @@ function estimateChunkPacketSize(
     },
     keyBuffer
   );
-  const encodedPayload = payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(chunkPayload));
+  const encodedPayload = await payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(chunkPayload));
   const topicText = `esp32lab/call/fileSyncChunk/${args.targetName}`;
   const encodedPayloadBytes = Buffer.byteLength(encodedPayload, "utf8");
   const topicBytes = Buffer.byteLength(topicText, "utf8");
@@ -246,9 +246,9 @@ function estimateChunkPacketSize(
  * @param {Buffer} keyBuffer `k-device`。
  * @param {string} sessionId セッションID。
  * @param {filePlan[]} plans ファイル計画一覧。
- * @returns {Array<{path:string, chunkIndex:number, chunkCount:number, dataBase64:string, isLast:boolean}>} 送信キュー。
+ * @returns {Promise<Array<{path:string, chunkIndex:number, chunkCount:number, dataBase64:string, isLast:boolean}>>} 送信キュー。
  */
-function buildAdaptiveChunkQueue(config, args, payloadSecurity, keyBuffer, sessionId, plans) {
+async function buildAdaptiveChunkQueue(config, args, payloadSecurity, keyBuffer, sessionId, plans) {
   /** @type {Array<{path:string, chunkIndex:number, chunkCount:number, dataBase64:string, isLast:boolean}>} */
   const chunkQueue = [];
   for (const plan of plans) {
@@ -266,7 +266,7 @@ function buildAdaptiveChunkQueue(config, args, payloadSecurity, keyBuffer, sessi
       while (currentChunkBytes > 0) {
         const endOffset = offset + currentChunkBytes;
         const dataBase64 = plan.fileBytes.subarray(offset, endOffset).toString("base64");
-        const estimatedPacketSize = estimateChunkPacketSize(
+        const estimatedPacketSize = await estimateChunkPacketSize(
           config,
           args,
           payloadSecurity,
@@ -391,7 +391,7 @@ function buildSignedCommand(config, targetName, subCommand, args, keyBuffer) {
  * @returns {Promise<{sessionId: string, completedMessage: Record<string, unknown>, totalChunkCount: number}>} 結果。
  */
 function runFileSyncSession(config, args, keyDeviceBase64, plans) {
-  return new Promise((resolve, reject) => {
+  return new Promise(async (resolve, reject) => {
     const keyBuffer = Buffer.from(keyDeviceBase64, "base64");
     if (keyBuffer.length !== 32) {
       reject(new Error(`runFileSyncSession failed. k-device length must be 32. actual=${keyBuffer.length}`));
@@ -428,7 +428,7 @@ function runFileSyncSession(config, args, keyDeviceBase64, plans) {
       keyBuffer
     );
 
-    const chunkQueue = buildAdaptiveChunkQueue(config, args, payloadSecurity, keyBuffer, sessionId, plans);
+    const chunkQueue = await buildAdaptiveChunkQueue(config, args, payloadSecurity, keyBuffer, sessionId, plans);
     if (args.abnormalMode === "chunkMissing" && chunkQueue.length > 0) {
       // [重要] 異常系試験: 最終チャンクを意図的に送らず、commit時に整合失敗を発生させる。
       chunkQueue.pop();
@@ -477,9 +477,9 @@ function runFileSyncSession(config, args, keyDeviceBase64, plans) {
       client.end(true);
     };
 
-    const publishEncrypted = (subCommand, payloadObject) => {
+    const publishEncrypted = async (subCommand, payloadObject) => {
       const callTopic = `esp32lab/call/${subCommand}/${args.targetName}`;
-      const encryptedPayload = payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(payloadObject));
+      const encryptedPayload = await payloadSecurity.encodeOutgoingPayload(args.targetName, JSON.stringify(payloadObject));
       client.publish(callTopic, encryptedPayload, { qos: 1, retain: false }, (publishError) => {
         if (publishError) {
           cleanup();
@@ -491,7 +491,10 @@ function runFileSyncSession(config, args, keyDeviceBase64, plans) {
     const publishNextChunk = () => {
       if (nextChunkOffset >= chunkQueue.length) {
         state = "waitingCommit";
-        publishEncrypted("fileSyncCommit", commitPayload);
+        publishEncrypted("fileSyncCommit", commitPayload).catch((error) => {
+          cleanup();
+          reject(error);
+        });
         return;
       }
       const chunk = chunkQueue[nextChunkOffset];
@@ -511,7 +514,10 @@ function runFileSyncSession(config, args, keyDeviceBase64, plans) {
         },
         keyBuffer
       );
-      publishEncrypted("fileSyncChunk", chunkPayload);
+      publishEncrypted("fileSyncChunk", chunkPayload).catch((error) => {
+        cleanup();
+        reject(error);
+      });
     };
 
     timeoutHandle = setTimeout(() => {
@@ -535,17 +541,20 @@ function runFileSyncSession(config, args, keyDeviceBase64, plans) {
           reject(new Error(`runFileSyncSession subscribe failed. topic=${statusTopic} detail=${subscribeError.message}`));
           return;
         }
-        publishEncrypted("fileSyncPlan", planPayload);
+        publishEncrypted("fileSyncPlan", planPayload).catch((error) => {
+          cleanup();
+          reject(error);
+        });
       });
     });
 
-    client.on("message", (topic, payloadBuffer) => {
+    client.on("message", async (topic, payloadBuffer) => {
       if (!topic.startsWith("esp32lab/notice/fileSyncStatus/")) {
         return;
       }
       let decoded;
       try {
-        decoded = payloadSecurity.decodeIncomingPayload(args.targetName, payloadBuffer.toString("utf8"));
+        decoded = await payloadSecurity.decodeIncomingPayload(args.targetName, payloadBuffer.toString("utf8"));
       } catch {
         return;
       }
@@ -643,7 +652,7 @@ async function main() {
   const adminToken = await loginAdmin(config);
   await issueAndPushKDevice(config, adminToken, args.targetName);
   const localKeyService = new keyService(config);
-  const keyDeviceBase64 = localKeyService.getKDeviceBase64(args.targetName);
+  const keyDeviceBase64 = await localKeyService.getKDeviceBase64(args.targetName);
   if ((keyDeviceBase64 || "").trim().length === 0) {
     throw new Error(`main failed. k-device is empty. targetName=${args.targetName}`);
   }
@@ -657,6 +666,7 @@ async function main() {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`[ERROR] ${message}`);
+  const stackText = error instanceof Error && error.stack ? `\n${error.stack}` : "";
+  console.error(`[ERROR] ${message}${stackText}`);
   process.exit(1);
 });
