@@ -39,7 +39,8 @@
     "test:7102:live": "node scripts/test7102LiveMqttHistory.mjs --spawnLocalServer",
     "test:7106:disable": "node scripts/test7106ScheduledExportDisable.mjs",
     "secret-core:build": "cd ..\\SecretCore && cargo build",
-    "verify:bootstrap": "node scripts/verifyLocalServerBootstrap.mjs"
+    "verify:bootstrap": "node scripts/verifyLocalServerBootstrap.mjs",
+    "test:7108": "node scripts/test7108BidirectionalE2E.mjs"
   },
   "keywords": [
     "iot",
