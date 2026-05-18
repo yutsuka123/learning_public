@@ -62,29 +62,12 @@ marp: true
 
 #### 次セッション開始メモ（2026-05-18 更新・セッション終了時点）
 - [セッション終了][2026-05-18] 未完了 **34 / 69**（約51%）。本日完了: **`009-0006`**（退避済み `todo_old20260518.md`）、`7108` OK（commandHistory +1・deviceStatusHistory +2・lastSeenAt 更新）。`007-B` は **No-Go 継続**。
-- [最重要] 次回は **`009-0008`** 以降（秘密管理・ペアリング Phase1〜4）から再開する。詳細は **`### 009-B. 秘密管理・ペアリング`** 節を参照。
-- [注意][2026-05-17] **Node.js バージョン**: `better-sqlite3` は **v22 でビルド済み**（NODE_MODULE_VERSION=127）。`nvm use 22` で v22.x に切り替えてから `npm run start` すること。v20 のまま起動すると `ERR_DLOPEN_FAILED` で即終了する。
-- [証跡索引] `7001`（Task Scheduler 自動起動）/ `7102`〜`7106`（SQLite 履歴）/ `7107`（定期エクスポート組込み）。
-- [終了メモ][2026-05-16] 本日はここで停止する。次セッションへ変わっても、未完了の正は **`009-0001`**。`020-0003` は文書化完了済みで、現物ルータ確認は `7034` 再試験で追記する。`009-0001` は **文書化・タスク登録復旧・起動ラッパー修正までは完了**したが、**`schtasks /run` 後も `LastRunTime` 未更新 / `LastTaskResult=267011` / `/api/health=NG`** が残っている。
-- [補足][2026-05-17] **`009-0001` は同日中に完了**（`todo_old20260517.md`）。上記 2026-05-16 メモは歴史的経緯として残す。
-- [終了メモ][2026-05-14 10:30] ESP32 標準書込みは `IoT/ESP32/platformio.ini` の `board_upload.offset_address=0x30000` と `IoT/ESP32/scripts/ensure_app0_upload_offset.py` を正とする。`envdump` で `esp32s3_secure` / `esp32s3_secure_final` / `esp32s3_secure_rescue` の `ESP32_APP_OFFSET=0x30000` を確認済み。
-- [終了メモ][2026-05-14 10:30] `IoT/ESP32/data/sensitiveData.json` は一時復旧用に生成したが削除済み。raw `k-device` は文書・ログへ記載していない。再復旧が必要な場合も fingerprint / 32byte 長だけ確認する。
-- [最重要] `007-B` 不可逆本体は **No-Go継続**。`ProductionTool` 最終形実ランナーの実装・検証が未完了であるため、不可逆コマンド実行へ進まない。
-- [厳守] 次セッションでも実機不可逆コマンド（`espefuse burn_*`、`espsecure` 署名/暗号化を伴う本番書込み、`esptool write_flash --force` など）を実行しない。
-- [重要] 直近の正本は次の3つ。
-  - `通常運用FW・診断用FW差分仕様書.md`: `008-0001` / `008-0002`
-  - `ネットワーク運用仕様書.md` 7.4 / 7.4.4 / 7.4.4a / 7.4.4b: `008-0003` / `008-0004` / `020-0003`
-  - `OTA仕様書.md` / `MQTTコマンド仕様書.md`: `otaStart` の HMAC 署名条件
-- [重要] 今日追加・更新した正本は次の通り。
-  - `ネットワーク運用仕様書.md`: Router `WAN 管理` / `UPnP` / `DMZ` / `port forward` の不採用方針、確認方法、手動確認手順。
-  - `試験仕様書.md` / `試験記録書.md`: `7034` に Router 公開面の合否条件と追記先を反映。
-  - `試験記録書.md` **`7102`〜`7106`**、`コマンド仕様書.md` §4（`test:7102:live` / `test:7106:disable` 等）、`ソース概要.md`: **`009-0002` 完了**（SQLite 履歴・実機/自動試験の証跡）。
-  - `todo_old20260516.md`: `020-0003` 完了退避。
-  - `設計議事録20260516.md`: 今日の作業要約と次回開始順。
-  - `コマンド仕様書.md` / `LocalServer/README.md`: `009-0001` の Task Scheduler 手順（**完了**、退避 `todo_old20260517.md`）。
-  - `問題点記録書.md` `#0042`: **解決済**（`009-0001` クローズに連動）。
-- [次作業][2026-05-17] **`009-0003`**（LocalServer 自動保存×Task Scheduler）または `008` 章残件。
-- [参照順] `todo.md` **`009-0003`** → `DB仕様書.md` / `コマンド仕様書.md`（§4 **`verify:bootstrap`**・`test:7102:live`・`test:7106:disable`）→ `試験記録書.md` **`7102`〜`7106`** / **`7001`**（自動起動）。
+- [最重要] 次回は **`009-0008`** から着手する。`鍵管理初期セットアップ_実装たたき台.md` の Phase1〜4 に担当・期限を割り当て、続けて `009-0009`（Phase1 最小実装: `S_random` 生成 + TPM ラップ + `wrapped_secret` 保存）へ進む。詳細は **`#### 009-B. 秘密管理・ペアリング`** 節を参照。
+- [注意] **Node.js バージョン**: `better-sqlite3` は **v22 でビルド済み**（NODE_MODULE_VERSION=127）。`nvm use 22` で v22.x に切り替えてから `npm run start` すること。v20 のまま起動すると `ERR_DLOPEN_FAILED` で即終了する。
+- [最重要] **`007-B` 不可逆本体は No-Go 継続**。`ProductionTool` 最終形実ランナー（`precheck -> stage_execute -> readback -> evidence -> stability`）の実装・検証完了まで `espefuse burn_*` / `espsecure` 本番書込み / `write_flash --force` を実行しない。
+- [ESP32 書込み注意] 標準書込みは `IoT/ESP32/platformio.ini` の `board_upload.offset_address=0x30000` を正とする（`ESP32_APP_OFFSET=0x30000`）。`IoT/ESP32/data/sensitiveData.json` は削除済み。raw `k-device` は文書・ログに記載しない。
+- [証跡索引] `7001`（Task Scheduler 自動起動）/ `7102`〜`7107`（SQLite 履歴・定期エクスポート）/ `7108`（双方向テスト OK）。
+- [正本索引] `試験記録書.md`: `7001` / `7102`〜`7108`。`todo_old20260517.md`: `009-0001`〜`009-0003`。`todo_old20260518.md`: `009-0006`。`設計議事録20260518.md`: 2026-05-18 作業要約。
 
 #### 直近ゴールの沿革（念のため保存・要約）
 - [歴史][2026-04-04〜05] NIC 未接続による broker 経路断、`7099` / MQTT オンライン維持、`DEV-002` パーティション最適化と保全の経緯は `試験記録書.md` / `問題点記録書.md`（`#0023` 等）に記録済み。
