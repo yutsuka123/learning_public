@@ -133,7 +133,7 @@ async function main() {
   const startedAt = new Date().toISOString();
   console.info(`[INFO] test7108 start. baseUrl=${baseUrl} targetDeviceName=${targetDeviceName || "(auto)"}`);
 
-  const token = await loginAsAdmin(baseUrl);
+  const { token } = await loginAsAdmin(baseUrl);
   console.info("[OK] admin login");
 
   const device = await resolveOnlineDevice(baseUrl, token, targetDeviceName, 30000);
