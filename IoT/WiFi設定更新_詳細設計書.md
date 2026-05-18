@@ -26,11 +26,11 @@
 ### 4.1 暗号方式
 - [厳守] AES-256-GCM（認証付き暗号）を採用する。
 
-### 4.2 鍵設計（TPM拘束方式）
-- [厳守] `S_random` はユーザー環境で生成し、`wrapped_secret = TPM_Encrypt(S_random)` のみ保存する。
+### 4.2 鍵設計（OS 暗号化サービス拘束方式）
+- [厳守] `S_random` はユーザー環境で生成し、`wrapped_secret = OS_Protect(S_random)`（現行: Windows DPAPI `CryptProtectData`、ソフトウェア暗号化・チップ非依存。Mac/Linux 汎用化は `020-0004`）のみ保存する。
 - [厳守] `k-user` は `S_random` から HKDF で起動時に再生成する。
 - [厳守] デバイス鍵は都度導出する。
-  - `k-device = HKDF(ikm=k-user, salt=SHA256(base_mac), info="k-device-v1")`
+  - `k-device = HMAC-SHA256(key=k-user, message=target_device_name)` （`target_device_name` = `publicId`、初期値 `IoT_<base MAC からコロン除去>`。実装: `SecretCore/src/key_manager.rs:454-465 get_k_device`。旧 HKDF 式は 2026-05-19 撤回。理由は `鍵管理および初期セットアップ設計仕様書.md` §6.2 / §16）
 
 ### 4.3 設計特性
 - デバイスごとにユニーク鍵
@@ -40,10 +40,9 @@
 
 ## 5. device_id / public_id 設計
 - [厳守] `device_id` は eFuse base MAC を使用する（Wi-Fi MAC不採用）。
-- [厳守] MQTT上では base_mac を直接公開せず、`public_id` を使用する。
-  - 例: `public_id = SHA256(base_mac)` の先頭8バイト
-- MQTTトピック例:
-  - `device/<public_id>/wifi/update`
+- [厳守] MQTT 上では base_mac を直接公開せず、`public_id`（初期値 `IoT_<base MAC からコロン除去>`、例: `IoT_04CEF94EB580`）を使用する。
+- MQTT トピック設計の正本は **`MQTTコマンド仕様書.md` §2.1**（`esp32lab/<kind>/<sub>/<name>` 構成）とする。Wi-Fi 設定更新は `esp32lab/network/<sub>/<receiverName>` を使用する（`receiverName` は `publicId` または `all`）。実装: [`mqtt.cpp:3298,3302 subscribeTopicNetwork`](../IoT/ESP32/src/MQTT/mqtt.cpp)。
+- [改訂][2026-05-19] 旧記載の `device/<public_id>/wifi/update` 例と `public_id = SHA256(base_mac)` の先頭8バイト案は不採用。理由: 実装と `MQTTコマンド仕様書.md` が `esp32lab/<kind>/<sub>/<name>` で統一されており、wifi だけ別 topic 体系を作る必然性が薄いため。`todo.md` `009-0014` 整合確認で不採用クローズ。
 
 ## 6. デバイス側鍵保存
 - 初期フェーズ:
@@ -156,7 +155,7 @@
 ## 12. 今回確定した重要判断
 - 共通鍵は使わない
 - base MACをdevice_idとして使用
-- `TPM + wrapped_secret + k-user / k-device` 方式採用
+- `OS 暗号化サービス（現行: Windows DPAPI） + wrapped_secret + k-user / k-device` 方式採用
 - Wi-Fi設定はアプリ層暗号化
 - ロールバック必須
 - AP復旧機能を実装
@@ -172,6 +171,8 @@
 - [将来対応] クラウド移行時もユーザー単位鍵階層を維持する。
 
 ## 15. 変更履歴
+- 2026-05-19（続）: §5 device_id / public_id 設計の MQTT トピック例（`device/<public_id>/wifi/update`）と `public_id = SHA256(base_mac)` 案を不採用へ更新。正本は `MQTTコマンド仕様書.md` §2.1 の `esp32lab/<kind>/<sub>/<name>` 構成（実装は `mqtt.cpp:3298 esp32lab/network/+/<deviceNodeName>` で subscribe 中）。`public_id` 初期値は `IoT_<base MAC からコロン除去>` で確定。理由: `todo.md` `009-0014` 整合確認で、wifi だけ別 topic 体系を作る必然性が薄く、実装と `MQTTコマンド仕様書.md` の `esp32lab/...` 統一の正本性を維持するため。
+- 2026-05-19: **TPM 前提を撤回**し、`wrapped_secret` ラップ方式を **OS 暗号化サービス（現行: Windows DPAPI、ソフトウェア暗号化・チップ非依存）** へ正本更新。§4.2 鍵設計、§12 全体要約を整合。Mac/Linux 汎用化は **`020-0004`** で扱う。理由: 実装は最初から DPAPI 固定だが本書のみ TPM 前提のまま残置していたため、設計仕様書群と同期して正本を実装側へ揃える。
 - 2026-03-11: APモード中のタスク停止方針（MQTT停止・通常専用タスク非起動）、起動トリガー3系統、表示/ロール仕様の参照先（`APメンテナンス画面仕様書.md`）を追加。理由: APモード実装時の起動条件と運用境界を固定するため。
 - 2026-03-11: APメンテナンス一括処理（探索→接続→ログイン→更新→再起動→`status`判定）と、ブラウザ手動運用時のログイン必須要件を追加。理由: 複数台を順次更新する運用と、現地手動復旧のセキュリティ要件を実装準備段階で固定するため。
 - 2026-03-08: 設定保存方針を追加し、主要運用設定の主保存先を NVS と整理。理由: Wi-Fi / MQTT / HTTPS 等の設定を ESP32 内部へ保持し、メンテナンス AP モードから修正可能にするため。

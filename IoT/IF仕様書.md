@@ -62,7 +62,7 @@
 - [推奨] 変数名・参照先のみ記載（例: `${MQTT_USERNAME}`）。
 - [厳守] MQTTクライアント設定は `MQTT_HOST` `MQTT_PORT` `MQTT_USERNAME` `MQTT_PASSWORD` `MQTT_CA_CERT_PATH` 等の参照名で管理する。
 - [厳守] `wrapped_secret` はユーザー環境でのみ保持し、デバイスへ配布しない。
-- [厳守] `k-device` は `HKDF(ikm=k-user, salt=SHA256(base_mac), info="k-device-v1")` 方式で導出する。
+- [厳守] `k-device` は `HMAC-SHA256(key=k-user, message=target_device_name)`（`target_device_name` = `publicId`、初期値は `IoT_<base MAC からコロン除去>`）で導出する。実装: `SecretCore/src/key_manager.rs:454-465 get_k_device`。[補足][2026-05-19] 旧 HKDF 式は撤回。理由は `鍵管理および初期セットアップ設計仕様書.md` §6.2 / §16 参照。
 
 ## 4. AP Pairing IF
 ### 4.1 AP 共通トップ画面 IF
@@ -407,7 +407,7 @@
 - [重要] テレメトリおよび `status` は同一 `Broker` を subscribe する複数 `Server` で共有してよい。
 - [厳守] OTA は要求元 `Server` の情報に対してのみ応答する。
 - [厳守] 同一種別の要求が複数 `Server` から到着した場合は、早いもの順に処理する。
-- [重要] `k-user` 保護方式は `TPM由来方式` または `暗号化ファイル + パスワード方式` を許容し、復号処理は `SecretCore` の Rust モジュール内で完結する。
+- [重要] `k-user` 保護方式は `OS暗号化サービス由来方式`（現行: Windows DPAPI、ソフトウェア暗号化・チップ非依存）または `暗号化ファイル + パスワード方式` を許容し、復号処理は `SecretCore` の Rust モジュール内で完結する。Mac/Linux 汎用化は `020-0004`。
 - [厳守] `k-device` は `Server` ごとに分離する運用と、複数 `Server` 間で共通利用する運用をユーザー選択で切り替える。
 
 ### 4.13 LocalServer 設定復旧 IF
@@ -610,6 +610,7 @@
 - 2026-03-09: `runPairingSession()` ワークフロー IF と workflow 状態 IF を追加し、`createPairingBundle` を内部処理として整理。理由: 高リスク処理を `SecretCore` 主導で完了判定まで実行する構成へ IF を揃えるため。
 - 2026-03-09: [仕様変更] `publicId` 初期値を `IoT_<macアドレスからコロン除去>` とする方針へ更新。理由: 運用上わかりやすさを優先し、初期導入時の識別を容易にするため。
 - 2026-03-09: AP 共通トップ画面 IF、`createPairingBundle` の内部項目、ECDH + 固定公開鍵による pairing IF、current/previous key 運用 IF を追加。理由: AP モード投入と逐次再ペアリングの I/F を詳細化するため。
+- 2026-05-19: **TPM 前提を撤回**し、`k-user` 保護方式を `OS暗号化サービス由来方式`（現行: Windows DPAPI、ソフトウェア暗号化・チップ非依存）へ正本更新。Mac/Linux 汎用化は **`020-0004`**。理由: 実装は最初から DPAPI 固定だが IF 仕様書のみ TPM 前提のまま残置していたため、設計仕様書群と同期して正本を実装側へ揃える。
 - 2026-03-08: 鍵導出方式を `TPM + wrapped_secret + HKDF` 方式へ更新。理由: IF前提となる鍵生成式と保存物を正式仕様へ合わせるため。
 - 2026-03-07: OTA IFを現行仕様へ更新し、`OTA仕様書.md` 参照と進捗/リトライ/SHA256検証要件を追記。
 - 2026-03-07: LocalServer初期実装の topic（status/otaStart/status notice）を追記。
