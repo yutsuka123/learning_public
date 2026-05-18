@@ -8,11 +8,11 @@
 
 | 脅威 | 概要 | 対策方針 |
 |------|------|----------|
-| コード複製 | TS/Rustソースを別PCへコピーして偽サーバーを立てる | TPM拘束された `wrapped_secret` がなければ正規鍵を生成できない構成にする |
+| コード複製 | TS/Rustソースを別PCへコピーして偽サーバーを立てる | OS 暗号化サービス（現行: Windows DPAPI）でユーザー資格情報拘束された `wrapped_secret` がなければ正規鍵を生成できない構成にする |
 | 設定ファイル抜き取り | `settings.json` / `.env` / `device_db` を読まれる | 秘密値をファイルへ平文保存しない |
 | IPC傍受 | Named Pipe / Unix Socket の通信を盗み見る | ローカル限定 + ACL + セッション暗号化で保護する |
 | 戻り値盗み見 | SecretCore の戻り値を読み取る | raw key を返さない |
-| ロジック解読 | Rust バイナリを逆解析して導出式を読む | ロジック秘匿に依存せず、TPM拘束と raw key 非返却で守る |
+| ロジック解読 | Rust バイナリを逆解析して導出式を読む | ロジック秘匿に依存せず、OS 暗号化サービス拘束と raw key 非返却で守る |
 | 一般権限での参照 | 別ユーザー/別プロセスが SecretCore に接続する | OS ACL と子プロセス管理で接続元を制限する |
 
 ### 1.2 防ぎきれない前提
@@ -34,7 +34,7 @@
 │                                                            │
 │ SecretCore（Rust）                                         │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │ TPMで S_random を保護                                │  │
+│  │ OS暗号化サービス(現行:DPAPI)で S_random を保護        │  │
 │  │ wrapped_secret 読込/検証                              │  │
 │  │ k-user 生成                                           │  │
 │  │ k-device 導出                                         │  │
@@ -50,7 +50,7 @@
 ## 3. 鍵階層と役割
 ### 3.1 鍵構造
 ```text
-TPM
+OS 暗号化サービス（現行: Windows DPAPI）
  │
  └─ S_random
       │
@@ -58,14 +58,14 @@ TPM
            │
            └─ k-user
                 │
-                └─ HKDF(ikm=k-user, salt=SHA256(mac_address), info="k-device-v1")
+                └─ HMAC-SHA256(key=k-user, message=target_device_name)  // target_device_name = publicId
                      │
                      └─ k-device
 ```
 
 ### 3.2 役割
-- `S_random`: TPM により保護されるランダム秘密
-- `wrapped_secret`: `S_random` を TPM で暗号化した保存物
+- `S_random`: OS 暗号化サービス（現行: Windows DPAPI、ユーザー資格情報拘束）により保護されるランダム秘密
+- `wrapped_secret`: `S_random` を OS 暗号化サービスで暗号化した保存物（`WRAPPED_SECRET_ALG="DPAPI"`、整合性メタ付き）
 - `k-user`: ユーザー環境のルート鍵
 - `k-device`: デバイス単位の通信鍵
 
@@ -130,8 +130,8 @@ TPM
 - [重要][2026-03-21] end-to-end で完了確認済みの公開 API は `POST /api/workflows/signed-ota/start`、`POST /api/workflows/pairing/start`、`GET /api/workflows/{workflowId}` である。`key-rotation` は同等の実装経路まで到達したが 7040 実試験が未了、`production` は開始 API と状態取得のみ実装済みで本体は継続実装である。
 
 ### 4.2 SecretCore（Rust）担当
-- `S_random` の生成
-- TPM による `wrapped_secret` 生成/復号
+- `S_random` の生成（CSPRNG: Rust `rand::rng`）
+- OS 暗号化サービス（現行: Windows DPAPI）による `wrapped_secret` 生成/復号（`SecretCore/src/dpapi.rs` / `SecretCore/src/key_manager.rs`）
 - `k-user` 生成
 - `k-device` 導出
 - HMAC / 署名生成
@@ -168,29 +168,34 @@ TPM
 - [厳守] 高リスクワークフローの進捗状態は `queued` / `running` / `waiting_device` / `verifying` / `completed` / `failed` を正規値とする。
 - [厳守] `LocalServer` へ返す情報は上記進捗状態、workflowId、対象個体、エラー要約、最終結果に限定する。
 
-## 5. TPM 管理設計
+## 5. OS 暗号化サービスによる管理設計
+### 5.0 採用方式
+- [厳守][2026-05-19] 採用方式は **OS 提供のユーザー資格情報拘束暗号化（ソフトウェア暗号化・チップ非依存）**。現行実装は **Windows DPAPI**（`CryptProtectData` / `CryptUnprotectData`、`WRAPPED_SECRET_ALG="DPAPI"`）。理由: TPM 非搭載 PC 対応・運用簡素化のため、設計改訂時に TPM 前提を撤回した（`鍵管理および初期セットアップ設計仕様書.md` §2 / §16）。
+- [将来対応] macOS / Linux 向けの同等ソフトウェア暗号化（Keychain Services / libsecret 等）への汎用化は **`020-0004`** で扱う。
+
 ### 5.1 初回インストール
-1. `S_random` を CSPRNG で生成する。
-2. `wrapped_secret = TPM_Encrypt(S_random)` を作成する。
-3. `wrapped_secret` を専用ファイルへ保存する。
+1. `S_random` を CSPRNG で生成する（32 byte）。
+2. `wrapped_secret = OS_Protect(S_random)` を作成する（現行: `dpapi::protect_data`）。
+3. `wrapped_secret` を専用ファイルへ保存する（実装: `LocalServer/data/wrapped_secret.bin`、整合性メタ付き envelope）。
 
 ### 5.2 起動時
 1. `wrapped_secret` を読み込む。
-2. `S_random = TPM_Decrypt(wrapped_secret)` を実行する。
+2. `S_random = OS_Unprotect(wrapped_secret)` を実行する（現行: `dpapi::unprotect_data`）。
 3. `k-user` を HKDF で生成する。
 4. 通信対象 `base_mac` に対して `k-device` を都度導出する。
 
 ### 5.3 保存方針
 - [厳守] `wrapped_secret` 保存先は一般設定ファイルと分離する。
-- [厳守] `wrapped_secret` 改ざん検知のため、ヘッダに `version` と `createdAt` を持たせ、DPAPI 復号前に整合性チェックを行う。
+- [厳守] `wrapped_secret` 改ざん検知のため、`WrappedSecretEnvelope`（`version` / `created_at` / `alg` / `payload_base64` / `payload_sha256_base64`）を採用し、OS 復号前に整合性チェックを行う（`SecretCore/src/key_manager.rs:229-296`）。
 - [禁止] `S_random` を復号後にディスクへ書き戻さない。
 
 ## 6. IPC 設計
 ### 6.1 IPC方式
 | OS | IPC種別 | 方針 |
 |----|---------|------|
-| Windows | Named Pipe | 現行実装対象。TPM前提の主要対象OS |
-| macOS | Unix Domain Socket | [将来対応] TPM相当保護方式確定後に対応 |
+| Windows | Named Pipe | 現行実装対象。OS 暗号化サービスは Windows DPAPI を使用 |
+| macOS | Unix Domain Socket | [将来対応] `020-0004` の Mac/Linux 汎用化（Keychain Services 等）に合わせて対応 |
+| Linux | Unix Domain Socket | [将来対応] `020-0004` の Mac/Linux 汎用化（libsecret 等）に合わせて対応 |
 
 - [禁止] TCP / HTTP で SecretCore を待受させない。
 - [禁止] LAN / WAN を介した通信経路を利用しない。
@@ -224,7 +229,7 @@ DACL:
 ### 7.1 許可 API
 | 操作名 | 概要 | 返却値 |
 |--------|------|--------|
-| `initializeKeyHierarchy` | `S_random` 生成、TPMラップ、`wrapped_secret` 保存 | 成功/失敗 + schemaVersion |
+| `initializeKeyHierarchy` | `S_random` 生成、OS 暗号化サービス（現行: DPAPI）ラップ、`wrapped_secret` 保存 | 成功/失敗 + schemaVersion |
 | `isInitialized` | `wrapped_secret` の有無と利用可否確認 | bool |
 | `runPairingSession` | AP モード初回投入/再ペアリングを開始し、完了判定まで実行 | workflowId + 初期状態 |
 | `runKeyRotationSession` | `k-user` 再発行後の鍵切替ワークフローを開始し、完了判定まで実行 | workflowId + 初期状態 |
@@ -318,14 +323,14 @@ DACL:
 1. `wrapped_secret` を元の専用配置先へ復元する。
 2. 必要に応じて `k-user-backup.enc` を復元する。
 3. `device_db` を復元する。
-4. SecretCore が TPM で `wrapped_secret` を復号する、または `k-user-backup.enc` をパスワードで復号する。
+4. SecretCore が OS 暗号化サービス（現行: DPAPI）で `wrapped_secret` を復号する、または `k-user-backup.enc` をパスワードで復号する。
 5. `k-user` を再生成または復旧する。
 6. `k-device` を都度再生成する。
 
 ### 8.4 復元制約
-- [厳守] `wrapped_secret` 経路は同一PC + 同一TPM でのみ復元可能とする。
+- [厳守] `wrapped_secret` 経路は同一PC + 同一 OS ユーザー資格情報（現行 DPAPI: 同一 Windows ユーザー）でのみ復元可能とする。
 - [重要] 暗号化バックアップファイル経路は、適切なパスワードと `SecretCore` 実装により別PC復旧を許容する。
-- [重要] TPM初期化 / TPM交換 / マザーボード交換時は再発行が必要である。
+- [重要] OS 再インストール / Windows ユーザープロファイル破損 / DPAPI マスター鍵消失時は `k-user-backup.enc` 経路へフォールバックするか、復旧不能なら再発行が必要となる。
 
 ### 8.5 サポートパッケージとの分離
 - [厳守] サポートパッケージは診断目的に限定し、`wrapped_secret`、raw `k-user`、raw `k-device`、証明書秘密鍵を含めない。
@@ -338,7 +343,7 @@ DACL:
 | 操作 | ログ内容 |
 |------|---------|
 | `initializeKeyHierarchy` | 日時、schemaVersion、成否 |
-| `TPM unwrap` | 日時、operation、成否 |
+| `OS unprotect`（現行: DPAPI unprotect） | 日時、operation、成否 |
 | `runSignedOtaCommand` | 日時、targetDevice、keyVersion、workflowId、成否 |
 | `runPairingSession` | 日時、targetDevice、keyVersion、workflowId、bundleId、成否 |
 | `runKeyRotationSession` | 日時、targetDevice、keyVersion、workflowId、成否 |
@@ -352,7 +357,7 @@ DACL:
 
 ## 10. 解析耐性と限界
 ### 10.1 基本方針
-- [重要] Kerckhoffs 原則に従い、ロジック秘匿ではなく保護された秘密（`wrapped_secret` + TPM 拘束、または `k-user-backup.enc` + パスワード）で守る。
+- [重要] Kerckhoffs 原則に従い、ロジック秘匿ではなく保護された秘密（`wrapped_secret` + OS 暗号化サービス拘束（現行: DPAPI = Windows ユーザー資格情報）、または `k-user-backup.enc` + パスワード）で守る。
 - [推奨] Rust バイナリは Release + strip + LTO + zeroize を適用する。
 
 ### 10.2 AI/自動解析時の考え方
@@ -370,7 +375,7 @@ DACL:
 ### Phase 1: 基盤
 1. SecretCore 骨格（Rust）
 2. `initializeKeyHierarchy` / `isInitialized`
-3. TPM ラップ/アンラップ
+3. OS 暗号化サービス（現行: Windows DPAPI）によるラップ/アンラップ
 4. Named Pipe + 暗号化 IPC
 5. `signCommand`
 
@@ -394,8 +399,8 @@ DACL:
    - 別PC / 機材交換では暗号化バックアップから `k-user` を復元し、個体ごとに `runPairingSession()` を再実行する
    - [厳守] いずれの場合も raw key を返さず、復旧の完了判定は SecretCore 側 workflow の `completed` / `failed` で行う
    - [補足][2026-05-13] LocalServer には `POST /api/admin/recovery/re-registration/plan` を追加し、既存 API の実施順を管理画面へ案内する。理由: 実行系を増やさず、同一PC復旧と別PC再登録の操作順を誤らせないため。
-4. [将来対応] macOS 対応の整理は `020` 章へ移管する
-5. [対象外] TPM初期化検知は本 Phase4 の対象外とする
+4. [将来対応] macOS / Linux 対応の整理は **`020-0004`**（OS 暗号化サービスの Mac/Linux 汎用化）として `020` 章で扱う
+5. [対象外] DPAPI マスター鍵消失検知（Windows ユーザープロファイル再作成等）は本 Phase4 の対象外とする
 
 ## 12. 関連文書
 - `鍵管理および初期セットアップ設計仕様書.md`
@@ -405,6 +410,8 @@ DACL:
 - `モジュール仕様書.md`
 
 ## 13. 変更履歴
+- 2026-05-19（続）: §3.1 鍵階層図の `k-device` 導出を `HKDF` から `HMAC-SHA256(key=k-user, message=target_device_name)` へ正本更新。理由: `SecretCore/src/key_manager.rs:454-465 get_k_device` の現行実装と一致させ、`鍵管理および初期セットアップ設計仕様書.md` §6.2 と整合させるため（`todo.md` `009-0012` 整合確認）。
+- 2026-05-19: **TPM 前提を撤回**し、OS 提供のユーザー資格情報拘束暗号化（ソフトウェア暗号化・チップ非依存）方式へ正本を更新。§1.1 脅威モデル / §2 アーキテクチャ / §3 鍵階層 / §4.2 SecretCore 担当 / §5 OS 暗号化サービスによる管理設計（旧 §5 TPM 管理設計）/ §6 IPC 方式 / §7.1 公開 API / §8 バックアップ復元 / §9 監査ログ / §10 解析耐性 / §11 Phase1・Phase4 を整合。現行実装は **Windows DPAPI**（`SecretCore/src/dpapi.rs` / `SecretCore/src/key_manager.rs`、`WRAPPED_SECRET_ALG="DPAPI"`）。macOS / Linux 汎用化は **`020-0004`** へ移管。理由: 実装は最初から DPAPI で固定されていたが、本書のみ 2026-03-08 改訂時に TPM 前提に置き換えたまま実装が追従しなかったため、`todo.md` `009-0008` の整合確認で正本を実装側へ揃える。
 - 2026-05-14: `008-0031` の完了退避に合わせ、障害時再登録フローの UI / API 反映を完了扱いへ整理した。理由: `LocalServer/public/admin.html` の案内 UI と `POST /api/admin/recovery/re-registration/plan` / `restore` / `execute` の使い分けを固定し、Phase4 を完了退避できる状態へ揃えるため。
 - 2026-05-07: `runSignedOtaCommand()` と通常 OTA command publish の双方で `otaStart` に `HMAC-SHA256` + `signature` を付与し、ESP32 側で検証失敗時に開始拒否する構成を追記。理由: `008-0006` 実装に合わせ、高リスク OTA command の真正性保護責務を別層仕様へ固定するため。
 - 2026-05-13: Phase4 の末尾項目を再整理し、macOS 対応を `020` 章へ移管、TPM初期化検知を本 Phase4 の対象外へ変更した。理由: Phase4 は `runKeyRotationSession()` / `runProductionSecureFlow()` / 障害時再登録フローの本線に集中し、将来対応と対象外を切り分けるため。

@@ -129,7 +129,7 @@ topic write esp32lab/notice/+/<DEVICE_PUBLIC_ID>
 [厳守] device 用ユーザーは、自分の `public_id` または運用上必要な共通Topic以外へ publish / subscribe できないようにする。  
 理由: 認証済みデバイス1台の侵害が、他デバイスや管理Topicへ波及するのを防ぐため。
 
-[推奨] 将来 `device/<public_id>/wifi/update` / `confirm` へ topic 統一する場合は、`009-0014` と同時に ACL テンプレートも更新する。  
+[補足][2026-05-19] `009-0014` の「`device/<public_id>/wifi/update` / `confirm` への統一」は **不採用クローズ**（`todo_old20260519.md`）。正本は `MQTTコマンド仕様書.md` §2.1 の `esp32lab/<kind>/<sub>/<name>` 構成（Wi-Fi 設定更新は `esp32lab/network/...`、実装: `mqtt.cpp:3298`）。ACL テンプレートも `esp32lab/<kind>/<sub>/<publicId|all>` 系で設計する。  
 理由: Topic 命名と ACL がずれると、認可失敗または過剰許可が発生するため。
 
 ## 7. 起動と確認

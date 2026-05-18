@@ -48,6 +48,7 @@ String buildTopicDeviceBoot(const String& publicId);
  * @brief Wi-Fi設定更新要求トピックを生成する。
  * @param publicId 公開用デバイスID。
  * @return MQTTトピック。
+ * @note [2026-05-19] 現行運用では未使用。実装は `esp32lab/network/<sub>/<receiverName>` 系で動作中（`mqtt.cpp:3298` / `MQTTコマンド仕様書.md` §2.1）。`009-0014` は不採用クローズ（`todo_old20260519.md`）。本関数は参考実装として残置するが、新規 publish/subscribe には使用しないこと。
  */
 String buildTopicWifiUpdate(const String& publicId);
 
@@ -55,6 +56,7 @@ String buildTopicWifiUpdate(const String& publicId);
  * @brief Wi-Fi設定更新確認トピックを生成する。
  * @param publicId 公開用デバイスID。
  * @return MQTTトピック。
+ * @note [2026-05-19] 現行運用では未使用。実装は `esp32lab/network/<sub>/<receiverName>` 系で動作中（`mqtt.cpp:3298` / `MQTTコマンド仕様書.md` §2.1）。`009-0014` は不採用クローズ（`todo_old20260519.md`）。本関数は参考実装として残置するが、新規 publish/subscribe には使用しないこと。
  */
 String buildTopicWifiConfirm(const String& publicId);
 
