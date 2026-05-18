@@ -17,6 +17,19 @@ logs/
 ota/*.bin
 data/keyStore.json
 data/secure-key-cache/
+# [重要] SQLite 履歴DB（009-0002）。再生成可能な運用データのため Git 管理しない。
+data/localHistory.db
+data/localHistory.db-wal
+data/localHistory.db-shm
+# [重要] 管理者がエクスポートした履歴平文（009-0002）。機微な運用データを含み得るため Git 管理しない。
+data/history-exports/
+# 7106 自動試験専用の平文出力（再生成可・Git 管理しない）
+data/history-exports-7106-autotest/
+
+# 7106 「ENABLED=false」試験用の一時 SQLite（本番 `localHistory.db` と分離）
+data/localHistory-7106-disable-temp.db
+data/localHistory-7106-disable-temp.db-wal
+data/localHistory-7106-disable-temp.db-shm
 
 # embedded build cache (IDEから混在する可能性があるため明示除外)
 .pio/

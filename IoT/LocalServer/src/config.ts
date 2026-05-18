@@ -5,10 +5,12 @@
  * - [重要] 起動失敗時は「不足項目」「無効値」を具体的に例外へ含める。
  * - [厳守] 機密値はログに平文出力しない。
  * - [推奨] `.env` は `env.example.sample.txt` を元に作成し、サンプル値との差分を明確に保つ。
+ * - [重要][2026-05-17] `LOCAL_HISTORY_RETENTION_DAYS`: `0` は無期限（パージなし）、`1`〜`99999` は保持日数。非機密。**`settings.json` の初期既定は 30 日**（コード）。本変数は既定 `30`・`loadConfig` の検証用。runtime の正本は `localHistoryRetentionDays`（設定 API）。
  */
 
 import path from "path";
 import dotenv from "dotenv";
+import { parseLocalHistoryRetentionDaysFromEnv } from "./localHistoryRetention";
 
 dotenv.config();
 
@@ -51,6 +53,22 @@ export interface appConfig {
   apRoleAdminPassword: string;
   apRoleMfgUsername: string;
   apRoleMfgPassword: string;
+  /** @description SQLite 履歴DBの絶対パス。 */
+  localHistoryDbPath: string;
+  /** @description 履歴保持日数。0 は無期限。 */
+  localHistoryRetentionDays: number;
+  /** @description 期限切れパージの実行間隔（ミリ秒）。 */
+  localHistoryPurgeIntervalMs: number;
+  /** @description 履歴平文エクスポートファイルの保存ディレクトリ（絶対パス）。 */
+  localHistoryExportDir: string;
+  /** @description true のとき SQLite 履歴を定期エクスポートする（LocalServer プロセス内タイマー）。 */
+  localHistoryScheduledExportEnabled: boolean;
+  /** @description 定期エクスポート間隔（ミリ秒）。有効時は 60000 以上の整数。 */
+  localHistoryScheduledExportIntervalMs: number;
+  /**
+   * @description 定期エクスポートのフィルタ JSON（`localHistoryExportRequestBody` と同一形のオブジェクトを JSON 化した文字列）。空なら全件相当（sources 既定）。
+   */
+  localHistoryScheduledExportFilterJson: string;
 }
 
 /**
@@ -135,6 +153,28 @@ export function loadConfig(): appConfig {
   const mqttHostIp = getStringEnv("MQTT_HOST_IP", getStringEnv("MQTT_FALLBACK_IP", ""));
   const otaPublicHostName = getStringEnv("OTA_PUBLIC_HOST_NAME", getStringEnv("OTA_PUBLIC_HOST", "ota.esplab.home.arpa"));
   const otaPublicHostIp = getStringEnv("OTA_PUBLIC_HOST_IP", "");
+  const localHistoryRetentionDays = parseLocalHistoryRetentionDaysFromEnv(
+    getNumberEnv("LOCAL_HISTORY_RETENTION_DAYS", 30)
+  );
+  const localHistoryPurgeIntervalMs = getNumberEnv("LOCAL_HISTORY_PURGE_INTERVAL_MS", 86400000);
+  if (!Number.isInteger(localHistoryPurgeIntervalMs) || localHistoryPurgeIntervalMs < 60000) {
+    throw new Error(
+      `loadConfig failed. LOCAL_HISTORY_PURGE_INTERVAL_MS must be an integer >= 60000. value=${localHistoryPurgeIntervalMs}`
+    );
+  }
+
+  const localHistoryScheduledExportEnabled = getBooleanEnv("LOCAL_HISTORY_SCHEDULED_EXPORT_ENABLED", false);
+  const localHistoryScheduledExportIntervalMs = getNumberEnv(
+    "LOCAL_HISTORY_SCHEDULED_EXPORT_INTERVAL_MS",
+    86400000
+  );
+  if (localHistoryScheduledExportEnabled) {
+    if (!Number.isInteger(localHistoryScheduledExportIntervalMs) || localHistoryScheduledExportIntervalMs < 60000) {
+      throw new Error(
+        `loadConfig failed. LOCAL_HISTORY_SCHEDULED_EXPORT_INTERVAL_MS must be an integer >= 60000 when scheduled export is enabled. value=${localHistoryScheduledExportIntervalMs}`
+      );
+    }
+  }
 
   const nextConfig: appConfig = {
     mqttHostName,
@@ -171,7 +211,14 @@ export function loadConfig(): appConfig {
     apRoleAdminUsername: getStringEnv("AP_ROLE_ADMIN_USERNAME", "admin"),
     apRoleAdminPassword: getStringEnv("AP_ROLE_ADMIN_PASSWORD", "change-me"),
     apRoleMfgUsername: getStringEnv("AP_ROLE_MFG_USERNAME", "mfg"),
-    apRoleMfgPassword: getStringEnv("AP_ROLE_MFG_PASSWORD", "change-me")
+    apRoleMfgPassword: getStringEnv("AP_ROLE_MFG_PASSWORD", "change-me"),
+    localHistoryDbPath: toAbsolutePath(getStringEnv("LOCAL_HISTORY_DB_PATH", "./data/localHistory.db")),
+    localHistoryRetentionDays,
+    localHistoryPurgeIntervalMs,
+    localHistoryExportDir: toAbsolutePath(getStringEnv("LOCAL_HISTORY_EXPORT_DIR", "./data/history-exports")),
+    localHistoryScheduledExportEnabled,
+    localHistoryScheduledExportIntervalMs,
+    localHistoryScheduledExportFilterJson: getStringEnv("LOCAL_HISTORY_SCHEDULED_EXPORT_FILTER_JSON", "")
   };
 
   if (nextConfig.mqttHostName.length === 0) {

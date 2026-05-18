@@ -1,6 +1,6 @@
 <!--
   @file settings.html
-  @description LocalServer設定画面（時刻表示/OTAファームウェア/復旧・バックアップ）を提供する。
+  @description LocalServer設定画面（時刻表示/OTAファームウェア/ローカル履歴保持/復旧・バックアップ）を提供する。
   @important [重要] 設定は `/api/settings` を通じて保存し、再起動後も保持する。
   @important [重要] device_db の退避・復元と k-user 暗号化バックアップの出力・復元は管理者認証後のみ実行する。
   @strict [厳守] 設定項目は将来追加を前提に、セクション分割で拡張しやすく構成する。
@@ -39,8 +39,10 @@
         margin-bottom: 10px;
         align-items: center;
       }
-      input[type="text"] {
+      input[type="text"],
+      input[type="number"] {
         width: 100%;
+        max-width: 220px;
         padding: 6px;
         box-sizing: border-box;
       }
@@ -111,6 +113,18 @@
     </div>
 
     <div class="card">
+      <h2>ローカル履歴（SQLite）保持</h2>
+      <div class="fieldRow">
+        <label for="localHistoryRetentionDaysInput">保持日数</label>
+        <input id="localHistoryRetentionDaysInput" type="number" min="0" max="99999" step="1" />
+      </div>
+      <div class="muted">
+        [重要] 実効値の正本は <code>data/settings.json</code> の <code>localHistoryRetentionDays</code>。0＝無期限（自動パージなし）、1〜99999＝その日数より古い行を削除（サーバ既定30）。初回のみ環境変数
+        <code>LOCAL_HISTORY_RETENTION_DAYS</code> を参照しますが、保存後は本欄が優先されます。
+      </div>
+    </div>
+
+    <div class="card">
       <h2>復旧・バックアップ</h2>
       <div class="muted">[重要] ここで扱う操作は管理者認証が必要です。未ログイン時は先に管理者画面へ移動してください。</div>
 
@@ -167,6 +181,7 @@
       const deviceDbRestoreDirInput = document.getElementById("deviceDbRestoreDirInput");
       const kUserBackupPasswordInput = document.getElementById("kUserBackupPasswordInput");
       const kUserBackupFilePathInput = document.getElementById("kUserBackupFilePathInput");
+      const localHistoryRetentionDaysInput = document.getElementById("localHistoryRetentionDaysInput");
 
       function appendLog(text) {
         const nowText = new Date().toISOString();
@@ -199,12 +214,46 @@
         return jsonObject;
       }
 
+      /**
+       * @description フォームのローカル履歴保持日数を検証し、API と同じルール（0 または 1〜99999）の整数へ変換する。
+       * @returns {number} 保持日数。
+       */
+      function parseLocalHistoryRetentionDaysFromFormOrThrow() {
+        if (!(localHistoryRetentionDaysInput instanceof HTMLInputElement)) {
+          throw new Error(
+            "parseLocalHistoryRetentionDaysFromFormOrThrow failed: localHistoryRetentionDaysInput を取得できません。"
+          );
+        }
+        const rawText = localHistoryRetentionDaysInput.value.trim();
+        if (rawText.length === 0) {
+          throw new Error(
+            "localHistoryRetentionDays failed: 保持日数が空です。0（無期限）または 1〜99999 の整数を入力してください。"
+          );
+        }
+        if (!/^-?\d+$/.test(rawText)) {
+          throw new Error(`localHistoryRetentionDays failed: 整数のみ入力可能です。input=${rawText}`);
+        }
+        const parsed = Number.parseInt(rawText, 10);
+        if (parsed === 0) {
+          return 0;
+        }
+        if (parsed < 1 || parsed > 99999) {
+          throw new Error(
+            `localHistoryRetentionDays failed: 範囲外です（0 または 1〜99999）。value=${parsed}`
+          );
+        }
+        return parsed;
+      }
+
       function renderSettingsResponse(jsonObject) {
         const settings = jsonObject.settings || {};
         timeZoneInput.value = settings.timeZone || "";
         otaVersionInput.value = settings.otaFirmwareVersion || "";
         firmwareLocalPathInput.value = settings.firmwareLocalPath || "";
         setSelectedFirmwareSource(settings.firmwareSource || "localPath");
+        const retentionDays =
+          typeof settings.localHistoryRetentionDays === "number" ? settings.localHistoryRetentionDays : 30;
+        localHistoryRetentionDaysInput.value = String(retentionDays);
 
         activeFirmwarePathText.textContent = jsonObject.activeFirmwarePath || "(未設定)";
         const info = jsonObject.firmwareInfo || {};
@@ -271,7 +320,8 @@
           timeZone: timeZoneInput.value.trim(),
           otaFirmwareVersion: otaVersionInput.value.trim(),
           firmwareSource: getSelectedFirmwareSource(),
-          firmwareLocalPath: firmwareLocalPathInput.value.trim()
+          firmwareLocalPath: firmwareLocalPathInput.value.trim(),
+          localHistoryRetentionDays: parseLocalHistoryRetentionDaysFromFormOrThrow()
         };
         const response = await fetch("/api/settings", {
           method: "PUT",

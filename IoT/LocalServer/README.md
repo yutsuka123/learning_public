@@ -54,19 +54,27 @@
 - [厳守] 登録前に `node_modules` と `dist/server.js` を用意する。  
   理由: Task Scheduler が起動しても、依存導入や build 未完了では `node dist/server.js` が成立しないため。
 - [厳守] Task Scheduler 登録は **管理者PowerShell** で実行する。  
-  理由: 2026-05-16 の実機確認で、通常権限の `Register-ScheduledTask` は `0x80070005 (Access denied)` で失敗したため。
-- 一括導入する場合は `scripts/install-local-server.ps1 -InstallTaskScheduler` を使う。
+  理由: 2026-05-16 実機確認で、通常権限の `Register-ScheduledTask` は **`HRESULT 0x80070005 (Access denied)`** で失敗したため。
+- [追記][2026-05-18] **管理者以外から登録したい場合**は `scripts/invoke-install-task-scheduler-admin.ps1` を実行する（UAC 昇格）。`install-task-scheduler.ps1` は非管理者では先頭で停止し、手順を表示する。
+- [重要][2026-05-17] **既定**は **`AtLogOn`（対象ユーザのログオン時）+ `Interactive`**。ログオン前に必須とする場合のみ `install-task-scheduler.ps1 -TriggerMode AtStartup` または `install-local-server.ps1 -InstallTaskScheduler -TaskSchedulerTriggerMode AtStartup` を使う。  
+  理由: `AtStartup` + `S4U` のみでは `LastTaskResult=267011`（`SCHED_S_TASK_HAS_NOT_RUN`）で実体が起動しないケースがあったため（`試験記録書.md` `7001`）。
+- 一括導入する場合は `scripts/install-local-server.ps1 -InstallTaskScheduler` を使う（必要なら `-TaskSchedulerTriggerMode AtStartup`）。
 - 登録専用コマンド:
   - `cd scripts`
-  - `powershell -ExecutionPolicy Bypass -File .\install-task-scheduler.ps1`
+  - 管理者 PowerShell: `powershell -ExecutionPolicy Bypass -File .\install-task-scheduler.ps1`
+  - または（UAC 昇格・管理者で開かなくてよい）: `powershell -ExecutionPolicy Bypass -File .\invoke-install-task-scheduler-admin.ps1`
+  - （ログオン前起動が必要な場合）上記に `-TriggerMode AtStartup` を付ける（`invoke-...` は内部へ伝播する）。
 - 正規タスク名は `IoT_LocalServer_AutoStart`、起動ラッパーは `scripts/run-local-server.ps1`。
-- 実行後、PC起動時に `run-local-server.ps1` 経由で `node dist/server.js` が自動起動する。
+- 実行後、**ユーザー・ログオン後**（既定）に `run-local-server.ps1` 経由で `node dist/server.js` が自動起動する。
 - [重要][2026-05-16] `run-local-server.ps1` は `node.exe` の実体パスを候補一覧から解決して起動する。理由: Task Scheduler の非対話環境では `npm` の PATH 解決が不安定な可能性があるため。
 - [追記][2026-05-16] 現端末では、管理者PowerShellでのタスク登録までは成功したが、`schtasks /run /tn "IoT_LocalServer_AutoStart"` 後も `LastRunTime` は更新されず、`/api/health` も応答しなかった。`S4U` 実行方式または Task Scheduler 実行コンテキストの追加切り分けが必要。
+- [追記][2026-05-17] 上記の切り分けとして、登録スクリプトの既定を `AtLogOn` + `Interactive` へ変更した。再登録後は `Start-ScheduledTask` と `/api/health` で実機確認すること。
 - 手動確認:
   - `Get-ScheduledTask -TaskName "IoT_LocalServer_AutoStart"`
   - `Start-ScheduledTask -TaskName "IoT_LocalServer_AutoStart"`
   - `Invoke-WebRequest "http://127.0.0.1:3100/api/health" -UseBasicParsing | Select-Object -ExpandProperty Content`
+- [重要][2026-05-17] **定期エクスポートとの組合せ（009-0003）**: `.env` に `LOCAL_HISTORY_SCHEDULED_EXPORT_ENABLED=true` / `LOCAL_HISTORY_SCHEDULED_EXPORT_INTERVAL_MS=86400000` を追記すると、Task Scheduler 起動後の LocalServer が `.env` をロードして定期エクスポートを自動開始する。  
+  起動ログの `LocalServer: scheduled history export enabled.` で確認する。詳細は `コマンド仕様書.md` §5.1 を参照する。
 
 ## 7. API一覧（最小）
 - `GET /api/health`
@@ -110,6 +118,8 @@
 - [厳守] `ProductionTool` 専用の eFuse 最終有効化機能は、本READMEの通常運用スコープへ含めない。
 
 ## 9. 変更履歴
+- 2026-05-18: §6 に **`invoke-install-task-scheduler-admin.ps1`**（UAC 昇格）を追記した。理由: 管理者 PowerShell を別途開かずに登録へ進める導線を README から辿れるようにするため。
+- 2026-05-17: §6 に **既定トリガー `AtLogOn` + `Interactive`**、旧 `AtStartup` + `S4U` の位置づけ、`-TriggerMode` / `-TaskSchedulerTriggerMode` を追記した。理由: `009-0001` の `267011` 切り分けを README から一方通行で辿れるようにするため。
 - 2026-05-16: §6 に Task Scheduler 自動起動の前提条件、正規タスク名、`install-local-server.ps1 -InstallTaskScheduler`、管理者PowerShell必須、`node dist/server.js` 直起動化、`/api/health` による起動確認、および `schtasks /run` 受理後も `LastRunTime` 未更新の未解決点を追記した。理由: `009-0001` の導入手順と実機ブロッカーを README 単体でも誤解なく辿れるようにするため。
 - 2026-05-13: `settings.html` の復旧・バックアップ導線と `/api/settings/backups/*` を追加。理由: `device_db` 退避/復元と `k-user` 暗号化バックアップを LocalServer から直接扱えるようにするため。
 - 2026-05-13: `/api/admin/recovery/re-registration/plan` と `admin.html` の案内 UI を追加。理由: 障害時再登録フローの操作順を管理画面から参照できるようにするため。

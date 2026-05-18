@@ -4,5 +4,6 @@
   "firmwareLocalPath": "C:\\mydata\\project\\myproject\\learning_public\\IoT\\ESP32\\.pio\\build\\esp32s3_secure\\firmware.bin",
   "firmwareUploadedFileName": "",
   "otaFirmwareVersion": "1.1.0-beta.39",
-  "wifiUsbInterfaceName": "Wi-Fi"
+  "wifiUsbInterfaceName": "Wi-Fi",
+  "localHistoryRetentionDays": 30
 }

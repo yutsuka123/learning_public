@@ -434,6 +434,10 @@ export interface localServerSettings {
   firmwareUploadedFileName: string;
   otaFirmwareVersion: string;
   wifiUsbInterfaceName: string;
+  /**
+   * @description SQLite ローカル履歴の保持日数（**非機密**）。`0` はパージなし（無期限）、`1`〜`99999` はその日数より古い行を削除。**新規 `settings.json` の既定は 30**（`settingsStore` で固定）。
+   */
+  localHistoryRetentionDays: number;
 }
 
 /**
@@ -453,4 +457,35 @@ export interface mqttCommandPayload {
   keyId?: string;
   nonce?: string;
   exp?: string;
+}
+
+/**
+ * @description 管理者向け: ローカル履歴 SQLite ファイルを削除して空の DB を再生成する API の入力。
+ */
+export interface localHistoryDeleteDatabaseRequestBody {
+  /**
+   * @description 誤操作防止の固定トークン。`DELETE_LOCAL_HISTORY_DB` と完全一致しなければ拒否する。
+   */
+  confirm: string;
+}
+
+/**
+ * @description SQLite 履歴の平文エクスポート API 入力（`DB仕様書.md` 3章）。
+ */
+export interface localHistoryExportRequestBody {
+  /** @description 出力テーブル。未指定時は `deviceStatus` と `command` と `serverEvent` の全て。 */
+  sources?: ReadonlyArray<"deviceStatus" | "command" | "serverEvent">;
+  /** @description `command` / `subCommand` / `deviceNo` の結合。未指定は AND。 */
+  fieldCombine?: "AND" | "OR";
+  /** @description MQTT の op に相当する `commandName` 完全一致。 */
+  command?: string;
+  subCommand?: string;
+  /** @description 端末名または public_id 相当。 */
+  deviceNo?: string;
+  /** @description 期間開始 ISO8601。 */
+  fromAt?: string;
+  /** @description 期間終了 ISO8601。 */
+  toAt?: string;
+  /** @description ファイル名のベース（拡張子なし）。英数字・._- のみ。 */
+  fileBaseName?: string;
 }

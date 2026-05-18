@@ -5,6 +5,8 @@
  * - [重要] 起動時にstatus要求を送信し、ESP32オンライン状態を初期同期する。
  * - [厳守] OTA配布はHTTPSを優先し、証明書未配置時は警告を出して無効化する。
  * - [禁止] OTA配布URLへ機密情報（認証値）を埋め込まない。
+ * - [重要][2026-05-17] 管理者向け `POST /api/admin/local-history/export` で SQLite 履歴をフィルタ付き JSON Lines へ出力する（DB仕様書 3章）。環境変数 `LOCAL_HISTORY_SCHEDULED_EXPORT_ENABLED` 等で同一処理を定期実行する。
+ * - [重要][2026-05-17] SecretCore 子プロセスは **stdin ブートストラップの stdout ack** を待ってから `checkHealth` を行い、未更新の `secret_core.exe` による Named Pipe 名不一致を早期終了する。
  */
 
 import fs from "fs";
@@ -42,15 +44,21 @@ import {
   rollbackTestCommandRequestBody,
   localServerSettings,
   genericCommandRequestBody,
-  recoveryReRegistrationExecuteResponse
+  recoveryReRegistrationExecuteResponse,
+  localHistoryExportRequestBody,
+  localHistoryDeleteDatabaseRequestBody
 } from "./types";
 import { SecretCoreManager } from "./secretCoreManager";
 import { SecretCoreIpcClient } from "./secretCoreIpcClient";
 import { SecretCoreFacade, secretCoreWorkflowStatusResult } from "./secretCoreFacade";
 import { buildPairingWorkflowStartRequestBodyFromApConfigure, validatePairingWorkflowStartRequestBody } from "./pairingWorkflowInput";
 import { mqttPayloadSecurityService, resolveMqttPayloadEncryptionMode } from "./mqttPayloadSecurity";
+import { LocalHistoryStore, type historyExportQuery } from "./localHistoryStore";
+import { formatRecordedAtJstFromIsoUtc } from "./historyTimestamps";
 
 const config = loadConfig();
+/** @description 定期履歴エクスポートの `exportHistory.executedBy` および監査ログ用ラベル。 */
+const LOCAL_HISTORY_SCHEDULED_EXECUTOR = "LocalServer/scheduledExport";
 const app = express();
 // [Phase2完了] SecretCoreにTS版k-userをインポート済み。wrapped_k_user.binで一致確認済み。
 // Phase1で一時的にfalseにしていたものをtrueに復元。変更日: 2026-03-15
@@ -68,12 +76,15 @@ const secretCoreClient = new SecretCoreIpcClient(
 const secretCoreFacade = new SecretCoreFacade(secretCoreClient);
 const localKeyService = new keyService(config, secretCoreFacade, USE_SECRET_CORE);
 const serverPayloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
+const LOCAL_HISTORY_DELETE_DB_CONFIRM = "DELETE_LOCAL_HISTORY_DB";
+const localHistoryStore = new LocalHistoryStore(config, settingsStore.getSettings().localHistoryRetentionDays);
 const gateway: deviceTransport = new mqttGateway(
   config,
   registry,
   localKeyService,
   secretCoreFacade,
-  MQTT_TRANSPORT_MODE
+  MQTT_TRANSPORT_MODE,
+  localHistoryStore
 );
 const adminSessionMap = new Map<string, number>();
 const adminSessionTtlMs = 3 * 60 * 60 * 1000;
@@ -754,6 +765,7 @@ app.put("/api/settings", (request: Request, response: Response) => {
   try {
     const requestBody = request.body as Partial<localServerSettings>;
     const updatedSettings = settingsStore.updateSettings(requestBody);
+    localHistoryStore.setRetentionDays(updatedSettings.localHistoryRetentionDays);
     response.json({
       result: "OK",
       settings: updatedSettings
@@ -2513,6 +2525,89 @@ app.post("/api/commands/network", async (request: Request, response: Response) =
 });
 
 /**
+ * @description SQLite 履歴をフィルタして平文ファイル（JSON Lines）へエクスポートするAPI。
+ * @remarks
+ * - [厳守] 管理者セッション必須。理由: 運用履歴の持ち出しは監査対象とするため。
+ * - [重要] 成功時は `exportHistory` 行と `security-audit.log` へ記録する（DB仕様書 3章）。
+ */
+app.post("/api/admin/local-history/export", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as localHistoryExportRequestBody;
+    const runResult = runLocalHistoryExportToDisk({
+      triggerType: "manual",
+      requestBody,
+      executedBy: runtimeSecurityState.adminUsername
+    });
+    response.json({
+      result: "OK",
+      exportPath: runResult.exportPath,
+      recordCount: runResult.recordCount,
+      filter: runResult.filterForAudit
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
+ * @description ローカル履歴 SQLite ファイルを削除し、空のスキーマで再接続する API。
+ * @remarks
+ * - [厳守] 管理者セッション必須。証跡が失われるため `confirm` 固定トークンを要求する。
+ */
+app.post("/api/admin/local-history/delete-database", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as localHistoryDeleteDatabaseRequestBody;
+    if (requestBody === undefined || requestBody === null || requestBody.confirm !== LOCAL_HISTORY_DELETE_DB_CONFIRM) {
+      throw new Error(
+        `delete-database failed. confirm must be exactly "${LOCAL_HISTORY_DELETE_DB_CONFIRM}"`
+      );
+    }
+    localHistoryStore.deleteDatabaseFilesAndReopen();
+    const resetAt = new Date().toISOString();
+    const resetAtJst = formatRecordedAtJstFromIsoUtc(resetAt);
+    try {
+      localHistoryStore.recordServerEvent({
+        eventType: "localHistoryDatabaseRecreated",
+        localServerId: config.sourceId,
+        detail: JSON.stringify({
+          reason: "admin_reset",
+          note: "main db and WAL/SHM removed; empty schema recreated"
+        }),
+        recordedAt: resetAt,
+        recordedAtJst: resetAtJst.length > 0 ? resetAtJst : ""
+      });
+    } catch {
+      /* 監査副次録の失敗は API 成功を阻害しない */
+    }
+    appendSecurityAuditLog("localHistoryDatabaseReset", {
+      executedBy: runtimeSecurityState.adminUsername,
+      dbPath: config.localHistoryDbPath
+    });
+    response.json({ result: "OK" });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({
+      result: "NG",
+      detail: errMsg
+    });
+  }
+});
+
+/**
  * @description OTA用manifestを返す。
  */
 app.get("/ota/manifest.json", (_request: Request, response: Response) => {
@@ -2545,8 +2640,86 @@ app.get("/ota/firmware.bin", (_request: Request, response: Response) => {
   response.sendFile(activeFirmwarePath);
 });
 
+/**
+ * @description `package.json` の `version` を読む（SQLite 起動履歴用）。
+ * @returns セマンティック版文字列。読取失敗時は `unknown`。
+ */
+function readLocalServerPackageVersion(): string {
+  try {
+    const packageJsonPath = path.join(__dirname, "..", "package.json");
+    const packageJsonRaw = fs.readFileSync(packageJsonPath, "utf-8");
+    const packageJsonParsed = JSON.parse(packageJsonRaw) as { version?: string };
+    return typeof packageJsonParsed.version === "string" ? packageJsonParsed.version : "unknown";
+  } catch {
+    return "unknown";
+  }
+}
+
 const httpServer = app.listen(config.httpPort, () => {
   console.log(`LocalServer HTTP started. httpPort=${config.httpPort}`);
+  try {
+    const startupRecordedAt = new Date().toISOString();
+    const startupRecordedAtJst = formatRecordedAtJstFromIsoUtc(startupRecordedAt);
+    localHistoryStore.recordServerEvent({
+      eventType: "localServerStarted",
+      localServerId: config.sourceId,
+      detail: JSON.stringify({
+        packageVersion: readLocalServerPackageVersion(),
+        httpPort: config.httpPort,
+        mqttTransportMode: MQTT_TRANSPORT_MODE,
+        useSecretCore: USE_SECRET_CORE,
+        hostName: os.hostname(),
+        nodeVersion: process.version,
+        processId: process.pid,
+        timezoneNote: "recordedAt is UTC ISO8601; recordedAtJst is Asia/Tokyo (JST)"
+      }),
+      recordedAt: startupRecordedAt,
+      recordedAtJst: startupRecordedAtJst.length > 0 ? startupRecordedAtJst : ""
+    });
+  } catch (startupHistoryError) {
+    console.warn(`LocalServer: recordServerEvent(localServerStarted) failed. detail=${getErrorMessage(startupHistoryError)}`);
+  }
+  try {
+    localHistoryStore.purgeExpired();
+  } catch (purgeError) {
+    const purgeMessage = purgeError instanceof Error ? purgeError.message : String(purgeError);
+    console.error(`LocalServer: initial history purge failed. error=${purgeMessage}`);
+  }
+  setInterval(() => {
+    try {
+      localHistoryStore.purgeExpired();
+    } catch (purgeError) {
+      const purgeMessage = purgeError instanceof Error ? purgeError.message : String(purgeError);
+      console.error(`LocalServer: scheduled history purge failed. error=${purgeMessage}`);
+    }
+  }, config.localHistoryPurgeIntervalMs).unref();
+
+  if (config.localHistoryScheduledExportEnabled) {
+    try {
+      const scheduledExportBody = parseScheduledExportFilterJson(config.localHistoryScheduledExportFilterJson);
+      setInterval(() => {
+        try {
+          const scheduledResult = runLocalHistoryExportToDisk({
+            triggerType: "scheduled",
+            requestBody: scheduledExportBody,
+            executedBy: LOCAL_HISTORY_SCHEDULED_EXECUTOR
+          });
+          console.info(
+            `LocalServer: scheduled history export OK. recordCount=${scheduledResult.recordCount} path=${scheduledResult.exportPath}`
+          );
+        } catch (exportError) {
+          const exportMessage = exportError instanceof Error ? exportError.message : String(exportError);
+          console.error(`LocalServer: scheduled history export failed. error=${exportMessage}`);
+        }
+      }, config.localHistoryScheduledExportIntervalMs).unref();
+      console.info(
+        `LocalServer: scheduled history export enabled. intervalMs=${config.localHistoryScheduledExportIntervalMs}`
+      );
+    } catch (filterError) {
+      const filterMessage = filterError instanceof Error ? filterError.message : String(filterError);
+      console.error(`LocalServer: scheduled history export NOT started (invalid filter JSON). error=${filterMessage}`);
+    }
+  }
 });
 
 const webSocketServer = new WebSocketServer({
@@ -2647,7 +2820,8 @@ async function waitForSecretCoreReady(): Promise<boolean> {
   if (!USE_SECRET_CORE) {
     return true;
   }
-  const maxAttempts = 20;
+  // KeyManager 初期化と Named Pipe 作成は ack 直後も数秒かかることがあるため、余裕を持たせる。
+  const maxAttempts = 80;
   const waitMs = 300;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
@@ -2671,6 +2845,14 @@ async function waitForSecretCoreReady(): Promise<boolean> {
 
 async function bootstrapRuntime(): Promise<void> {
   secretCoreManager.start();
+  try {
+    await secretCoreManager.waitForBootstrapAck();
+  } catch (bootstrapError) {
+    const bootstrapMessage = getErrorMessage(bootstrapError);
+    console.error(`SecretCore bootstrap failed. detail=${bootstrapMessage}`);
+    secretCoreManager.stop();
+    process.exit(1);
+  }
   await waitForSecretCoreReady();
   gateway.connect();
 }
@@ -2764,6 +2946,199 @@ function startOtaHttpsServer(): void {
   otaServer.listen(config.otaHttpsPort, () => {
     console.log(`OTA HTTPS started. httpsPort=${config.otaHttpsPort}`);
   });
+}
+
+/**
+ * @description 履歴エクスポート API 本文を検証し、ストア向けクエリへ変換する。
+ * @param requestBody POST 本文。
+ * @returns `historyExportQuery`。
+ */
+function parseHistoryExportQueryFromRequest(requestBody: localHistoryExportRequestBody): historyExportQuery {
+  if (requestBody === undefined || requestBody === null) {
+    throw new Error("parseHistoryExportQueryFromRequest failed. requestBody is null");
+  }
+  const combineCandidate = requestBody.fieldCombine ?? "AND";
+  if (combineCandidate !== "AND" && combineCandidate !== "OR") {
+    throw new Error(
+      `parseHistoryExportQueryFromRequest failed. fieldCombine must be AND or OR. actual=${String(combineCandidate)}`
+    );
+  }
+
+  let sources: historyExportQuery["sources"];
+  const sourcesRaw = requestBody.sources;
+  if (sourcesRaw === undefined || sourcesRaw === null || (Array.isArray(sourcesRaw) && sourcesRaw.length === 0)) {
+    sources = ["deviceStatus", "command", "serverEvent"];
+  } else {
+    if (!Array.isArray(sourcesRaw)) {
+      throw new Error("parseHistoryExportQueryFromRequest failed. sources must be an array");
+    }
+    const nextSources: Array<"deviceStatus" | "command" | "serverEvent"> = [];
+    for (const entry of sourcesRaw) {
+      if (entry !== "deviceStatus" && entry !== "command" && entry !== "serverEvent") {
+        throw new Error(`parseHistoryExportQueryFromRequest failed. invalid sources entry=${String(entry)}`);
+      }
+      if (!nextSources.includes(entry)) {
+        nextSources.push(entry);
+      }
+    }
+    sources = nextSources.length > 0 ? nextSources : ["deviceStatus", "command", "serverEvent"];
+  }
+
+  const fromCandidate = requestBody.fromAt?.trim() ?? "";
+  if (fromCandidate.length > 0 && Number.isNaN(Date.parse(fromCandidate))) {
+    throw new Error(`parseHistoryExportQueryFromRequest failed. fromAt is not valid ISO8601. value=${fromCandidate}`);
+  }
+  const toCandidate = requestBody.toAt?.trim() ?? "";
+  if (toCandidate.length > 0 && Number.isNaN(Date.parse(toCandidate))) {
+    throw new Error(`parseHistoryExportQueryFromRequest failed. toAt is not valid ISO8601. value=${toCandidate}`);
+  }
+
+  const cmdCandidate = requestBody.command?.trim() ?? "";
+  const subCandidate = requestBody.subCommand?.trim() ?? "";
+  const devCandidate = requestBody.deviceNo?.trim() ?? "";
+
+  return {
+    sources,
+    fieldCombine: combineCandidate,
+    commandName: cmdCandidate.length > 0 ? cmdCandidate : undefined,
+    subCommand: subCandidate.length > 0 ? subCandidate : undefined,
+    deviceNo: devCandidate.length > 0 ? devCandidate : undefined,
+    fromAt: fromCandidate.length > 0 ? fromCandidate : undefined,
+    toAt: toCandidate.length > 0 ? toCandidate : undefined
+  };
+}
+
+/**
+ * @description エクスポートファイルのベース名をファイルシステム安全な形へ正規化する。
+ * @param raw 任意入力。
+ * @returns 正規化後ベース名（空なら既定）。
+ */
+function sanitizeHistoryExportFileBaseName(raw: string | undefined): string {
+  const fallbackName = "history-export";
+  if (raw === undefined || raw.trim().length === 0) {
+    return fallbackName;
+  }
+  const cleaned = raw.trim().replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 80);
+  return cleaned.length > 0 ? cleaned : fallbackName;
+}
+
+/**
+ * @description `LOCAL_HISTORY_SCHEDULED_EXPORT_FILTER_JSON` を検証し API 本文形へ変換する。
+ * @param filterJsonRaw 環境変数文字列（空ならフィルタなし）。
+ * @returns `localHistoryExportRequestBody`。
+ */
+function parseScheduledExportFilterJson(filterJsonRaw: string): localHistoryExportRequestBody {
+  const trimmed = filterJsonRaw.trim();
+  if (trimmed.length === 0) {
+    return {};
+  }
+  let parsedRoot: unknown;
+  try {
+    parsedRoot = JSON.parse(trimmed);
+  } catch (parseError) {
+    throw new Error(`parseScheduledExportFilterJson failed. JSON.parse error. reason=${getErrorMessage(parseError)}`);
+  }
+  if (parsedRoot === null || typeof parsedRoot !== "object" || Array.isArray(parsedRoot)) {
+    throw new Error("parseScheduledExportFilterJson failed. root must be a non-array object");
+  }
+  const body = parsedRoot as localHistoryExportRequestBody;
+  parseHistoryExportQueryFromRequest(body);
+  return body;
+}
+
+/**
+ * @description SQLite 履歴をフィルタして JSON Lines ファイルへ書き出し、`exportHistory` と監査ログへ記録する。
+ * @param options 実行モード・本文・実行者。
+ * @returns 出力パス・件数・監査用フィルタ。
+ */
+function runLocalHistoryExportToDisk(options: {
+  triggerType: "manual" | "scheduled";
+  requestBody: localHistoryExportRequestBody;
+  executedBy: string;
+}): { exportPath: string; recordCount: number; filterForAudit: Record<string, unknown>; filterJson: string } {
+  const exportQuery = parseHistoryExportQueryFromRequest(options.requestBody);
+  const fileBaseNameRaw = options.requestBody.fileBaseName;
+  const filterForAudit: Record<string, unknown> = {
+    triggerType: options.triggerType,
+    sources: exportQuery.sources,
+    fieldCombine: exportQuery.fieldCombine,
+    command: exportQuery.commandName ?? null,
+    subCommand: exportQuery.subCommand ?? null,
+    deviceNo: exportQuery.deviceNo ?? null,
+    fromAt: exportQuery.fromAt ?? null,
+    toAt: exportQuery.toAt ?? null,
+    fileBaseName: fileBaseNameRaw ?? null
+  };
+  const filterJson = JSON.stringify(filterForAudit);
+
+  const deviceRows = exportQuery.sources.includes("deviceStatus")
+    ? localHistoryStore.queryDeviceStatusForExport(exportQuery)
+    : [];
+  const commandRows = exportQuery.sources.includes("command")
+    ? localHistoryStore.queryCommandForExport(exportQuery)
+    : [];
+  const serverEventRows = exportQuery.sources.includes("serverEvent")
+    ? localHistoryStore.queryServerEventForExport(exportQuery)
+    : [];
+  const recordCount = deviceRows.length + commandRows.length + serverEventRows.length;
+
+  if (!fs.existsSync(config.localHistoryExportDir)) {
+    fs.mkdirSync(config.localHistoryExportDir, { recursive: true });
+  }
+  const timestampText = new Date().toISOString().replace(/[:.]/g, "-");
+  const defaultBase =
+    options.triggerType === "scheduled" ? "scheduled-history-export" : sanitizeHistoryExportFileBaseName(undefined);
+  const safeBase =
+    fileBaseNameRaw !== undefined && fileBaseNameRaw.trim().length > 0
+      ? sanitizeHistoryExportFileBaseName(fileBaseNameRaw)
+      : defaultBase;
+  const fileName = `${timestampText}_${safeBase}.jsonl`;
+  const exportPath = path.join(config.localHistoryExportDir, fileName);
+
+  const metaLine = {
+    kind: "meta",
+    exportedAt: new Date().toISOString(),
+    recordCount,
+    filter: filterForAudit,
+    sources: exportQuery.sources,
+    triggerType: options.triggerType,
+    timeReferenceNote: "Each record includes recordedAt (UTC ISO8601) and recordedAtJst (Asia/Tokyo, suffix JST) where applicable."
+  };
+  const lineTexts: string[] = [JSON.stringify(metaLine)];
+  for (const row of deviceRows) {
+    lineTexts.push(JSON.stringify({ kind: "deviceStatus", record: row }));
+  }
+  for (const row of commandRows) {
+    lineTexts.push(JSON.stringify({ kind: "command", record: row }));
+  }
+  for (const row of serverEventRows) {
+    lineTexts.push(JSON.stringify({ kind: "serverEvent", record: row }));
+  }
+  fs.writeFileSync(exportPath, `${lineTexts.join("\n")}\n`, "utf-8");
+  try {
+    fs.chmodSync(exportPath, 0o600);
+  } catch (chmodError) {
+    console.warn(`local-history export chmod skipped. path=${exportPath} detail=${getErrorMessage(chmodError)}`);
+  }
+
+  const executedAt = new Date().toISOString();
+  localHistoryStore.recordExportHistory({
+    triggerType: options.triggerType,
+    filterJson,
+    exportPath,
+    recordCount,
+    executedBy: options.executedBy,
+    executedAt
+  });
+  appendSecurityAuditLog("localHistoryExported", {
+    exportPath,
+    recordCount,
+    executedBy: options.executedBy,
+    triggerType: options.triggerType,
+    filter: filterForAudit
+  });
+
+  return { exportPath, recordCount, filterForAudit, filterJson };
 }
 
 /**

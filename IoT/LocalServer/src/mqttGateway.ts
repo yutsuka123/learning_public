@@ -5,6 +5,8 @@
  * - [重要] 起動時にstatus要求を送信し、初期オンライン判定を短時間で確立する。
  * - [厳守] MQTT TLS利用時はCA証明書を読み込み、検証スキップを行わない。
  * - [禁止] publish失敗を黙殺しない。必ずエラーを返す。
+ * - [重要][2026-05-17] SQLite 履歴のコマンド `detail` は検索用に args 全体を残し、機密キーは値を `<password>` 等の英語タグへ置換する（実装は `historyRedaction.ts` と共有）。理由: 後から「何を送ったか」を辿れる一方、機密の平文保存を避けるため。
+ * - [重要][2026-05-17] 履歴行には `fromId`/`toId`・`recordedAtJst`（日本標準時の明示表記）・端末の FW 版・`statusSub`（Reply 等）を保存する。理由: MQTT の要求（server→device）と応答（device→server）を運用で区別しやすくするため。
  */
 
 import fs from "fs";
@@ -16,7 +18,10 @@ import { deviceTransport, deviceTransportEventMap, secureEchoMessage } from "./d
 import { keyService } from "./keyService";
 import { mqttPayloadSecurityService, resolveMqttPayloadEncryptionMode } from "./mqttPayloadSecurity";
 import { SecretCoreFacade } from "./secretCoreFacade";
+import { LocalHistoryStore } from "./localHistoryStore";
+import { formatRecordedAtJstFromIsoUtc } from "./historyTimestamps";
 import { mqttCommandPayload, otaProgressMessage, statusMessage, trhMessage } from "./types";
+import { buildRedactedCommandDetailJson, buildRedactedStatusDetailText } from "./historyRedaction";
 
 /**
  * @description MQTTイベントの型。
@@ -55,6 +60,7 @@ export class mqttGateway implements deviceTransport {
   private rustPollTimer?: NodeJS.Timeout;
   private rustPollInFlight = false;
   private rustReceiverStartPromise?: Promise<void>;
+  private readonly historyStore?: LocalHistoryStore;
   private readonly pendingSecureEchoMap = new Map<
     string,
     {
@@ -68,13 +74,18 @@ export class mqttGateway implements deviceTransport {
    * @description コンストラクタ。
    * @param config アプリ設定。
    * @param registry 状態レジストリ。
+   * @param localKeyService 鍵サービス。
+   * @param secretCoreFacade SecretCore ファサード（任意）。
+   * @param mqttTransportMode トランスポートの実装選択。
+   * @param historyStore SQLite 履歴（任意）。指定時は status 受信・コマンド publish 成功を記録する。
    */
   public constructor(
     config: appConfig,
     registry: DeviceRegistry,
     localKeyService: keyService,
     secretCoreFacade?: SecretCoreFacade,
-    mqttTransportMode: "ts" | "rust" = "ts"
+    mqttTransportMode: "ts" | "rust" = "ts",
+    historyStore?: LocalHistoryStore
   ) {
     this.config = config;
     this.registry = registry;
@@ -83,6 +94,7 @@ export class mqttGateway implements deviceTransport {
     this.payloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
     this.secretCoreFacade = secretCoreFacade;
     this.mqttTransportMode = mqttTransportMode;
+    this.historyStore = historyStore;
     console.info(`mqttGateway: payload encryption mode=${this.payloadSecurityService.getMode()}`);
     console.info(`mqttGateway: transport mode=${this.mqttTransportMode}`);
     if (this.mqttTransportMode === "ts") {
@@ -264,9 +276,131 @@ export class mqttGateway implements deviceTransport {
       const plainPayloadText = JSON.stringify(nextPayload);
       const encodedPayloadText = await this.payloadSecurityService.encodeOutgoingPayload(destinationName, plainPayloadText);
       await this.publish(nextTopic, encodedPayloadText);
+      this.persistCommandHistory(nextPayload.id, commandKind, subCommand, destinationName, nextPayload.ts, args);
     });
 
     await Promise.all(publishTasks);
+  }
+
+  /**
+   * @description コマンド履歴 `detail` に格納する JSON（要求方向・correlation・マスク済み args）を組み立てる。
+   * @param commandKind MQTT `op`。
+   * @param subCommand MQTT `sub`。
+   * @param requestId メッセージ id（`correlationId`）。
+   * @param targetName 宛先デバイス名。
+   * @param args 元 args（マスク適用）。
+   * @returns JSON 文字列。
+   */
+  private buildCommandHistoryDetailJsonForStore(
+    commandKind: mqttCommandKind,
+    subCommand: string,
+    requestId: string,
+    targetName: string,
+    args: Record<string, unknown>
+  ): string {
+    const argsRedacted = JSON.parse(buildRedactedCommandDetailJson(args)) as Record<string, unknown>;
+    return JSON.stringify({
+      direction: "server_to_device",
+      messageKind: "mqtt_command_request",
+      correlationId: requestId,
+      fromId: this.sourceId,
+      toId: targetName,
+      op: commandKind,
+      sub: subCommand,
+      args: argsRedacted
+    });
+  }
+
+  /**
+   * @description コマンド publish 成功を SQLite に記録する（失敗時はログのみ）。
+   * @param requestId メッセージ id。
+   * @param commandKind op。
+   * @param subCommand sub。
+   * @param targetName 宛先デバイス名。
+   * @param recordedAt ISO8601。
+   * @param args payload args（サニタイズして detail へ）。
+   * @returns なし。
+   */
+  private persistCommandHistory(
+    requestId: string,
+    commandKind: mqttCommandKind,
+    subCommand: string,
+    targetName: string,
+    recordedAt: string,
+    args: Record<string, unknown>
+  ): void {
+    if (this.historyStore === undefined) {
+      return;
+    }
+    try {
+      const recordedAtJst = formatRecordedAtJstFromIsoUtc(recordedAt);
+      this.historyStore.recordCommand({
+        requestId,
+        commandName: commandKind,
+        subCommand,
+        targetName,
+        fromId: this.sourceId,
+        toId: targetName,
+        result: "published",
+        detail: this.buildCommandHistoryDetailJsonForStore(commandKind, subCommand, requestId, targetName, args),
+        recordedAt,
+        recordedAtJst: recordedAtJst.length > 0 ? recordedAtJst : ""
+      });
+    } catch (historyError) {
+      const errorText = historyError instanceof Error ? historyError.message : String(historyError);
+      console.error(
+        `mqttGateway: persistCommandHistory failed. fn=persistCommandHistory requestId=${requestId} commandKind=${commandKind} subCommand=${subCommand} targetName=${targetName} recordedAt=${recordedAt} error=${errorText}`
+      );
+    }
+  }
+
+  /**
+   * @description デバイス status 履歴の `detail` に格納する JSON（device→server、correlation、payload）を組み立てる。
+   * @param status 正規化 status。
+   * @param innerDetailText マスク適用後の元 `detail` 文字列（空可）。
+   * @returns JSON 文字列。
+   */
+  private buildDeviceStatusDetailJsonForStore(status: statusMessage, innerDetailText: string): string {
+    let payload: unknown = null;
+    if (innerDetailText.length > 0) {
+      try {
+        payload = JSON.parse(innerDetailText) as unknown;
+      } catch {
+        payload = innerDetailText;
+      }
+    }
+    const toId = status.dstId.trim().length > 0 ? status.dstId.trim() : this.sourceId;
+    return JSON.stringify({
+      direction: "device_to_server",
+      messageKind: "mqtt_status_notice",
+      correlationId: status.messageId,
+      fromId: status.srcId,
+      toId,
+      statusSub: status.statusSub,
+      firmwareVersion: status.firmwareVersion,
+      payload
+    });
+  }
+
+  /**
+   * @description status 受信を SQLite に記録する（失敗時はログのみ）。
+   * @param status 正規化 status。
+   * @returns なし。
+   */
+  private persistStatusHistory(status: statusMessage): void {
+    if (this.historyStore === undefined) {
+      return;
+    }
+    try {
+      const innerDetail = status.detail.length > 0 ? buildRedactedStatusDetailText(status.detail) : "";
+      const detailForStore = this.buildDeviceStatusDetailJsonForStore(status, innerDetail);
+      this.historyStore.recordDeviceStatus({ ...status, detail: detailForStore }, this.sourceId);
+    } catch (historyError) {
+      const errorText = historyError instanceof Error ? historyError.message : String(historyError);
+      console.error(
+        `mqttGateway: persistStatusHistory failed. fn=persistStatusHistory srcId=${status.srcId} receivedAt=${status.receivedAt} error=${errorText}`
+      );
+    }
   }
 
   /**
@@ -479,6 +613,7 @@ export class mqttGateway implements deviceTransport {
           } else {
             this.registry.updateByStatus(eventItem.status);
           }
+          this.persistStatusHistory(eventItem.status);
           this.emitter.emit("statusUpdated", eventItem.status);
           continue;
         }
@@ -544,6 +679,7 @@ export class mqttGateway implements deviceTransport {
     }
     const parsedStatus = this.parseStatusMessage(topic, effectivePayloadText);
     this.registry.updateByStatus(parsedStatus);
+    this.persistStatusHistory(parsedStatus);
     this.emitter.emit("statusUpdated", parsedStatus);
   }
 

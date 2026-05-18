@@ -33,7 +33,13 @@
     "test:7083": "node scripts/test7083OtaDurability.mjs",
     "test:7084": "node scripts/test7084OneHourLoad.mjs",
     "test:7033": "node scripts/test7033AdminLoginLockout.mjs",
-    "test:8001": "node scripts/test8001MqttAuthFailure.mjs"
+    "test:8001": "node scripts/test8001MqttAuthFailure.mjs",
+    "test:7102": "node scripts/test7102to7106LocalHistoryVerification.mjs",
+    "test:7106": "node scripts/test7106ScheduledHistoryExport.mjs",
+    "test:7102:live": "node scripts/test7102LiveMqttHistory.mjs --spawnLocalServer",
+    "test:7106:disable": "node scripts/test7106ScheduledExportDisable.mjs",
+    "secret-core:build": "cd ..\\SecretCore && cargo build",
+    "verify:bootstrap": "node scripts/verifyLocalServerBootstrap.mjs"
   },
   "keywords": [
     "iot",
@@ -46,6 +52,7 @@
   "license": "UNLICENSED",
   "type": "commonjs",
   "dependencies": {
+    "better-sqlite3": "^12.10.0",
     "dotenv": "^16.6.1",
     "express": "^4.21.2",
     "mqtt": "^5.14.1",
@@ -53,6 +60,7 @@
     "ws": "^8.18.3"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/express": "^4.17.23",
     "@types/multer": "^2.1.0",
     "@types/node": "^22.13.14",

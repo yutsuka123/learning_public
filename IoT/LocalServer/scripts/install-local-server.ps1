@@ -9,10 +9,15 @@ LocalServer をインストールする。
 
 .PARAMETER InstallTaskScheduler
 Task Scheduler へ自動起動タスクを登録する。未指定時は登録しない。
+
+.PARAMETER TaskSchedulerTriggerMode
+[2026-05-17] Task Scheduler のトリガー。`AtLogOn`（既定・推奨）または `AtStartup`。`install-task-scheduler.ps1 -TriggerMode` に渡す。
 #>
 
 param(
-    [switch]$InstallTaskScheduler
+    [switch]$InstallTaskScheduler,
+    [ValidateSet("AtLogOn", "AtStartup")]
+    [string]$TaskSchedulerTriggerMode = "AtLogOn"
 )
 
 Set-StrictMode -Version Latest
@@ -55,9 +60,9 @@ if (-not (Test-Path $certsPath)) {
 }
 
 if ($InstallTaskScheduler) {
-    Write-Host "[install-local-server] Registering Task Scheduler..."
+    Write-Host "[install-local-server] Registering Task Scheduler (TriggerMode=$TaskSchedulerTriggerMode)..."
     $taskScript = Join-Path $scriptDir "install-task-scheduler.ps1"
-    & $taskScript
+    & $taskScript -TriggerMode $TaskSchedulerTriggerMode
 }
 
 Write-Host "[install-local-server] Install completed. Run: cd $projectDir; npm run start"

@@ -1,6 +1,6 @@
 <!--
   @file admin.html
-  @description LocalServer管理者画面（認証、k-user発行、k-device発行、secure-ping試験）を提供する。
+  @description LocalServer管理者画面（認証、k-user発行、k-device発行、secure-ping試験、ローカル履歴DB削除）を提供する。
   @important [重要] 本画面は管理者トークンを使って `/api/admin/*` を操作する。
   @strict [厳守] 認証トークンは `sessionStorage` のみに保持し、画面閉鎖時に再ログインを要求する。
   @forbidden [禁止] パスワードや生鍵を画面へ表示しない。
@@ -462,6 +462,23 @@
       <button id="securePingButton">secure-ping実行</button>
     </div>
 
+    <div class="card hidden" id="localHistoryStorageCard">
+      <h2>ローカル履歴（SQLite）ファイル削除</h2>
+      <div class="muted">
+        [厳守] ローカルMQTT/指令履歴の SQLite 本体・WAL・SHM を削除し、空のスキーマで再接続します。証跡は失われます。必要に応じ手動エクスポート等でバックアップを取得してから実行してください。
+      </div>
+      <div class="fieldRow" style="margin-top: 10px">
+        <label for="localHistoryDeleteConfirmInput">確認トークン</label>
+        <input
+          id="localHistoryDeleteConfirmInput"
+          type="text"
+          autocomplete="off"
+          placeholder="DELETE_LOCAL_HISTORY_DB をそのまま入力"
+        />
+      </div>
+      <button id="localHistoryDeleteDbButton" type="button">履歴DBを削除して再作成</button>
+    </div>
+
     <div class="card hidden" id="deviceListCard">
       <h2>管理対象デバイス一覧</h2>
       <button id="loadDevicesButton">一覧取得</button>
@@ -472,6 +489,8 @@
 
     <script>
       const adminTokenStorageKey = "localserverAdminToken";
+      /** @description `POST /api/admin/local-history/delete-database` が要求する固定確認文字列（サーバと一致させる）。 */
+      const localHistoryDeleteDatabaseConfirmToken = "DELETE_LOCAL_HISTORY_DB";
       const defaultTestDeviceName = "IoT_TEST_DEVICE";
       let lastLoadedApSettingsSsid = "";
 
@@ -745,6 +764,7 @@
           "wifiUsbCard",
           "apWorkflowCard",
           "securePingCard",
+          "localHistoryStorageCard",
           "deviceListCard"
         ];
         secureCardIdList.forEach((cardId) => {
@@ -816,6 +836,35 @@
           throw new Error(jsonObject.detail || `${path} failed. status=${response.status}`);
         }
         return jsonObject;
+      }
+
+      /**
+       * @description 管理者APIでローカル履歴SQLiteファイルを削除し、空のDBへ再接続する。
+       * @remarks 確認トークン不一致時はクライアント側で拒否し、サーバへ不要な要求を送らない。
+       */
+      async function deleteLocalHistoryDatabase() {
+        const confirmInput = document.getElementById("localHistoryDeleteConfirmInput");
+        if (!(confirmInput instanceof HTMLInputElement)) {
+          throw new Error("deleteLocalHistoryDatabase failed: localHistoryDeleteConfirmInput を取得できません。");
+        }
+        const confirmValue = confirmInput.value.trim();
+        if (confirmValue !== localHistoryDeleteDatabaseConfirmToken) {
+          throw new Error(
+            `deleteLocalHistoryDatabase failed: 確認トークンが一致しません。input=${confirmValue || "(空)"} expected=${localHistoryDeleteDatabaseConfirmToken}`
+          );
+        }
+        const shouldContinue = window.confirm(
+          "ローカル履歴SQLiteを削除し空のDBへ再接続します。証跡は失われます。続行しますか？"
+        );
+        if (!shouldContinue) {
+          appendLog("ローカル履歴DB削除をキャンセルしました。", "info");
+          return;
+        }
+        await callAdminApi("/api/admin/local-history/delete-database", "POST", {
+          confirm: localHistoryDeleteDatabaseConfirmToken
+        });
+        confirmInput.value = "";
+        appendLog("ローカル履歴SQLiteを削除し再接続しました。", "ok");
       }
 
       /**
@@ -1468,6 +1517,9 @@
         });
         document.getElementById("loadDevicesButton").addEventListener("click", () => {
           loadDevices().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("localHistoryDeleteDbButton").addEventListener("click", () => {
+          deleteLocalHistoryDatabase().catch((error) => appendLog(error.message, "ng"));
         });
         document.getElementById("reloadWifiUsbButton").addEventListener("click", () => {
           loadWifiUsbInterfaces().catch((error) => appendLog(error.message, "ng"));

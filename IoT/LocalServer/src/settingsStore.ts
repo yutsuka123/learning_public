@@ -4,13 +4,14 @@
  * @remarks
  * - [重要] 設定は `data/settings.json` へ保存し、再起動後も維持する。
  * - [厳守] 設定更新時は入力を検証し、不正値で既存設定を破壊しない。
- * - [将来対応] 設定項目増加に備えて、部分更新(merge)を基本とする。
+ * - [重要][2026-05-17] `localHistoryRetentionDays`（`0` または `1`〜`99999`）を永続化し、既定は `30`。理由: 運用で保持方針を再起動後も維持するため。
  */
 
 import fs from "fs";
 import path from "path";
 import { appConfig } from "./config";
 import { localServerSettings, firmwareSourceType } from "./types";
+import { validateLocalHistoryRetentionDays } from "./localHistoryRetention";
 
 /**
  * @description 永続設定ストア。
@@ -93,7 +94,8 @@ export class SettingsStore {
       firmwareLocalPath: config.otaFirmwarePath,
       firmwareUploadedFileName: "",
       otaFirmwareVersion: config.otaFirmwareVersion,
-      wifiUsbInterfaceName: config.wifiUsbInterfaceName
+      wifiUsbInterfaceName: config.wifiUsbInterfaceName,
+      localHistoryRetentionDays: 30
     };
 
     const settingsDirectoryPath = path.dirname(this.settingsFilePath);
@@ -143,6 +145,8 @@ export class SettingsStore {
     if (settings.firmwareSource === "uploadedFile" && settings.firmwareUploadedFileName.length <= 0) {
       throw new Error(`${functionName} failed. firmwareUploadedFileName is empty for uploadedFile mode.`);
     }
+
+    validateLocalHistoryRetentionDays(settings.localHistoryRetentionDays);
   }
 
   /**
