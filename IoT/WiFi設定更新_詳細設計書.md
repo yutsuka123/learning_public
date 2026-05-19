@@ -80,9 +80,12 @@
 
 ## 9. 現地復旧（APモード / メンテナンスモード）
 ### 9.1 APモード復旧（モード②）
-- **トリガー**:
-  - ボタン長押し
-  - Wi-Fi接続失敗回数しきい値超過
+- **トリガー**（現状）:
+  - 起動時ボタン3秒長押し（実装: `IoT/ESP32/src/main.cpp:539 detectStartupMaintenanceLongPress`）
+  - MQTT `call/maintenance` 指令による次回起動 AP モード要求（実装: `IoT/ESP32/src/maintenanceMode.cpp:39 requestMaintenanceModeOnNextBoot`）
+  - 救済専用ビルド `APP_SECURE_RESCUE_MODE=1`（実装: `IoT/ESP32/platformio.ini:146` 周辺）
+- **トリガー**（将来対応）:
+  - **Wi-Fi 接続失敗回数しきい値超過による自動 AP モード遷移**（フェイルセーフ）は **`todo.md` `020-0006`** で将来実装する。理由: 客先環境で Wi-Fi 誤設定からの自動復旧に有用だが、現状の運用（試験段階）では緊急性が低く、加えてしきい値・カウント保持・誤検出回避（一時的な切断と恒久的な誤設定の判別）の設計検討が別途必要なため。
 - **AP設定**:
   - SSID: `AP-esp32lab-<MAC(no colon)>` (例: `AP-esp32lab-A1B2C3D4E5F6`)
   - Pass: `IoT/LocalServer/.env` の `AP_WIFI_PASSWORD`
@@ -171,6 +174,7 @@
 - [将来対応] クラウド移行時もユーザー単位鍵階層を維持する。
 
 ## 15. 変更履歴
+- 2026-05-19（続²）: §9.1 AP モード復旧のトリガーを現状（起動時長押し / `call/maintenance` / 救済専用ビルド）と将来対応（Wi-Fi 接続失敗超過による自動 AP 遷移 → `todo.md` `020-0006`）に分離して明文化。理由: `009-0021` 精査で実装済みコア部分とフェイルセーフ未実装部分の境界を明確化し、フェイルセーフを将来対応へ正しく移管するため。
 - 2026-05-19（続）: §5 device_id / public_id 設計の MQTT トピック例（`device/<public_id>/wifi/update`）と `public_id = SHA256(base_mac)` 案を不採用へ更新。正本は `MQTTコマンド仕様書.md` §2.1 の `esp32lab/<kind>/<sub>/<name>` 構成（実装は `mqtt.cpp:3298 esp32lab/network/+/<deviceNodeName>` で subscribe 中）。`public_id` 初期値は `IoT_<base MAC からコロン除去>` で確定。理由: `todo.md` `009-0014` 整合確認で、wifi だけ別 topic 体系を作る必然性が薄く、実装と `MQTTコマンド仕様書.md` の `esp32lab/...` 統一の正本性を維持するため。
 - 2026-05-19: **TPM 前提を撤回**し、`wrapped_secret` ラップ方式を **OS 暗号化サービス（現行: Windows DPAPI、ソフトウェア暗号化・チップ非依存）** へ正本更新。§4.2 鍵設計、§12 全体要約を整合。Mac/Linux 汎用化は **`020-0004`** で扱う。理由: 実装は最初から DPAPI 固定だが本書のみ TPM 前提のまま残置していたため、設計仕様書群と同期して正本を実装側へ揃える。
 - 2026-03-11: APモード中のタスク停止方針（MQTT停止・通常専用タスク非起動）、起動トリガー3系統、表示/ロール仕様の参照先（`APメンテナンス画面仕様書.md`）を追加。理由: APモード実装時の起動条件と運用境界を固定するため。
