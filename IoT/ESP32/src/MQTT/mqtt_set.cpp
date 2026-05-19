@@ -1,6 +1,26 @@
 /**
  * @file mqtt_set.cpp
- * @brief MQTT setメッセージ送信処理。
+ * @brief MQTT `set` kind メッセージの送信処理（ESP32 → LocalServer 応答）。
+ *
+ * @details
+ * # 目的
+ * - LocalServer から受信した `set/<sub>/<receiverName>`（リレー切替・LED 制御・GPIO 制御・
+ *   keyDeviceSet / fileLogSet 等）の **実行結果通知** を ESP32 → LocalServer 方向で送信する。
+ *
+ * # 高リスク command（HMAC 署名検証）
+ * - `set/keyDeviceSet`：k-device の置き換え
+ * - `set/fileLogSet`：ファイルログ設定変更
+ * - これらは ESP32 側受信時に k-device で HMAC-SHA256 検証を行い、不一致なら拒否する。
+ * - 詳細は `MQTTコマンド仕様書.md` §3.1.1 セキュリティ拡張ヘッダ
+ *
+ * # 通常 command
+ * - `set/relay` / `set/led_ON` / `set/led_OFF` / `set/led_Blink` / `set/gpio_H` / `set/gpio_L`
+ * - notice 応答は同 sub 名で送り返す（要求と応答の対応関係）。
+ *
+ * # 関連
+ * - 入口集約：`mqtt_parser.cpp`
+ * - 設計：`セキュア全般ノウハウ_設計から実装まで.md` §11（HMAC 署名）／`設計書実装マッピング表.md` §2.2
+ * - 試験：`7052`（重要設定変更 HMAC、OK 2026-05-10）
  */
 
 #include "mqttMessages.h"

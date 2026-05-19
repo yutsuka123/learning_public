@@ -1,6 +1,23 @@
 /**
  * @file mqtt_network.cpp
- * @brief MQTT networkメッセージ送信処理。
+ * @brief MQTT `network` kind メッセージの送信処理（ESP32 → LocalServer）。
+ *
+ * @details
+ * # 目的
+ * - ESP32 → LocalServer 方向の **network 通知**（Wi-Fi/MQTT/HTTPS/NTP の接続状態や設定変更結果）を
+ *   `esp32lab/network/<sub>/<destination>` トピックで送信する。
+ * - 受信側は LocalServer（SecretCore 経由で復号・正規化）。
+ *
+ * # トピック構造
+ * - 出力例：`esp32lab/network/Notice/all`、`esp32lab/network/Reply/<receiverName>`
+ * - 詳細は `MQTTコマンド仕様書.md` §2.1 / §3.3
+ *
+ * # 関連
+ * - 入口集約：`mqtt_parser.cpp`（kind=`network` の受信側パース）
+ * - 設計：`セキュア全般ノウハウ_設計から実装まで.md` §9（MQTT 認証）／`設計書実装マッピング表.md` §4
+ *
+ * # 注意
+ * - 高リスク command（OTA 開始・重要設定変更）は本ファイルではなく、HMAC 署名付きで送信する。
  */
 
 #include "mqttMessages.h"
