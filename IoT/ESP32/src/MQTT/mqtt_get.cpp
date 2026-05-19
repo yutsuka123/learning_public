@@ -1,6 +1,24 @@
 /**
  * @file mqtt_get.cpp
- * @brief MQTT getメッセージ送信処理。
+ * @brief MQTT `get` kind メッセージの応答処理（ESP32 → LocalServer notice 応答）。
+ *
+ * @details
+ * # 目的
+ * - LocalServer からの `get/<sub>/<receiverName>`（状態取得要求）に対する **notice 応答** を
+ *   ESP32 → LocalServer 方向で送信する。
+ *
+ * # 主な対象
+ * - `get/trh`：温湿度気圧（BME280）取得 → `notice/trh` で応答
+ * - `get/relay`：リレー状態取得 → `notice/relay`
+ * - `get/led`：LED 状態取得 → `notice/led`
+ * - `get/button`：ボタン状態取得 → `notice/button`
+ * - `get/gpio`：GPIO 入出力状態取得 → `notice/gpio`
+ * - `get/log`：ログ取得（LittleFS `/logs/`）→ `notice/log`
+ *
+ * # 関連
+ * - 入口集約：`mqtt_parser.cpp`
+ * - 詳細仕様：`MQTTコマンド仕様書.md` §3.2.1
+ * - 物理 I/O 実装：`externalDevice.cpp`、`i2c.cpp`（BME280）、`led.cpp`、`input.cpp`
  */
 
 #include "mqttMessages.h"

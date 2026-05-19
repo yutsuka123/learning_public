@@ -451,8 +451,40 @@ impl KeyManager {
         self.import_k_user_backup_json(backup_password, &json_text)
     }
 
-    /// k-device を返す。k-user → HMAC-SHA256(targetDeviceName) で導出。
-    /// [重要] TS版互換のため HMAC-SHA256 直接導出を使用する。
+    /// デバイス毎の通信鍵 `k-device` を導出して返す。
+    ///
+    /// # 導出式
+    /// ```text
+    /// k-device = HMAC-SHA256(key=k-user, message=target_device_name)
+    /// ```
+    ///
+    /// - `target_device_name` には `publicId`（初期値 `IoT_<base MAC からコロン除去>`、例 `IoT_04CEF94EB580`）を渡す。
+    /// - 出力は 32 byte（HMAC-SHA256 のダイジェスト長そのもの）。
+    ///
+    /// # 設計判断（HKDF ではなく HMAC 直接導出を採用する理由）
+    /// - 安全性差：HKDF も内部で HMAC を 2 段（extract / expand）使うため、出力 32 byte の
+    ///   場合の事実上の安全性差はない。
+    /// - 実装統一：command 署名（`sign_by_k_device`）、OTA 開始署名（`ota_workflow.rs:344`）、
+    ///   ESP32 側 `mbedtls_md_*`（`MQTT/mqtt.cpp`、`secureNvsInit.cpp`）も HMAC-SHA256 で
+    ///   統一されており、`k-device` 導出だけ HKDF にすると実装が分岐するだけで利点がない。
+    /// - 互換性：旧 TS 実装で HMAC 直接導出を使っており、後方互換性を維持。
+    /// - 詳細：`鍵管理および初期セットアップ設計仕様書.md` §6.2 / §16 変更履歴（2026-05-19）。
+    ///
+    /// # 引数
+    /// - `target_device_name`：`publicId`（公開識別子）
+    ///
+    /// # 戻り値
+    /// - 32 byte の `k-device`（AES-256-GCM 鍵 + HMAC 鍵として使用）
+    ///
+    /// # 注意
+    /// - 返却された値はメモリ上のみで使用し、ディスク保存しない。
+    /// - ESP32 側 NVS には別経路で current/previous の 2 スロットで保持される
+    ///   （`sensitiveData.cpp`、`鍵管理および初期セットアップ設計仕様書.md` §10.3）。
+    /// - IPC 経由で raw 値を返却しない（`LocalServer秘密処理別層仕様書.md` §7.2 禁止 API）。
+    ///
+    /// # 関連
+    /// - 統合ガイド：`セキュア全般ノウハウ_設計から実装まで.md` §12
+    /// - マッピング表：`設計書実装マッピング表.md` §1.5
     pub fn get_k_device(&self, target_device_name: &str) -> [u8; 32] {
         let k_user = self.get_k_user();
         type HmacSha256 = Hmac<Sha256>;
@@ -466,8 +498,32 @@ impl KeyManager {
 
     /// k-device で HMAC-SHA256 署名を生成する。
     ///
-    /// [重要] 高リスク command は `signature` 追加前の JSON 文字列へ本署名を付与する。
-    /// [厳守] ESP32 側の `signature` 除去後 JSON 再構築方式と一致する文字列を入力する。
+    /// # 用途
+    /// - 高リスク command（`otaStart` / `set/keyDeviceSet` / `set/fileLogSet` 等）の
+    ///   **真正性保護**。ESP32 側で k-device による HMAC 検証を行い、改ざんを検知する。
+    /// - LocalServer または偽 LocalServer から送られたコマンドを区別できる。
+    ///
+    /// # 署名対象（厳守）
+    /// - `signature` フィールドを **除いた** JSON 文字列（payload 全体）。
+    /// - ESP32 側受信時に同じ手順で `signature` を除去して再構築・検証する。
+    /// - 詳細：`LocalServer秘密処理別層仕様書.md` §7.5 / `MQTTコマンド仕様書.md` §3.1.1
+    ///
+    /// # 引数
+    /// - `target_device_name`：`publicId`（k-device 導出のキー）
+    /// - `message_text`：署名対象 JSON 文字列（`signature` 追加前）
+    ///
+    /// # 戻り値
+    /// - 成功時：Base64 エンコード済み HMAC-SHA256 値（44 文字、32 byte の Base64）
+    /// - 失敗時：`Err`
+    ///   - "sign_by_k_device failed. target_device_name is empty."
+    ///   - "sign_by_k_device failed. message_text is empty."
+    ///   - "sign_by_k_device failed. init error=..."
+    ///
+    /// # 関連
+    /// - 統合ガイド：`セキュア全般ノウハウ_設計から実装まで.md` §11
+    /// - マッピング表：`設計書実装マッピング表.md` §2.2
+    /// - 試験：`7042`（OTA 開始 HMAC、OK 2026-05-07）／`7052`（重要設定変更、OK 2026-05-10）
+    /// - ESP32 側対向：`MQTT/mqtt_set.cpp`（受信側 HMAC 検証）／`MQTT/mqtt.cpp`（OTA）
     pub fn sign_by_k_device(&self, target_device_name: &str, message_text: &str) -> Result<String, String> {
         if target_device_name.trim().is_empty() {
             return Err("sign_by_k_device failed. target_device_name is empty.".to_string());
@@ -486,6 +542,37 @@ impl KeyManager {
     }
 
     /// k-device で平文を AES-256-GCM 暗号化する。
+    ///
+    /// # 用途
+    /// - LocalServer から ESP32 へ送る MQTT payload や AP pairing bundle を **二重暗号化**
+    ///   する（TLS 経路保護に加えて、Mosquitto 管理者にも読まれないアプリ層暗号化）。
+    /// - AEAD（Authenticated Encryption with Associated Data）として動作し、改ざん検知用 tag を出力する。
+    ///
+    /// # 引数
+    /// - `target_device_name`：`publicId`（k-device 導出のキー）
+    /// - `plain_text`：暗号化対象の UTF-8 文字列（JSON payload 等）
+    ///
+    /// # 戻り値
+    /// - 成功時：タプル `(iv_b64, cipher_b64, tag_b64)`
+    ///   - `iv_b64`：12 byte nonce の Base64（**毎回ランダム生成、再利用厳禁**）
+    ///   - `cipher_b64`：暗号文の Base64
+    ///   - `tag_b64`：16 byte GCM tag の Base64
+    /// - 失敗時：`Err("Encryption error: ...")`
+    ///
+    /// # 注意：nonce 再利用の禁止
+    /// - 同じ鍵で同じ nonce を 2 回使うと、過去メッセージとの XOR で平文が推測される
+    ///   可能性がある（GCM の致命的脆弱性）。
+    /// - 本関数は毎回 CSPRNG で 12 byte nonce を生成するため、呼び出し側で nonce を
+    ///   再利用しなければ安全。
+    ///
+    /// # ESP32 側対向実装
+    /// - `maintenanceApServer.cpp:881-927`（AP bundle 復号、AAD あり）
+    /// - `MQTT/mqtt.cpp:604-639`（MQTT payload 復号、旧版、AAD なし）
+    /// - `MQTT/mqttPayloadSecurity.cpp:92-131`（MQTT payload security 層、新版、AAD あり）
+    ///
+    /// # 関連
+    /// - 統合ガイド：`セキュア全般ノウハウ_設計から実装まで.md` §10
+    /// - マッピング表：`設計書実装マッピング表.md` §2.1
     pub fn encrypt_by_k_device(&self, target_device_name: &str, plain_text: &str) -> Result<(String, String, String), String> {
         let key = self.get_k_device(target_device_name);
         let cipher = Aes256Gcm::new(key.as_ref().into());
@@ -504,6 +591,33 @@ impl KeyManager {
     }
 
     /// k-device で AES-256-GCM 復号する。
+    ///
+    /// # 用途
+    /// - LocalServer 側で ESP32 からの受信 MQTT payload（暗号化済み）を復号する。
+    /// - GCM tag 検証が同時に行われるため、改ざんを検知できる（AEAD = Authenticated Encryption）。
+    ///
+    /// # 引数
+    /// - `target_device_name`：`publicId`（例：`"IoT_04CEF94EB580"`）
+    /// - `iv_b64`：12 byte nonce の Base64（必須 12 byte）
+    /// - `cipher_b64`：暗号文の Base64
+    /// - `tag_b64`：16 byte GCM tag の Base64
+    ///
+    /// # 戻り値
+    /// - 成功時：復号された UTF-8 文字列（JSON payload 等）
+    /// - 失敗時：`Err`
+    ///   - "Invalid IV length"（nonce 長不正）
+    ///   - "Decryption error: ..."（tag 検証失敗＝改ざんあり、または鍵不一致）
+    ///   - Base64 デコード失敗・UTF-8 デコード失敗
+    ///
+    /// # 注意
+    /// - tag 検証で失敗した場合、その内容は **改ざんされた可能性が高い**ため、応答も無視するか
+    ///   セキュリティ警告として扱う。
+    /// - `target_device_name` は完全一致が必須（publicId の大文字小文字も区別）。
+    ///
+    /// # 関連
+    /// - 設計：`セキュア全般ノウハウ_設計から実装まで.md` §10
+    /// - マッピング：`設計書実装マッピング表.md` §2.1
+    /// - ESP32 側対向実装：`maintenanceApServer.cpp:881-927`、`MQTT/mqttPayloadSecurity.cpp:92-131`
     pub fn decrypt_by_k_device(&self, target_device_name: &str, iv_b64: &str, cipher_b64: &str, tag_b64: &str) -> Result<String, String> {
         let key = self.get_k_device(target_device_name);
         let cipher = Aes256Gcm::new(key.as_ref().into());
