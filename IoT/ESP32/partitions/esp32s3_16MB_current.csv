@@ -1,8 +1,5 @@
-# ESP32-S3 16MB current partition table
-# [重要] 2026-05-10 に実機 readback で確認した現行正規表。
-# [厳守] app0=0x30000 / app1=0x430000 / otadata=0x22000 を前提にする。
-# [理由] 2面OTAの各 app 領域を 4MB に拡張し、100KB NVS、6MB filesystem、128KB coredump を確保するため。
-# [禁止] 旧表 `esp32s3_from_device_16MB_old.csv` と混同して使用しない。
+# ESP32-S3 16MB current partition table (confirmed 2026-05-10 readback)
+# app0=0x30000 / app1=0x430000 / otadata=0x22000 (dual OTA 4MB each, NVS 100KB, FS 6MB, coredump 128KB)
 # Reserved gap 0x24000-0x2FFFF keeps app0 on a 0x10000 boundary.
 # Reserved gap 0xE30000-0xFDFFFF is left for future expansion.
 #

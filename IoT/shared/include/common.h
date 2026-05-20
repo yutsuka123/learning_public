@@ -163,6 +163,10 @@ namespace mqtt {
             constexpr const char* kApply = "apply";
             constexpr const char* kReboot = "reboot";
             constexpr const char* kKeyDevice = "keyDevice";//Base64エンコードされたk-deviceの値
+            /** @brief ブローカー接続モード。"local"=ローカル Mosquitto、"cloud"=AWS IoT Core。 */
+            constexpr const char* kBrokerMode = "brokerMode";
+            /** @brief クラウドモード時の MQTT エンドポイント（AWS IoT Core custom endpoint）。 */
+            constexpr const char* kCloudEndpoint = "cloudEndpoint";
 
         }
 

@@ -2264,6 +2264,8 @@ void handleNetworkSettingsApi() {
   String timeServerUrl;
   String timeServerUrlName;
   String keyDevice;
+  String brokerMode;
+  String cloudEndpoint;
   long mqttPort = 8883;
   long serverPort = 443;
   long otaPort = 443;
@@ -2276,6 +2278,8 @@ void handleNetworkSettingsApi() {
   parseBodyStringValue(requestBody, "wifiPass", &wifiPass);
   parseBodyStringValue(requestBody, "mqttUrl", &mqttUrl);
   parseBodyStringValue(requestBody, "mqttUrlName", &mqttUrlName);
+  parseBodyStringValue(requestBody, "brokerMode", &brokerMode);
+  parseBodyStringValue(requestBody, "cloudEndpoint", &cloudEndpoint);
   parseBodyStringValue(requestBody, "mqttUser", &mqttUser);
   parseBodyStringValue(requestBody, "mqttPass", &mqttPass);
   parseBodyStringValue(requestBody, "mqttTlsCaCertPem", &mqttTlsCaCertPem);
@@ -2307,6 +2311,9 @@ void handleNetworkSettingsApi() {
   }
   if (mqttUrl.length() > 0 || mqttUser.length() > 0 || mqttPass.length() > 0) {
     saveResult = saveResult && sensitiveDataServiceInstance->saveMqttConfig(mqttUrl, mqttUrlName, mqttUser, mqttPass, static_cast<int32_t>(mqttPort), mqttTls);
+  }
+  if (brokerMode.length() > 0) {
+    saveResult = saveResult && sensitiveDataServiceInstance->saveBrokerModeConfig(brokerMode, cloudEndpoint);
   }
   if (mqttTlsCaCertPem.length() > 0 || mqttTlsCertIssueNo.length() > 0 || mqttTlsCertSetAt.length() > 0) {
     saveResult = saveResult && sensitiveDataServiceInstance->saveMqttTlsCertificate(mqttTlsCaCertPem, mqttTlsCertIssueNo, mqttTlsCertSetAt);
@@ -2372,6 +2379,8 @@ void handleNetworkSettingsGetApi() {
   int32_t timeServerPort = 123;
   bool timeServerTls = false;
   String keyDevice;
+  String brokerMode = "local";
+  String cloudEndpoint;
 
   const bool loadResult =
       sensitiveDataServiceInstance->loadWifiCredentials(&wifiSsid, &wifiPass) &&
@@ -2381,6 +2390,8 @@ void handleNetworkSettingsGetApi() {
       sensitiveDataServiceInstance->loadOtaConfig(&otaUrl, &otaUrlName, &otaUser, &otaPass, &otaPort, &otaTls) &&
       sensitiveDataServiceInstance->loadTimeServerConfig(&timeServerUrl, &timeServerUrlName, &timeServerPort, &timeServerTls) &&
       sensitiveDataServiceInstance->loadKeyDevice(&keyDevice);
+  // brokerMode は任意フィールドのため loadResult に含めない（未設定でも正常動作）
+  sensitiveDataServiceInstance->loadBrokerModeConfig(&brokerMode, &cloudEndpoint);
   if (!loadResult) {
     maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"load failed\"}");
     return;
@@ -2417,7 +2428,9 @@ void handleNetworkSettingsGetApi() {
   responseText += "\"timeServerUrlName\":\"" + toJsonSafeText(timeServerUrlName) + "\",";
   responseText += "\"timeServerPort\":" + String(static_cast<long>(timeServerPort)) + ",";
   responseText += "\"timeServerTls\":" + String(timeServerTls ? "true" : "false") + ",";
-  responseText += "\"keyDevice\":\"" + toJsonSafeText(keyDevice) + "\"";
+  responseText += "\"keyDevice\":\"" + toJsonSafeText(keyDevice) + "\",";
+  responseText += "\"brokerMode\":\"" + toJsonSafeText(brokerMode) + "\",";
+  responseText += "\"cloudEndpoint\":\"" + toJsonSafeText(cloudEndpoint) + "\"";
   responseText += "}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }

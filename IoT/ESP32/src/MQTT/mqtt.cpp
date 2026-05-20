@@ -206,6 +206,12 @@ constexpr mqttPayloadSecurity::payloadSecurityMode mqttPayloadSecurityModeValue 
 sensitiveDataService mqttSensitiveDataService;
 bool mqttSensitiveDataInitialized = false;
 String mqttTlsCaCertRuntime;
+/** @brief ブローカーモード（"local" or "cloud"）。connectToMqttBroker 時に NVS から読み込む。 */
+String mqttBrokerMode = "local";
+/** @brief クラウドモード: X.509 デバイス証明書 PEM（LittleFS /certs/aws-device-cert.pem）。 */
+String mqttCloudDeviceCertRuntime;
+/** @brief クラウドモード: X.509 クライアント秘密鍵 PEM（LittleFS /certs/aws-private-key.pem）。 */
+String mqttCloudPrivateKeyRuntime;
 
 /**
  * @brief MQTT経由のk-device保存/読込に必要なsensitiveDataService初期化を保証する。
@@ -220,6 +226,36 @@ bool ensureMqttSensitiveDataReady() {
     appLogError("ensureMqttSensitiveDataReady failed. sensitiveDataService::initialize returned false.");
   }
   return mqttSensitiveDataInitialized;
+}
+
+/**
+ * @brief LittleFS から証明書テキストファイルを読み込む。
+ * @param path LittleFS上のファイルパス。
+ * @param textOut 読込先（null不可）。
+ * @param functionName 呼び出し元関数名（ログ用）。
+ * @return 成功時true。
+ */
+bool loadCloudCertFromLittleFs(const char* path, String* textOut, const char* functionName) {
+  if (!LittleFS.begin(false)) {
+    appLogError("%s failed. LittleFS.begin returned false. path=%s", functionName, path);
+    return false;
+  }
+  if (!LittleFS.exists(path)) {
+    appLogError("%s failed. cert file not found. path=%s", functionName, path);
+    return false;
+  }
+  File f = LittleFS.open(path, "r");
+  if (!f) {
+    appLogError("%s failed. cert file open failed. path=%s", functionName, path);
+    return false;
+  }
+  *textOut = f.readString();
+  f.close();
+  if (textOut->length() == 0) {
+    appLogError("%s failed. cert file is empty. path=%s", functionName, path);
+    return false;
+  }
+  return true;
 }
 
 /**
@@ -841,40 +877,64 @@ bool buildWillFallbackTimeText(uint32_t startupCpuMillis, String* currentTsOut, 
  */
 bool configureMqttTransportClient(bool tlsEnabled) {
   if (tlsEnabled) {
-    // [厳守] 証明書検証を無効化しない。保存済み証明書があればそれを優先し、なければヘッダー定義へフォールバックする。
+    constexpr const char* functionName = "configureMqttTransportClient";
     if (!ensureMqttSensitiveDataReady()) {
-      appLogError("configureMqttTransportClient failed. ensureMqttSensitiveDataReady returned false.");
+      appLogError("%s failed. ensureMqttSensitiveDataReady returned false.", functionName);
       return false;
     }
+
+    if (mqttBrokerMode == "cloud") {
+      // [重要] クラウドモード: LittleFS から Amazon Root CA / デバイス証明書 / 秘密鍵を読み込む。
+      // [厳守] X.509 相互認証。ユーザー名/パスワードは使用しない。
+      if (!loadCloudCertFromLittleFs("/certs/AmazonRootCA1.pem", &mqttTlsCaCertRuntime, functionName)) {
+        return false;
+      }
+      if (!loadCloudCertFromLittleFs("/certs/aws-device-cert.pem", &mqttCloudDeviceCertRuntime, functionName)) {
+        return false;
+      }
+      if (!loadCloudCertFromLittleFs("/certs/aws-private-key.pem", &mqttCloudPrivateKeyRuntime, functionName)) {
+        return false;
+      }
+      mqttTlsNetworkClient.setCACert(mqttTlsCaCertRuntime.c_str());
+      mqttTlsNetworkClient.setCertificate(mqttCloudDeviceCertRuntime.c_str());
+      mqttTlsNetworkClient.setPrivateKey(mqttCloudPrivateKeyRuntime.c_str());
+      mqttTlsNetworkClient.setTlsValidationContext(mqttHost, mqttTlsCaCertRuntime.c_str());
+      mqttClient.setClient(mqttTlsNetworkClient);
+      appLogInfo("%s: cloud X.509 mutual TLS selected. host=%s", functionName, mqttHost);
+      return true;
+    }
+
+    // [ローカルモード] 厳守: 証明書検証を無効化しない。保存済み証明書があればそれを優先し、なければヘッダー定義へフォールバックする。
     String certIssueNo;
     String certSetAt;
     String storedMqttTlsCaCert;
     if (!mqttSensitiveDataService.loadMqttTlsCertificate(&storedMqttTlsCaCert, &certIssueNo, &certSetAt)) {
-      appLogError("configureMqttTransportClient failed. loadMqttTlsCertificate returned false.");
+      appLogError("%s failed. loadMqttTlsCertificate returned false.", functionName);
       return false;
     }
     if (storedMqttTlsCaCert.length() > 0) {
       mqttTlsCaCertRuntime = storedMqttTlsCaCert;
-      appLogInfo("configureMqttTransportClient: use stored MQTT TLS CA cert. issueNo=%s setAt=%s",
+      appLogInfo("%s: use stored MQTT TLS CA cert. issueNo=%s setAt=%s",
+                 functionName,
                  certIssueNo.c_str(),
                  certSetAt.c_str());
     } else {
 #if !defined(SENSITIVE_MQTT_TLS_CA_CERT)
-      appLogError("configureMqttTransportClient failed. SENSITIVE_MQTT_TLS_CA_CERT is not defined.");
+      appLogError("%s failed. SENSITIVE_MQTT_TLS_CA_CERT is not defined.", functionName);
       return false;
 #else
       if (strlen(SENSITIVE_MQTT_TLS_CA_CERT) == 0) {
-        appLogError("configureMqttTransportClient failed. no stored cert and SENSITIVE_MQTT_TLS_CA_CERT is empty.");
+        appLogError("%s failed. no stored cert and SENSITIVE_MQTT_TLS_CA_CERT is empty.", functionName);
         return false;
       }
       mqttTlsCaCertRuntime = String(SENSITIVE_MQTT_TLS_CA_CERT);
-      appLogWarn("configureMqttTransportClient: fallback to header MQTT TLS CA cert.");
+      appLogWarn("%s: fallback to header MQTT TLS CA cert.", functionName);
 #endif
     }
     mqttTlsNetworkClient.setCACert(mqttTlsCaCertRuntime.c_str());
     mqttTlsNetworkClient.setTlsValidationContext(mqttHost, mqttTlsCaCertRuntime.c_str());
     mqttClient.setClient(mqttTlsNetworkClient);
-    appLogInfo("configureMqttTransportClient: TLS transport selected. tlsHost=%s", mqttHost);
+    appLogInfo("%s: local TLS transport selected. host=%s", functionName, mqttHost);
     return true;
   }
   mqttClient.setClient(mqttNetworkClient);
@@ -3122,6 +3182,26 @@ bool connectToMqttBroker() {
   constexpr int32_t maxRetryCount = 10;
   constexpr int32_t retryDelayMs = 200;
 
+  // [重要] ブローカーモードを NVS から読み込む。失敗時はローカルモードへ安全側フォールバック。
+  String cloudEndpoint;
+  if (ensureMqttSensitiveDataReady() &&
+      mqttSensitiveDataService.loadBrokerModeConfig(&mqttBrokerMode, &cloudEndpoint)) {
+    appLogInfo("connectToMqttBroker: brokerMode=%s", mqttBrokerMode.c_str());
+  } else {
+    mqttBrokerMode = "local";
+    appLogWarn("connectToMqttBroker: loadBrokerModeConfig failed. fallback to local mode.");
+  }
+  const bool isCloudMode = (mqttBrokerMode == "cloud");
+
+  // [重要] クラウドモードは mqttHost を AWS IoT Core エンドポイントで上書きし、ポートを 8883 に固定する。
+  // cloudEndpoint が {} スコープ内で破棄されると AWS エンドポイントに到達できないため必須。
+  if (isCloudMode && cloudEndpoint.length() > 0) {
+    strncpy(mqttHost, cloudEndpoint.c_str(), sizeof(mqttHost) - 1);
+    mqttHost[sizeof(mqttHost) - 1] = '\0';
+    mqttPort = 8883;
+    appLogInfo("connectToMqttBroker: cloud host override. endpoint=%s port=8883", mqttHost);
+  }
+
   if (strlen(mqttHost) == 0) {
     appLogError("connectToMqttBroker failed. host is empty.");
     return false;
@@ -3130,8 +3210,9 @@ bool connectToMqttBroker() {
     appLogError("connectToMqttBroker failed. invalid port=%ld", static_cast<long>(mqttPort));
     return false;
   }
-  if (strlen(mqttUser) == 0 || strlen(mqttPass) == 0) {
-    appLogError("connectToMqttBroker failed. mqtt user/password is required. userLength=%ld passLength=%ld",
+  // [重要] クラウドモードは X.509 相互認証のためユーザー名/パスワード不要。ローカルモードは必須。
+  if (!isCloudMode && (strlen(mqttUser) == 0 || strlen(mqttPass) == 0)) {
+    appLogError("connectToMqttBroker failed. mqtt user/password is required in local mode. userLength=%ld passLength=%ld",
                 static_cast<long>(strlen(mqttUser)),
                 static_cast<long>(strlen(mqttPass)));
     return false;
@@ -3198,7 +3279,19 @@ bool connectToMqttBroker() {
                static_cast<unsigned>(mqttPacketBufferSizeBytes),
                internalDelta);
   }
-  String clientId = "esp32lab-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  // [重要] クラウドモードは AWS IoT Core の clientId に publicId（IoT_<MAC>）を使う。
+  //        ローカルモードは従来通り esp32lab-<efuseMacHex>。
+  String clientId;
+  if (isCloudMode) {
+    String compactMac;
+    if (!createCompactMacAddressText(&compactMac)) {
+      appLogError("connectToMqttBroker failed. createCompactMacAddressText failed for cloud clientId.");
+      return false;
+    }
+    clientId = String("IoT_") + compactMac;
+  } else {
+    clientId = "esp32lab-" + String(static_cast<uint32_t>(ESP.getEfuseMac()), HEX);
+  }
   if (deviceNodeName.length() <= 0) {
     bool resolveNameResult = resolveDeviceNodeName(&deviceNodeName);
     if (!resolveNameResult) {
@@ -3273,7 +3366,8 @@ bool connectToMqttBroker() {
   appLogInfo("connectToMqttBroker: will payload prepared. topicLength=%ld payloadLength=%ld",
              static_cast<long>(willTopicText.length()),
              static_cast<long>(willOutgoingPayloadText.length()));
-  appLogInfo("connectToMqttBroker start. host=%s port=%ld user=%s pass=%s clientId=%s",
+  appLogInfo("connectToMqttBroker start. mode=%s host=%s port=%ld user=%s pass=%s clientId=%s",
+             mqttBrokerMode.c_str(),
              mqttHost,
              static_cast<long>(mqttPort),
              (strlen(mqttUser) > 0 ? mqttUser : "(empty)"),
@@ -3283,13 +3377,25 @@ bool connectToMqttBroker() {
   for (int32_t retryIndex = 0; retryIndex < maxRetryCount; ++retryIndex) {
     ledController::indicateMqttConnecting();
     ledController::indicateCommunicationActivity();
-    bool connectResult = mqttClient.connect(clientId.c_str(),
-                                            mqttUser,
-                                            mqttPass,
-                                            willTopicText.c_str(),
-                                            1,
-                                            true,
-                                            willOutgoingPayloadText.c_str());
+    // [重要] クラウドモードは X.509 認証のためユーザー名/パスワードなしで接続する。
+    bool connectResult;
+    if (isCloudMode) {
+      connectResult = mqttClient.connect(clientId.c_str(),
+                                         nullptr,
+                                         nullptr,
+                                         willTopicText.c_str(),
+                                         1,
+                                         true,
+                                         willOutgoingPayloadText.c_str());
+    } else {
+      connectResult = mqttClient.connect(clientId.c_str(),
+                                         mqttUser,
+                                         mqttPass,
+                                         willTopicText.c_str(),
+                                         1,
+                                         true,
+                                         willOutgoingPayloadText.c_str());
+    }
 
     if (connectResult) {
       String subscribeTopicSet = String("esp32lab/set/+/") + deviceNodeName;

@@ -10,6 +10,7 @@
 #include <esp_err.h>
 #include <esp_system.h>
 #include <esp_ota_ops.h>
+#include <esp_wifi.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <time.h>
@@ -504,6 +505,17 @@ bool startMaintenanceApModeAndHold(i2cService* i2cModuleOut) {
     appLogError("startMaintenanceApModeAndHold failed. WiFi.softAP returned false. ssid=%s", maintenanceApSsid.c_str());
     return false;
   }
+  // Force CCMP as the only pairwise cipher so GCMP is not advertised in the beacon RSN IE.
+  // Without this, Wi-Fi 6E clients on Windows 11 (Intel AX211, TP-Link) select AES-GCMP-128
+  // but the IDF 4.4 softAP 4-way handshake cannot complete GCMP key exchange, causing
+  // repeated "PSK mismatch" failures despite the correct passphrase.
+  {
+    wifi_config_t apCfg = {};
+    esp_wifi_get_config(WIFI_IF_AP, &apCfg);
+    apCfg.ap.pairwise_cipher = WIFI_CIPHER_TYPE_CCMP;
+    esp_wifi_set_config(WIFI_IF_AP, &apCfg);
+    appLogWarn("startMaintenanceApModeAndHold: pairwise_cipher forced to CCMP.");
+  }
   const IPAddress apIpAddress = WiFi.softAPIP();
   appLogWarn("startMaintenanceApModeAndHold success. ssid=%s pass=%s apIp=%s",
              maintenanceApSsid.c_str(),
@@ -738,6 +750,31 @@ void mainTaskEntry(void* taskParameter) {
     mqttTls = true;
   }
 
+  // [重要] クラウドモード時は mqttUrl を cloudEndpoint で上書きし、TLS 8883 を強制する。
+  // [厳守] ローカルモード設定は上書きせず、モード切替後も NVS に残す（ロールバック用）。
+  // [重要] cloudModeActive を後段の SENSITIVE_DATA_USE_HEADER_VALUES ブロックへ伝達し、
+  //        クラウドモード有効時に MQTT URL/user/pass がヘッダー値で上書きされないようにする。
+  bool cloudModeActive = false;
+  {
+    String brokerMode;
+    String cloudEndpoint;
+    if (sensitiveDataModule.loadBrokerModeConfig(&brokerMode, &cloudEndpoint)) {
+      if (brokerMode == "cloud" && cloudEndpoint.length() > 0) {
+        mqttUrl = cloudEndpoint;
+        mqttPort = 8883;
+        mqttTls = true;
+        mqttUser = "";
+        mqttPass = "";
+        cloudModeActive = true;
+        appLogInfo("mainTaskEntry: cloud mode active. endpoint=%s", cloudEndpoint.c_str());
+      } else {
+        appLogInfo("mainTaskEntry: local mode. brokerMode=%s", brokerMode.c_str());
+      }
+    } else {
+      appLogWarn("mainTaskEntry: loadBrokerModeConfig failed. using local MQTT config.");
+    }
+  }
+
   bool timeServerLoadResult = sensitiveDataModule.loadTimeServerConfig(
       &timeServerUrl,
       &timeServerPort,
@@ -757,17 +794,21 @@ void mainTaskEntry(void* taskParameter) {
 #if defined(SENSITIVE_DATA_USE_HEADER_VALUES) && (SENSITIVE_DATA_USE_HEADER_VALUES == 1)
   // [重要] 開発初期はヘッダー機密値を優先して即時反映する。
   // [将来対応] 本ブロックはNVS移行完了後に廃止し、NVS読込値を唯一の正とする。
+  // [重要] クラウドモード有効時は MQTT 設定を上書きしない。
+  //        cloudEndpoint/user/pass は NVS のクラウド設定が正本のため。
   wifiSsid = SENSITIVE_WIFI_SSID;
   wifiPass = SENSITIVE_WIFI_PASS;
-  mqttUrl = SENSITIVE_MQTT_URL;
-  mqttUser = SENSITIVE_MQTT_USER;
-  mqttPass = SENSITIVE_MQTT_PASS;
-  mqttPort = static_cast<int32_t>(SENSITIVE_MQTT_PORT);
-  mqttTls = (SENSITIVE_MQTT_TLS != 0);
+  if (!cloudModeActive) {
+    mqttUrl = SENSITIVE_MQTT_URL;
+    mqttUser = SENSITIVE_MQTT_USER;
+    mqttPass = SENSITIVE_MQTT_PASS;
+    mqttPort = static_cast<int32_t>(SENSITIVE_MQTT_PORT);
+    mqttTls = (SENSITIVE_MQTT_TLS != 0);
+  }
   timeServerUrl = SENSITIVE_TIME_SERVER_URL;
   timeServerPort = static_cast<int32_t>(SENSITIVE_TIME_SERVER_PORT);
   timeServerTls = (SENSITIVE_TIME_SERVER_TLS != 0);
-  appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden.");
+  appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden. cloudModeActive=%d", static_cast<int>(cloudModeActive));
 #endif
 
   if (mqttPort == 8883 && !mqttTls) {
@@ -792,7 +833,11 @@ void mainTaskEntry(void* taskParameter) {
              static_cast<int>(timeServerTls));
 
   const bool missingWifiConfig = (wifiSsid.length() == 0);
-  const bool missingMqttConfig = (mqttUrl.length() == 0 || mqttUser.length() == 0 || mqttPass.length() == 0);
+  // [重要][2026-05-20] クラウドモード（X.509 認証）では user/pass は空で正常。URL のみ必須。
+  // ローカルモード（ID/パスワード認証）では URL・user・pass すべて必須。
+  const bool missingMqttConfig = cloudModeActive
+      ? (mqttUrl.length() == 0)
+      : (mqttUrl.length() == 0 || mqttUser.length() == 0 || mqttPass.length() == 0);
   if (missingWifiConfig || missingMqttConfig) {
     appLogWarn("mainTaskEntry: required wifi/mqtt config is missing. enter maintenance AP mode. missingWifi=%d missingMqtt=%d",
                missingWifiConfig ? 1 : 0,

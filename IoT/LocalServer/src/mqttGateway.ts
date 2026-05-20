@@ -85,7 +85,8 @@ export class mqttGateway implements deviceTransport {
     localKeyService: keyService,
     secretCoreFacade?: SecretCoreFacade,
     mqttTransportMode: "ts" | "rust" = "ts",
-    historyStore?: LocalHistoryStore
+    historyStore?: LocalHistoryStore,
+    clientOverride?: MqttClient
   ) {
     this.config = config;
     this.registry = registry;
@@ -98,7 +99,7 @@ export class mqttGateway implements deviceTransport {
     console.info(`mqttGateway: payload encryption mode=${this.payloadSecurityService.getMode()}`);
     console.info(`mqttGateway: transport mode=${this.mqttTransportMode}`);
     if (this.mqttTransportMode === "ts") {
-      this.client = this.createClient();
+      this.client = clientOverride ?? this.createClient();
       this.registerClientHandlers();
     }
   }

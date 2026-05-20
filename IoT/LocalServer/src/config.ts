@@ -69,6 +69,23 @@ export interface appConfig {
    * @description 定期エクスポートのフィルタ JSON（`localHistoryExportRequestBody` と同一形のオブジェクトを JSON 化した文字列）。空なら全件相当（sources 既定）。
    */
   localHistoryScheduledExportFilterJson: string;
+  /**
+   * @description true のとき AWS IoT Core subscriber を有効化する。
+   * @remarks .env の CLOUD_MQTT_ENABLED で制御。試験後は必ず false に戻すこと（課金防止）。
+   */
+  cloudMqttEnabled: boolean;
+  /** @description クラウドプロバイダー識別子。現在は "aws-iot-core" のみ対応。.env の CLOUD_PROVIDER。 */
+  cloudProvider: string;
+  /** @description AWS IoT Core カスタムエンドポイント。.env の AWS_IOT_ENDPOINT。 */
+  cloudIotEndpoint: string;
+  /** @description AWS IoT Core 接続用 clientId。.env の AWS_IOT_CLIENT_ID。 */
+  cloudIotClientId: string;
+  /** @description LocalServer 用 X.509 クライアント証明書の絶対パス。.env の AWS_IOT_CLIENT_CERT_PATH。 */
+  cloudIotClientCertPath: string;
+  /** @description LocalServer 用 X.509 秘密鍵の絶対パス。.env の AWS_IOT_PRIVATE_KEY_PATH。 */
+  cloudIotPrivateKeyPath: string;
+  /** @description Amazon Root CA 証明書の絶対パス。.env の AWS_IOT_CA_CERT_PATH。 */
+  cloudIotCaCertPath: string;
 }
 
 /**
@@ -176,6 +193,19 @@ export function loadConfig(): appConfig {
     }
   }
 
+  const cloudMqttEnabled = getBooleanEnv("CLOUD_MQTT_ENABLED", false);
+  const cloudIotEndpoint = getStringEnv("AWS_IOT_ENDPOINT", "");
+  const cloudIotClientId = getStringEnv("AWS_IOT_CLIENT_ID", "");
+  const cloudIotClientCertPath = cloudMqttEnabled
+    ? toAbsolutePath(getStringEnv("AWS_IOT_CLIENT_CERT_PATH", ""))
+    : getStringEnv("AWS_IOT_CLIENT_CERT_PATH", "");
+  const cloudIotPrivateKeyPath = cloudMqttEnabled
+    ? toAbsolutePath(getStringEnv("AWS_IOT_PRIVATE_KEY_PATH", ""))
+    : getStringEnv("AWS_IOT_PRIVATE_KEY_PATH", "");
+  const cloudIotCaCertPath = cloudMqttEnabled
+    ? toAbsolutePath(getStringEnv("AWS_IOT_CA_CERT_PATH", ""))
+    : getStringEnv("AWS_IOT_CA_CERT_PATH", "");
+
   const nextConfig: appConfig = {
     mqttHostName,
     mqttHostIp,
@@ -218,7 +248,14 @@ export function loadConfig(): appConfig {
     localHistoryExportDir: toAbsolutePath(getStringEnv("LOCAL_HISTORY_EXPORT_DIR", "./data/history-exports")),
     localHistoryScheduledExportEnabled,
     localHistoryScheduledExportIntervalMs,
-    localHistoryScheduledExportFilterJson: getStringEnv("LOCAL_HISTORY_SCHEDULED_EXPORT_FILTER_JSON", "")
+    localHistoryScheduledExportFilterJson: getStringEnv("LOCAL_HISTORY_SCHEDULED_EXPORT_FILTER_JSON", ""),
+    cloudMqttEnabled,
+    cloudProvider: getStringEnv("CLOUD_PROVIDER", "aws-iot-core"),
+    cloudIotEndpoint,
+    cloudIotClientId,
+    cloudIotClientCertPath,
+    cloudIotPrivateKeyPath,
+    cloudIotCaCertPath
   };
 
   if (nextConfig.mqttHostName.length === 0) {
@@ -230,7 +267,8 @@ export function loadConfig(): appConfig {
   if (nextConfig.sourceId.length === 0) {
     throw new Error("loadConfig failed. LOCAL_SERVER_SOURCE_ID is empty.");
   }
-  if (nextConfig.mqttUsername.length === 0 || nextConfig.mqttPassword.length === 0) {
+  // [重要] クラウドモード有効時はローカル MQTT 認証情報を省略可能（AWS IoT Core X.509 認証を使用）。
+  if (!nextConfig.cloudMqttEnabled && (nextConfig.mqttUsername.length === 0 || nextConfig.mqttPassword.length === 0)) {
     throw new Error("loadConfig failed. MQTT_USERNAME or MQTT_PASSWORD is empty.");
   }
   if (nextConfig.kUserAppIdentifier.length === 0) {
@@ -238,6 +276,20 @@ export function loadConfig(): appConfig {
   }
   if (nextConfig.adminUsername.length === 0 || nextConfig.adminPassword.length === 0) {
     throw new Error("loadConfig failed. LOCAL_ADMIN_USERNAME or LOCAL_ADMIN_PASSWORD is empty.");
+  }
+  if (nextConfig.cloudMqttEnabled) {
+    if (nextConfig.cloudIotEndpoint.length === 0) {
+      throw new Error("loadConfig failed. AWS_IOT_ENDPOINT is required when CLOUD_MQTT_ENABLED=true.");
+    }
+    if (nextConfig.cloudIotClientCertPath.length === 0) {
+      throw new Error("loadConfig failed. AWS_IOT_CLIENT_CERT_PATH is required when CLOUD_MQTT_ENABLED=true.");
+    }
+    if (nextConfig.cloudIotPrivateKeyPath.length === 0) {
+      throw new Error("loadConfig failed. AWS_IOT_PRIVATE_KEY_PATH is required when CLOUD_MQTT_ENABLED=true.");
+    }
+    if (nextConfig.cloudIotCaCertPath.length === 0) {
+      throw new Error("loadConfig failed. AWS_IOT_CA_CERT_PATH is required when CLOUD_MQTT_ENABLED=true.");
+    }
   }
 
   return nextConfig;

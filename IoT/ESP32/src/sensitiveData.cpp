@@ -1339,6 +1339,92 @@ bool sensitiveDataService::savePairingKeySlots(const String& nextKeyDeviceBase64
   return writeResult;
 }
 
+bool sensitiveDataService::saveBrokerModeConfig(const String& brokerMode, const String& cloudEndpoint) {
+  constexpr const char* functionName = "sensitiveDataService::saveBrokerModeConfig";
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, mqttRootKey);
+    mqttObject = cJSON_AddObjectToObject(rootObject, mqttRootKey);
+    if (mqttObject == nullptr) {
+      appLogError("%s failed. create mqtt object key=%s", functionName, mqttRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+
+  bool updateResult =
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kBrokerMode, brokerMode, functionName) &&
+      setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kCloudEndpoint, cloudEndpoint, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadBrokerModeConfig(String* brokerModeOut, String* cloudEndpointOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadBrokerModeConfig";
+  if (brokerModeOut == nullptr || cloudEndpointOut == nullptr) {
+    appLogError("%s failed. output parameter is null. brokerModeOut=%p, cloudEndpointOut=%p",
+                functionName, brokerModeOut, cloudEndpointOut);
+    return false;
+  }
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    // mqtt object missing — return defaults without error
+    cJSON_Delete(rootObject);
+    *brokerModeOut = "local";
+    *cloudEndpointOut = "";
+    return true;
+  }
+
+  cJSON* brokerModeItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kBrokerMode);
+  cJSON* cloudEndpointItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kCloudEndpoint);
+
+  *brokerModeOut = cJSON_IsString(brokerModeItem) ? String(brokerModeItem->valuestring) : String("local");
+  *cloudEndpointOut = cJSON_IsString(cloudEndpointItem) ? String(cloudEndpointItem->valuestring) : String("");
+
+  cJSON_Delete(rootObject);
+  return true;
+}
+
 bool sensitiveDataService::ensureDefaultFileExists() {
   constexpr const char* functionName = "sensitiveDataService::ensureDefaultFileExists";
 
@@ -1588,8 +1674,8 @@ bool sensitiveDataService::readLegacyJsonText(String* jsonTextOut, const char* f
     return false;
   }
 
-  if (!LittleFS.remove(sensitiveDataFilePath)) {
-    appLogWarn("%s warning. legacy file remove failed. path=%s", functionName, sensitiveDataFilePath);
-  }
+  // [2026-05-20][020-0017B] LittleFS の回復ファイルを削除しない。
+  // 削除すると次回 NVS 消去時に再回復できなくなるため廃止。ファイルは残存させる。
+  appLogInfo("%s: legacy LittleFS file kept for future recovery. path=%s", functionName, sensitiveDataFilePath);
   return true;
 }

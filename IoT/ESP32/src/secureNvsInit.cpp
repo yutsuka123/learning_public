@@ -20,6 +20,10 @@
  *   secure NVS 初期化関数そのものを先に試す。
  * - [重要][2026-04-04] build 方針により plaintext fallback 可否を切り替える。
  *   開発ビルド: fallback 許可 / 最終セキュアビルド: fallback 禁止。
+ * - [修正][2026-05-20][020-0017A] NO_FREE_PAGES / NEW_VERSION_FOUND 時の nvs_flash_erase() 自動実行を廃止。
+ *   理由: FW 更新のたびに k-device 等の NVS データが消失していた根本原因。
+ *   以降はエラーログのみ出力し、erase は行わない。手動での NVS クリアが必要な場合は
+ *   IDF ツールまたは ProductionTool 経由で明示的に行うこと。
  */
 
 #include "../header/secureNvsInit.h"
@@ -133,23 +137,19 @@ void emitPersistentFailureLog(const char* functionName, const char* reasonText) 
 
 /**
  * @brief nvs_flash_init()（平文初期化）を呼ぶ共通ヘルパー。
- * @details NO_FREE_PAGES / NEW_VERSION_FOUND の場合は erase して再初期化する。
+ * @details [2026-05-20][020-0017A] NO_FREE_PAGES / NEW_VERSION_FOUND でも nvs_flash_erase を呼ばない。
+ *          自動消去は k-device 等の NVS データを消失させるため廃止。失敗時はエラーを返す。
  * @param functionName 呼び出し元関数名（ログ用）。
  * @return 成功時 true。
  */
 static bool fallbackPlaintextNvsInit(const char* functionName) {
   esp_err_t initResult = nvs_flash_init();
-  if (initResult == ESP_ERR_NVS_NO_FREE_PAGES || initResult == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    appLogWarn("%s: plaintext NVS needs erase. erasing and re-initializing. reason=0x%x",
-               functionName, static_cast<unsigned>(initResult));
-    nvs_flash_erase();
-    initResult = nvs_flash_init();
-  }
   if (initResult != ESP_OK) {
-    appLogError("%s: nvs_flash_init (plaintext fallback) failed. error=0x%x (%s)",
-                functionName,
-                static_cast<unsigned>(initResult),
-                esp_err_to_name(initResult));
+    appLogError(
+        "%s: nvs_flash_init (plaintext fallback) failed. error=0x%x (%s). NOT erasing NVS to preserve stored data.",
+        functionName,
+        static_cast<unsigned>(initResult),
+        esp_err_to_name(initResult));
     return false;
   }
   appLogInfo("%s: plaintext NVS initialized successfully (fallback).", functionName);
@@ -276,20 +276,8 @@ bool initializeSecureNvs() {
 
   appLogInfo("%s: security config loaded. stage=secure-init", functionName);
   esp_err_t initResult = nvs_flash_secure_init(&securityConfig);
-  if (initResult == ESP_ERR_NVS_NO_FREE_PAGES || initResult == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-    appLogWarn("%s: secure NVS partition needs erase. erasing and re-initializing. reason=0x%x",
-               functionName, static_cast<unsigned>(initResult));
-    esp_err_t eraseResult = nvs_flash_erase();
-    if (eraseResult != ESP_OK) {
-      appLogWarn("%s: nvs_flash_erase failed (0x%x). fallback to plaintext NVS.",
-                 functionName, static_cast<unsigned>(eraseResult));
-      return finalizePlaintextFallbackDecision(functionName,
-                                              "secure-erase-before-reinit",
-                                              eraseResult,
-                                              "nvs_flash_erase failed during secure re-initialization");
-    }
-    initResult = nvs_flash_secure_init(&securityConfig);
-  }
+  // [2026-05-20][020-0017A] NO_FREE_PAGES / NEW_VERSION_FOUND でも nvs_flash_erase を呼ばない。
+  // 自動消去は k-device 等の NVS データを消失させるため廃止。失敗時は fallback に委ねる。
 
   if (initResult != ESP_OK) {
     appLogWarn("%s: nvs_flash_secure_init failed (0x%x: %s). fallback to plaintext NVS.",

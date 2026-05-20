@@ -201,6 +201,27 @@ class sensitiveDataService {
    */
   bool savePairingKeySlots(const String& nextKeyDeviceBase64, const String& nextKeyVersion);
 
+  /**
+   * @brief ブローカーモード設定を保存する。
+   * @details
+   * - [重要] brokerMode は "local"（ローカル Mosquitto）または "cloud"（AWS IoT Core）。
+   * - [重要] cloudEndpoint は AWS IoT Core の custom endpoint（例: xxxxxx.iot.ap-northeast-1.amazonaws.com）。
+   * @param brokerMode ブローカーモード（"local" または "cloud"）。
+   * @param cloudEndpoint クラウドモード時の接続先エンドポイント。ローカルモード時は空文字。
+   * @return 保存成功時true、失敗時false。
+   */
+  bool saveBrokerModeConfig(const String& brokerMode, const String& cloudEndpoint);
+
+  /**
+   * @brief ブローカーモード設定を読み込む。
+   * @details
+   * - [重要] NVS に保存されていない場合は既定値（brokerMode="local", cloudEndpoint=""）を返す。
+   * @param brokerModeOut 読込先ブローカーモードポインタ（null不可）。
+   * @param cloudEndpointOut 読込先クラウドエンドポイントポインタ（null不可）。
+   * @return 読込成功時true、失敗時false。
+   */
+  bool loadBrokerModeConfig(String* brokerModeOut, String* cloudEndpointOut);
+
  private:
   /**
    * @brief 設定データが存在しない場合にデフォルトJSONを生成する。

@@ -4,15 +4,14 @@ marp: true
 
 # IoT TODO
 
-### タスク進捗統計 [2026-05-19]
+### タスク進捗統計 [2026-05-20]
 | 計測日 | 残り個数 / 全個数 | 進捗率 | 備考 |
 | :--- | :--- | :--- | :--- |
-| **現在 (05-19)** | **15 / 81** | **約81%** | 本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管**。`009` 章退避完了、`007` 章空、**`013` 章 5 件全件完了**（システム構成 + セキュア全般ノウハウ + 設計書↔実装マッピング表 + 既存文書充実化 + コードコメント充実化、新規文書 3 本計 2521 行 + 既存文書拡張 + コードヘッダー強化）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。`020` 章新規 10 件。**進行順序**: `011` ローカル確立 → `013` 文書整備 → `012` クラウド連携 |
-| 前回 (05-18) | 34 / 69 | 約51% | `009-0006` 完了退避（`試験記録書.md` `7108` OK・LocalServer ↔ デバイス双方向テスト） |
-| 前々回 (05-17) | 35 / 69 | 約49% | `009-0001`〜`009-0003` / `009-0005` 完了退避（Task Scheduler 自動起動・SQLite 履歴・定期エクスポート・`機能仕様書.md` §7.1）。`009-0004` を `012` 章移管。`008` 完了 12 件退避（`todo_old20260512.md`） |
-| 前々々回 (05-16) | 39 / 69 | 約43% | `020-0003` 完了退避（ルータ WAN 管理 / UPnP / DMZ / port forward 不採用方針）。`009-0001` Task Scheduler 手順整備 |
-| 前々々々回 (05-14) | 40 / 69 | 約42% | `008-0030`〜`008-0035` / `008-0037` / `020-0002` 完了退避（秘密処理 Phase3-4 / 復旧導線 / Mosquitto ACL 方針確定） |
-| 前々々々々回 (05-13) | 44 / 69 | 約36% | `008-0031` Phase4 完全化（`settings.html` 復旧・バックアップ導線、`device_db` 退避/復元、`k-user` 暗号化バックアップ API/試験仕様整備） |
+| **現在 (05-20)** | **11 / 84** | **約87%** | **`020-0017A/B` コード修正完了**（`secureNvsInit.cpp` 自動消去廃止 / `sensitiveData.cpp` `readLegacyJsonText` delete 廃止・build SUCCESS）。SecretCore health check 失敗問題を新規発見（`connect ENOENT` → 回復スクリプト実行ブロック中）。AWS 確認: Thing/Policy 正常・接続なし・課金なし。次は SecretCore 調査 → 回復スクリプト → `012-0008` へ。 |
+| 前回 (05-19) | 15 / 81 | 約81% | 本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管**。`009` 章退避完了、`007` 章空、**`013` 章 5 件全件完了**（システム構成 + セキュア全般ノウハウ + 設計書↔実装マッピング表 + 既存文書充実化 + コードコメント充実化、新規文書 3 本計 2521 行 + 既存文書拡張 + コードヘッダー強化）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。`020` 章新規 10 件。**進行順序**: `011` ローカル確立 → `013` 文書整備 → `012` クラウド連携 |
+| 前々回 (05-18) | 34 / 69 | 約51% | `009-0006` 完了退避（`試験記録書.md` `7108` OK・LocalServer ↔ デバイス双方向テスト） |
+| 前々々回 (05-17) | 35 / 69 | 約49% | `009-0001`〜`009-0003` / `009-0005` 完了退避（Task Scheduler 自動起動・SQLite 履歴・定期エクスポート・`機能仕様書.md` §7.1）。`009-0004` を `012` 章移管。`008` 完了 12 件退避（`todo_old20260512.md`） |
+| 前々々々回 (05-16) | 39 / 69 | 約43% | `020-0003` 完了退避（ルータ WAN 管理 / UPnP / DMZ / port forward 不採用方針）。`009-0001` Task Scheduler 手順整備 |
 
 [運用ルール][2026-05-19] 同日の複数回更新は **1 行に集約**、保持は **直近 5 日分** まで。詳細経緯は `## 変更履歴` 節と各 `todo_oldYYYYMMDD.md` を参照。
 
@@ -26,9 +25,9 @@ marp: true
 理由: 後から番号がずれて、他文書や試験記録、会話ログの参照修正が大量発生することを防ぐため。
 
 ## 未完了
-### 再開インデックス（本書の読む順）[2026-05-19]
-- [正] **いまの作業の正**: 下記「直近ゴール・現在地サマリ」→「#### 次セッション開始メモ」→ **`009-0010`**（Phase2 初回ペアリング AP モードの UI/CLI 手順確定）→ 必要に応じて `鍵管理初期セットアップ_実装たたき台.md` §2 / `鍵管理および初期セットアップ設計仕様書.md` §4〜§8。
-- [最重要][2026-05-19][**ローカル環境構築完了 `v1.0.0-local`**] **進行順序**: **`011` ローカル確立 ✅ → `013` 文書整備 ✅ → `012` クラウド連携（AWS IoT Core）** の三段階。本日 `013` 章 5 件全件完了で **ローカル環境構築完了マイルストーン到達**。Git タグ `v1.0.0-local` / `local-env-complete-20260519` 付与済み。次の本線は **`012` 章 5 件**（`012-0004` 責務分界表 → `012-0001` Broker 候補比較 → `012-0002` AWS/Google 比較 → `012-0005` LocalServer クラウド I/F → `012-0003` 相互参照同期）。`007` 章は空（`020-0011`〜`020-0013` へ移管済み）。AWS 認証情報は `IoT/LocalServer/.env`（Git 除外）に保存済み。
+### 再開インデックス（本書の読む順）[2026-05-20]
+- [正] **いまの作業の正**: 下記「直近ゴール・現在地サマリ」→「#### 次セッション開始メモ」→ **`012-0008`**（クラウド統合試験 7200〜7209）→ 参照: `クラウド構築手順書.md §5`（試験手順）/ `IF仕様書.md §5`（責務分界表）。
+- [最重要][2026-05-20][**`012-0001`/`012-0002`/`012-0004`/`012-0005`/`009-0004`/`012-0007`/`012-0006` 完了**] **進行順序**: **`011` ✅ → `013` ✅ → `012` 進行中**（7件完了・残 2件）。**AWS 環境構築完了**（cert 2種・Policy 2件・Thing・`.env`・LittleFS 準備）。次は **`012-0008`**（統合試験）→ `012-0009`（まとめ・文書整合）。`007` 章は空（`020-0011`〜`020-0013` へ移管済み）。
 - [重要] **鍵・将来対応**: `k-iot` は当面試験用を本番にも流用し、鍵新規発行は行わない。製品鍵分離は **`020-0001`**。クラウドは **`012` 章**。
 - [重要] **文書引継ぎ**: 完了タスクは `todo_old20260430.md`（2026-04-30 クローズ群）および過去の `todo_old*.md` を参照。
 - [重要] **中長期の正**（ローカル第3段階完了後）: `007-A` → `007-B` → `007-C`（4点証跡・安定性セットは `本番セキュア化出荷準備試験計画書.md` を正とする）。
@@ -44,35 +43,74 @@ marp: true
 3. **`7099` / `007-0009`**：最新の記録・クローズ状況は `試験記録書.md` の **`7099`** 欄を正とする。**本番1台目（`007`）の各段階**では計画書所定の安定性セットを省略しない。短時間の切り分けに限り、同欄の **「当日次回計画 2026-04-04b」**（AP5分 / STA5分 / OTA×2）を簡易ゲートとして索引できる。**10分派生や正式な所要・合否**は `本番セキュア化出荷準備試験計画書.md` を正とする。
 4. **`007-B` 以降**は、`007-A` 完了・案A・ゲーターを満たした場合のみ着手する。
 
-### 直近ゴール・現在地サマリ（2026-05-19 続¹¹・セッション終了時点）
-- [最重要] **本日の到達点**: **`009-0008` / `009-0009` / `009-0010` / `009-0011` / `009-0012` / `009-0015` / `009-0016` / `009-0017` / `009-0018` / `009-0020` / `009-0021` / `009-0022` / `009-0023` / `009-0024` / `009-1020` / `010-0001` 完了**＋ **`009-0014` 不採用クローズ**＋ **`007-0001` / `007-0009` / `007-0014` を `020-0011`/`020-0012`/`020-0013` へ移管**＋ **`013` 章新設で文書整備 4 件起票**（`todo_old20260519.md`）。本日累計 **16 件完了退避 + 1 件不採用 + 3 件 007→020 移管 + 13 件新規追加（020 章 10 件・013 章 4 件・うち 020-0011〜0013 は移管）**。**007 章は空に**、009 章未完了は `009-0004`（012 章移管済み）のみ。**TPM 前提を全面撤回**し 19 文書を **Windows DPAPI** で正本化。**`k-device` 導出式を HKDF → HMAC-SHA256** で 8 文書を整合。未完了件数は **`20 / 80`**（約75%）。
-- [重要] **本日の正本化（累積）**: `009-0001` の証跡は **`試験記録書.md` `7001`**、`009-0002` は **`7102`〜`7106`**、`009-0003` は **`7107`**、`009-0006` は **`7108`** と **`todo_old20260518.md`**、**`009-0008` / `009-0009` / `009-0012`** は **`鍵管理初期セットアップ_実装たたき台.md` §2 / `SecretCore/src/key_manager.rs:84-115 (S_random)` / `:454-465 (k-device)` / `todo_old20260519.md`** を正とする。`020-0003` の正本は `ネットワーク運用仕様書.md` 7.4.4 系、`試験記録書.md` `7034`、`todo_old20260516.md` とする。
-- [重要][2026-05-19] **進行順序**: **`011`（ローカル環境で確立し完成）→ `013`（文書整備 5 件）→ `012`（クラウド連携）** の順で進める。ローカル第 3 段階完成（試験用鍵で本番1台目セキュア化＝`020-0011`〜`020-0013`、ただし `007-B` No-Go 継続中なので並行作業）まで終わってから、`012` 章クラウド連携 5 件（`012-0001`〜`012-0005`）へ着手。
-- [重要] **次の着手点**: **`013` 章全 5 件完了**（システム構成 + セキュア全般ノウハウ + 設計書↔実装マッピング表 + 既存文書充実化 + コードコメント充実化）。次は **`012` 章**（クラウド連携 5 件、`012-0004` 責務分界表から）または **`011` 章**（既に完了、残り backlog なし）。`020-0011`〜`020-0013`（旧 007 章）は `ProductionTool` 最終形実ランナー完成まで保留。
-- [補足][2026-05-19] **`009-0012`** は **`SecretCore/src/key_manager.rs:454-465 get_k_device`** で既実装（HMAC-SHA256 直接導出）を確認し、設計仕様書群を HKDF→HMAC で同期したうえで完了退避済み（`todo_old20260519.md`）。
-- [最重要] **`007-B` 不可逆本体**: 依然 **No-Go 継続**。`ProductionTool` 最終形実ランナー（`precheck -> stage_execute -> readback -> evidence -> stability`）の実装・検証完了まで進入しない。
-- [重要] **`k-iot` 鍵方針**: 当面は試験用（§10.2.5）を本番にも流用し、今回の `007-B` では鍵新規発行なし（`004-0006`/`004-0007` は退避済み）。本番専用への分離は将来対応 **`020-0001`** とする。
-- [重要] **NVS暗号化**: 案A/B/C はすべてクローズ済み（旧仕様）。詳細は `todo_old20260423.md` 参照。
-- [重要][2026-04-28] **本日の実機確認結果**: `DEV-002`（`IoT_04CEF94EB580`）で `7083(iterations=2)=OK`、`STA 10分=OK`、`AP` 約 `10` 分相当=OK、`STA` 復帰 `onlineState=online` を確認した。正本は `試験記録書.md` `7099` の 2026-04-28 追記とする。
-- [厳守] **不可逆本体（`007-B`）**: 案A Go 判定、かつ入口チェック（`7099` と `007-A.1` による当日再確認、その他ゲート）を満たさない限り進入禁止。
-- [完了済み] `010` 章（ネットワークインフラ基本）、`011` 章（文書初期）は完了退避済み。
-- [重要] **将来対応**: クラウド連携は `012` 章、それ以外の将来対応（鍵分離含む）は `020` 章へ集約。
-- [重要] 途中失敗時は「残工程再開」ではなく「隔離判定」を優先し、`問題点記録書.md` と `試験記録書.md` に原因・再発防止を残してから再試行する。
+### 直近ゴール・現在地サマリ（2026-05-20 セッション③終了時点）
+- [最重要][2026-05-20] **`020-0017A/B` コード修正完了**（build SUCCESS）。未完了 **11 / 84**（約 87%）。
+- [最重要] **本セッション（③）の作業**：
+  1. ✅ **020-0017A**: `secureNvsInit.cpp` の `nvs_flash_erase()` 自動実行廃止（`fallbackPlaintextNvsInit` / `initializeSecureNvs` 双方）
+  2. ✅ **020-0017B**: `sensitiveData.cpp` の `readLegacyJsonText()` 内 `LittleFS.remove()` 廃止（ファイル保持に変更）
+  3. ✅ **ビルド確認**: `esp32s3_secure` SUCCESS（Flash 31.5% / RAM 16.9%）
+  4. ⚠️ **SecretCore health check 失敗**（`connect ENOENT \\.\pipe\iot-secret-core-CF-FV_1-...`）→ 回復スクリプト実行ブロック中
+  5. ✅ **AWS 確認**: Thing `esp32s3-dev001` / Policy 2件 正常・接続なし・課金なし
+- [最重要] **ファームウェア現在状態（COM4 ESP32）**：
+  - 最新 FW は Bug #1/2/3 修正済み＋020-0017A/B 修正済みを **まだフラッシュしていない**（build は成功）
+  - **k-device が NVS から消失している状態**（前セッション②から継続）
+  - brokerMode = local
+  - `sensitiveData.json` は LittleFS にない（前セッション②で削除済み）
+- [重要] **SecretCore 問題**：回復スクリプト（`createSensitiveDataJsonForRecovery.cjs`）実行時に `SecretCore health check failed. connect ENOENT` が発生。原因未特定。SecretCore バイナリは存在・直接実行時は `Listening on \\.\pipe\iot-secret-core-ipc` で正常起動。動的パイプ名への切替で不一致が起きている可能性。
+- [最重要] **`007-B` 不可逆本体**: 依然 **No-Go 継続**。
+- [重要] **AWS・コスト管理**：`CLOUD_MQTT_ENABLED=false` 確認済み（本セッション終了時）。接続なし・課金なし。
 
-#### 次セッション開始メモ（2026-05-19 セッション終了時点・**ローカル環境構築完了 `v1.0.0-local`**）
+#### 旧直近ゴール（2026-05-20 セッション②終了時点・参考用）
+- [到達点][2026-05-20 ②] **`020-0016` 根本原因特定完了**。Bug #3（`missingMqttConfig` X.509 対応）修正。`020-0017`/`020-0018` 追加。未完了 **11 / 84**（87%）。
+
+#### 旧直近ゴール（2026-05-20 セッション①終了時点・参考用）
+- [到達点][2026-05-20 ①] **`012-0001` / `012-0002` / `012-0004` / `012-0005` / `009-0004` / `012-0007` / `012-0006` 完了**。未完了 **9 / 82**（約 89%）。**AWS 環境構築完了**（X.509 cert 2種発行 ACTIVE / IoT Policy 2件・アタッチ / Thing `esp32s3-dev001` / LittleFS 証明書配備 / `.env` 7項目追記 / `.gitignore` 追加）。実施記録: `クラウド構築手順書.md §10`。退避先: `todo_old20260520.md`。
+
+#### 旧直近ゴール（2026-05-19 セッション終了時点・参考用）
+- [到達点][2026-05-19] **`009-0008` 〜 `009-0024` / `009-1020` / `010-0001` 完了**＋ `009-0014` 不採用＋ `007→020` 3 件移管＋ `013` 章 5 件全件完了（`todo_old20260519.md`）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。未完了 **15 / 81**（81%）。Git タグ `v1.0.0-local` / `local-env-complete-20260519` 付与。
+
+#### 次セッション開始メモ（2026-05-20 セッション③終了時点）
+- [最重要][2026-05-20] 未完了 **11 / 84**（約 87%）。本セッション: `020-0017A/B` コード修正完了・SecretCore 問題発見。
+- [最重要] **⚠️ 次回開始時の ESP32 現在状態**：
+  - k-device が NVS から消失している（前セッション②から継続）
+  - brokerMode = local
+  - `sensitiveData.json` は LittleFS にない
+  - 最新ファームウェア（020-0017A/B 込み）は **まだ未フラッシュ**（build のみ成功）
+- [最重要] **⚠️ 次回の最優先着手順序**：
+  1. **SecretCore 調査**：`node scripts/createSensitiveDataJsonForRecovery.cjs` 実行時に `SecretCore health check failed. connect ENOENT \\pipe\\iot-secret-core-CF-FV_1-...` が発生。原因調査してから回復スクリプトを実行すること。
+     - ヒント: `SecretCoreManager` は動的パイプ名（`machineId + sessionId`）を stdin bootstrap で SecretCore に渡す。SecretCore は ACK を返すが pipe が未作成 → health check 失敗の可能性。SecretCore を `cargo build` で再ビルドすると解消するかも。
+     - 再ビルド: `cd IoT/SecretCore && cargo build`
+  2. **回復スクリプト実行**（SecretCore 修正後）：
+     - `cd IoT/LocalServer && nvm use 22 && node scripts/createSensitiveDataJsonForRecovery.cjs IoT_04CEF94EB580 cloud` → `sensitiveData.json` 生成
+     - `cd IoT/ESP32 && pio run -e esp32s3_secure --target uploadfs --upload-port COM4` → LittleFS に書込み
+  3. **FW フラッシュ**（020-0017A/B 込みの最新 FW）：
+     - `cd IoT/ESP32 && pio run -e esp32s3_secure --target upload --upload-port COM4`
+  4. ESP32 リブート → シリアル確認「`recovered keyDevice from legacy LittleFS sensitive data`」 + `kept for future recovery`（020-0017B で削除しなくなったはず）
+  5. FW を再度フラッシュして k-device が保持されることを確認（020-0017A の効果）
+  6. 確認できたら **`012-0008`**（クラウド統合試験 7200〜7209）へ
+- [重要] **アーキテクチャ確定（Option B）・実装完了・AWS 環境構築完了**：
+  - ESP32 → AWS IoT Core（X.509, TLS 8883）← LocalServer（subscriber, X.509）
+  - 証明書正本: `C:\mydata\project\myproject\certs\esp32\` / `localserver\`（Git 管理外）
+  - LittleFS 配備先: `IoT/ESP32/data/certs/`（`.gitignore` 除外済み）
+  - `.env` に `CLOUD_MQTT_ENABLED=false`（本日停止済み）/ `AWS_IOT_ENDPOINT` / 証明書パス 設定済み
+- [重要] **FW バグ修正状況**（未コミット・次回セッションでコミット要）：
+  - `IoT/ESP32/src/mqtt.cpp`: Bug #1 cloudEndpoint スコープ修正
+  - `IoT/ESP32/src/main.cpp`: Bug #2 cloudModeActive ガード / Bug #3 missingMqttConfig X.509 対応
+  - `IoT/LocalServer/scripts/createSensitiveDataJsonForRecovery.cjs`: `cloud` 引数追加
+- [重要] **コスト管理（厳守）**：試験終了後は必ず `CLOUD_MQTT_ENABLED=false` に戻すこと（本日実施済み）。試験開始前に `true` に戻す手順: `クラウド構築手順書.md §9`。
+- [重要] **AWS リソース一覧**（`クラウド構築手順書.md §10` に詳細記録）：
+  - Endpoint: `***-ats.iot.ap-northeast-1.amazonaws.com`（実値は `.env` の `AWS_IOT_ENDPOINT`）
+  - ESP32 cert: `cert_id=0a38a0c5...`（`certs\esp32\cert_meta.json`）・Policy `esp32lab-esp32-policy`
+  - LocalServer cert: `cert_id=5311eb1a...`（`certs\localserver\cert_meta.json`）・Policy `esp32lab-localserver-policy`
+  - Thing: `esp32s3-dev001`
+- [重要] **AWS 認証情報**：`IoT/LocalServer/.env`（Git 除外）に `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION=ap-northeast-1` 保存済み。
+- [Claude Code / Cursor 共通入口] **新セッション開始時は `.cursorrules`（0番）→ `CLAUDE.md`（自動読込）→ `IoT/todo.md` の順で読む**（`CLAUDE.md §4` 参照）。
+
+#### 旧次セッション開始メモ（2026-05-19 セッション終了時点・参考用）
 - [最重要][セッション終了][2026-05-19] **ローカル環境構築完了マイルストーン**。Git タグ **`v1.0.0-local`** / **`local-env-complete-20260519`** 付与済み。未完了 **15 / 81**（約 81%）。本日累計 **21 件完了退避 + 1 件不採用 + 3 件 007→020 移管 + 020 章 10 件追加 + 013 章 5 件全件完了**。
-- [最重要] **次回着手は `012` 章クラウド連携（AWS IoT Core）**。順序案：**`012-0004`**（責務分界表初版）→ **`012-0001`**（Broker 候補比較・AWS IoT Core 優先）→ **`012-0002`**（AWS/Google 比較表）→ **`012-0005`**（`009-0004` LocalServer クラウド連携 I/F）→ **`012-0003`**（相互参照同期）。詳細は `### 012. クラウド連携・第4段階` 節を参照。
-- [重要] **AWS 認証情報**：`IoT/LocalServer/.env`（Git 除外、`.gitignore:10` で確認済み）に保存済み。`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_DEFAULT_REGION=ap-northeast-1`（東京）。原本は `~/.aws/credentials` の default プロファイル。AWS IoT Core エンドポイント等は 012 章着手時に AWS コンソールで取得・追記。
-- [重要] **本日整備した文書**（次セッションで活用）：
-  - `IoT/システム構成と通信フロー.md`（645 行、初心者向け全体像）
-  - `IoT/セキュア全般ノウハウ_設計から実装まで.md`（1196 行、技術詳細）
-  - `IoT/設計書実装マッピング表.md`（680 行、設計書↔実装の横串表）
-  - `IoT/ソース概要.md` §3.1（セキュア技術別実装場所索引）
-  - `IoT/設計概要.md` §4.1（OTA Rollback 正式名称）
-  - `CLAUDE.md`（新規、セッション・ツール間引継ぎノート）
-  - `.cursorrules` 更新（v1.0.0-local 節目を冒頭に追加）
+- [最重要] 次回着手は `012-0004`（責務分界表初版）→ **完了（2026-05-20）**。
+- [重要] **AWS 認証情報**：`IoT/LocalServer/.env`（Git 除外、`.gitignore:10` で確認済み）に保存済み。
 - [重要] **TPM → DPAPI 整合**（19 文書）／**`k-device` HKDF → HMAC 整合**（8 文書）／**MQTT topic 正本 `esp32lab/<kind>/<sub>/<name>`** 確定／**「Dual バンク」= OTA Rollback** 正式名称確定。設計仕様書の用語ぶれは全解消済み。
-- [Claude Code / Cursor 共通入口] **新セッション開始時は `CLAUDE.md` → `IoT/todo.md` → `IoT/システム構成と通信フロー.md` の順で読む**。設計判断ルールや機密取扱は `.cursorrules` と `CLAUDE.md` §5 を参照。
 
 #### 旧次セッション開始メモ（2026-05-19 続² 時点、参考用）
 - [セッション終了][2026-05-19] 未完了 **32 / 70**（約54%）。本日完了: **`009-0008` / `009-0009` / `009-0012`**（退避済み `todo_old20260519.md`）。**TPM → DPAPI 整合**（19 文書、`SecretCore/src/dpapi.rs` + `key_manager.rs:84-115 load_or_create_s_random`）。**`k-device` HKDF → HMAC 整合**（8 文書、`key_manager.rs:454-465 get_k_device` の HMAC-SHA256 直接導出に揃える）。Mac/Linux 汎用化は **`020-0004`** を新規追加。`007-B` は **No-Go 継続**。
@@ -391,19 +429,41 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
 - **D4-4（文書）**: `012-0002`（AWS/Google 比較表）、`012-0003`（`ドキュメント概要.md` / `設計概要.md` との相互参照同期）。
 
 #### 012 の未完了タスク
-- [ ] [012-0001] [2026-03-03][将来対応][重要] クラウド移行先Broker候補（AWS IoT Core / EMQX Cloud / HiveMQ Cloud 等）を比較し優先候補を決定する。  
-  - [移管][2026-04-18] 旧ID `011-0008` から移管。理由: クラウド化は012以降に集約する方針のため。
-- [ ] [012-0002] [2026-03-08][将来対応][重要] Cloud第4段階の候補（AWS/Google）比較表を作成する。  
-  - [移管][2026-04-18] 旧ID `011-0009` から移管。
+- [x] [012-0001] [2026-03-03→**完了 2026-05-20**][重要] Broker 候補比較完了 → **AWS IoT Core 採用確定**。比較: AWS IoT Core / EMQX Cloud / HiveMQ Cloud。AWS IoT Core が日本リージョン・Cognito/Lambda ネイティブ統合・フルマネージド・無難さの全要件で最優。退避: `todo_old20260520.md`。証跡: `設計議事録20260520.md` §3.2。
+- [x] [012-0002] [2026-03-08→**完了 2026-05-20**][重要] AWS vs Google 比較完了 → **AWS IoT Core 一択**（Google Cloud IoT Core は 2023-08-16 サービス終了済み）。退避: `todo_old20260520.md`。証跡: `設計議事録20260520.md` §3.1。
 - [ ] [012-0003] [2026-04-17][将来対応][重要] 本章ロードマップおよび `012-0001` / `012-0002` の結論を、`ドキュメント概要.md` および `設計概要.md` と一方通行参照にならないよう、相互参照（節番号・ファイル名・更新日）で同期する。  
   - [移管][2026-04-18] 旧ID `011-0010` から移管。
-- [ ] [012-0004] [2026-04-17][将来対応][重要] ローカル鍵階層（`OS 暗号化サービス（現行: Windows DPAPI）` → `S_random` → `k-user` → `k-device`）と、クラウド側デバイス認証（X.509 / JITP 等）の **責務分界・禁止事項（例: raw k-device をクラウドに平文送信しない）** を表形式で `IF仕様書.md` または別紙に初版化し、`009-0004` の API 契約設計の前提とする。  
-  - [移管][2026-04-18] 旧ID `011-0011` から移管。
-- [ ] [012-0005] [2026-04-18][将来対応][重要] `009-0004`（LocalServer のクラウド連携モード・双方向同期の最小 I/F）の設計着手は、`012-0004` の責務分界表の初版がレビュー可能な状態になってから行う。  
-  - [理由] クラウド API とローカル秘密境界が未固定のまま I/F だけ先に固めると、後から全面見直しになるため。
-- [ ] [009-0004] [2026-03-07][重要][012章移管 2026-05-17] `LocalServer` のクラウド連携モード（双方向同期）の最小I/Fを設計し、API契約を文書化する。
-  - [前提] `012-0004` の責務分界表初版がレビュー可能な状態になってから着手する（`012-0005` 前提条件と同一）。
+- [x] [012-0004] [2026-04-17→**完了 2026-05-20**][重要] `IF仕様書.md §5`（クラウド連携（第4段階）責務分界表）を初版化。ローカル鍵階層（DPAPI→S_random→k-user→k-device）とクラウド側（X.509/JITP）の責務分界・禁止事項（raw k-device 禁出境界等）を表形式で定義済み。`012-0005` / `009-0004` の前提充足。退避: `todo_old20260520.md`。
+  - [完了証跡][2026-05-20] `IF仕様書.md §5.1`（概念図）/ `§5.2`（責務分界表）/ `§5.3`（禁止事項 6 件）/ `§5.4`（AWS IoT Core X.509 初版）/ `§5.5`（`009-0004` 前提制約）
+- [x] [012-0005] [2026-04-18→**完了 2026-05-20**][重要] LocalServer の AWS IoT Core subscriber 実装（クラウド連携モードの I/F 設計・実装）完了。`012-0004` の前提充足済み。退避: `todo_old20260520.md`。
+  - [完了証跡][2026-05-20] `config.ts`（7 cloud fields 追加・validation）/ `cloudMqttSubscriber.ts`（新規・X.509 mutual TLS factory）/ `mqttGateway.ts`（`clientOverride?: MqttClient` 追加）/ `server.ts`（cloud/local gateway 切替）。TypeScript `tsc --noEmit` OK。
+- [x] [009-0004] [2026-03-07→**完了 2026-05-20**][重要][012章移管 2026-05-17] LocalServer のクラウド連携モード I/F 実装完了（`012-0005` と一体）。退避: `todo_old20260520.md`。
   - [移管理由] クラウド連携は `012` 章で一括管理する方針のため、`009` 章から移管した（2026-05-17）。
+- [x] [012-0006] [2026-05-20→**完了 2026-05-20**][重要] **AWS 環境構築完了**（自動構築・手順記録付き）。退避: `todo_old20260520.md`。
+  - [完了証跡][2026-05-20] エンドポイント取得（`***-ats.iot.ap-northeast-1.amazonaws.com`）/ ESP32 用 X.509 cert 発行（ACTIVE・`cert_id: 0a38a0c5...`）/ LocalServer 用 X.509 cert 発行（ACTIVE・`cert_id: 5311eb1a...`）/ `esp32lab-esp32-policy` 作成・アタッチ（Connect `IoT_*` / Pub+Sub+Recv `esp32lab/*`）/ `esp32lab-localserver-policy` 作成・アタッチ（Connect `localserver-*` / Sub+Recv `esp32lab/*` / Pub `esp32lab/call/*`）/ Thing `esp32s3-dev001` 作成・証明書アタッチ / `IoT/ESP32/data/certs/` に 3 ファイル配置（`.gitignore` 除外済み）/ `IoT/LocalServer/.env` に 7 項目追記（`CLOUD_MQTT_ENABLED=false` でデフォルト OFF）/ `.env.example.sample.txt` に構造追記。詳細実施記録: `クラウド構築手順書.md §10`。
+  - [注意] 試験終了後は `CLOUD_MQTT_ENABLED=false` + `brokerMode=local` に戻し課金を止める（`クラウド構築手順書.md §9`）
+  - [残作業] ESP32 への LittleFS アップロード（`pio run --target uploadfs`）は USB 接続後に手動実行が必要
+- [x] [012-0007] [2026-05-20→**完了 2026-05-20**][重要] **ESP32 クラウドモード実装完了**。退避: `todo_old20260520.md`。
+  - [完了証跡][2026-05-20] `IoT/shared/include/common.h`（`kBrokerMode` / `kCloudEndpoint` キー追加）/ `IoT/ESP32/header/sensitiveDataService.h`（`saveBrokerModeConfig` / `loadBrokerModeConfig` API 追加）/ `IoT/ESP32/src/sensitiveData.cpp`（NVS 読み書き実装）/ `IoT/ESP32/src/MQTT/mqtt.cpp`（X.509 mutual TLS・LittleFS `/certs/` cert ロード・cloud clientId `IoT_<mac>`）/ `IoT/ESP32/src/main.cpp`（cloud endpoint override block）/ `IoT/ESP32/src/maintenanceApServer.cpp`（AP 設定 UI `brokerMode` / `cloudEndpoint` 追加）。
+- [ ] [012-0008] [2026-05-20][重要] **クラウド統合試験**（試験番号 `7200`〜`7209`）。合格条件は `試験仕様書.md §7200` を参照。
+  - 7200: ESP32 → AWS IoT Core 接続確認（シリアルログ）
+  - 7201: MQTT Publish → LocalServer subscribe 受信確認
+  - 7202: AWS CloudWatch / MQTT test client ログ証跡確認
+  - 7203: X.509 認証確認（有効証明書で接続可、無効証明書で拒否）
+  - 7204: AES-256-GCM 暗号化維持確認（平文が AWS IoT Core 上で読めないこと）
+  - 7205: OTA 開始コマンド（LocalServer → ESP32 via AWS IoT Core）
+  - 7206: OTA 完了 × 2 回（ファームウェア書換え 2 回）
+  - 7207: 第三者アクセス試行（無証明書での接続拒否確認）
+  - 7208: フォールバック試験（cloud → local）
+  - 7209: ローカルモード復帰後の通常通信確認
+- [ ] [012-0009] [2026-05-20][重要] **まとめ・文書整合**（試験合格後）。以下を実施:
+  - `試験記録書.md` に `7200`〜`7209` の試験結果を記録
+  - `設計議事録20260520.md` に実装結果・試験証跡を追記
+  - `クラウド構築手順書.md` を実施結果で更新（エンドポイント等のメモ欄）
+  - `012-0003`（`ドキュメント概要.md` / `設計概要.md` 相互参照同期）を合わせて実施
+  - `todo_old20260520.md` に 012-0005〜012-0009 を退避
+  - ローカルモードへ完全復帰（`クラウド構築手順書.md §6` の手順）
+  - Git タグ `v1.0.0-cloud-test` 付与（証跡）
 
 ### 013. 文書整備・コードコメント充実化[2026-05-19 新設]
 [重要] `012` クラウド連携に着手する前の整備フェーズ。既存文書 12 件のセキュア関連内容は充実しているが、**統合的なノウハウ集** と **設計書↔実装マッピング表** が不足。コードコメントは ESP32 セキュア系は良好だが LocalServer / SecretCore TypeScript/Rust 側は弱い。本章でこれらを段階的に整備する。
@@ -482,7 +542,31 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
 ### 020. 将来対応
 [重要] `014`〜`019` は予約枠として空ける。`013` 章は文書整備・コードコメント充実化のために使用中。本章では将来対応だけを集約し、現行着手の邪魔をしない。
 
+#### 020-緊急. NVS 消失原因究明（`012-0008` 着手前に実施）
+- [ ] [020-0016] [2026-05-20][緊急・`012-0008` 着手前][重要] **NVS 消失原因究明**（`012-0008` 試験中に k-device が NVS から消失した根本原因を調査し、再発防止策を講じる）。クラウド統合試験に安全に進むため **`012-0008` 着手前に本タスクを完了すること**。
+  - [原因特定][2026-05-20] **`IoT/ESP32/src/secureNvsInit.cpp` の `nvs_flash_erase()` が根本原因**。
+    - `fallbackPlaintextNvsInit()`（[secureNvsInit.cpp:141-146](IoT/ESP32/src/secureNvsInit.cpp#L141)）と `initializeSecureNvs()`（[secureNvsInit.cpp:279-291](IoT/ESP32/src/secureNvsInit.cpp#L279)）の両方に、`nvs_flash_init()` が `ESP_ERR_NVS_NO_FREE_PAGES` / `ESP_ERR_NVS_NEW_VERSION_FOUND` を返した場合に `nvs_flash_erase()`（NVS 全消去）を呼ぶコードがある。
+    - `ESP_ERR_NVS_NEW_VERSION_FOUND` は開発中にファームウェアのビルド設定（ESP-IDF バージョン、NVS スキーマ）が変わった場合に発生し、USB フラッシュ・OTA のいずれのリブート後にも起きうる。
+    - フラッシュ操作自体（USB・OTA）は NVS パーティションを触らない。問題は**リブート後の起動シーケンス**で `nvs_flash_erase()` が呼ばれること。
+    - 安定した製品運用（同一 ESP-IDF・同一 NVS スキーマ）では通常発生しない。開発中が高リスク期間。
+  - [短期対処][2026-05-20] `IoT/LocalServer/scripts/createSensitiveDataJsonForRecovery.cjs` に `cloud` 引数対応を追加（[スクリプト](IoT/LocalServer/scripts/createSensitiveDataJsonForRecovery.cjs)）。NVS 消去後の LittleFS 回復 JSON に `mqtt.brokerMode=cloud` + `mqtt.cloudEndpoint` も含めることで、次回リブート時に k-device と brokerMode を同時復元できる。根本修正は `020-0017`。
+  - [残課題] パーティション CSV アドレス（`esp32s3_16MB_current.csv`）と uploadfs 書込みアドレスのズレは別途確認が望ましい（`020-0017` に含める）。
+  - [関連] `問題点記録書.md`（`#0046` として新規記録推奨）/ `IoT/ESP32/src/secureNvsInit.cpp` / `IoT/LocalServer/scripts/createSensitiveDataJsonForRecovery.cjs` / `020-0017`（根本修正）
+
 #### 020-A. 後続技術・インフラ
+- [ ] [020-0017] [2026-05-20][重要] **NVS 自動消去の根本修正**（コード修正済み・動作確認待ち）
+  - [背景] `020-0016` で特定した根本原因。`ESP_ERR_NVS_NEW_VERSION_FOUND` / `ESP_ERR_NVS_NO_FREE_PAGES` 発生時に `nvs_flash_erase()` を自動実行する現行設計は、開発中のファームウェア反復更新で毎回 k-device を消去してしまう。
+  - [コード修正済み][2026-05-20③] `secureNvsInit.cpp` の `fallbackPlaintextNvsInit()` と `initializeSecureNvs()` の自動 erase を削除しエラーログのみに変更。`sensitiveData.cpp` の `readLegacyJsonText()` の `LittleFS.remove()` を廃止しファイル保持に変更。build SUCCESS 確認済み。
+  - [残作業] SecretCore health check 失敗の解消 → 回復スクリプト実行 → uploadfs → FW flash → k-device 保持確認
+  - [追加確認] パーティション CSV アドレス（`esp32s3_16MB_current.csv`）と uploadfs 書込みアドレスのズレがないか確認する。
+  - [関連] `020-0016`（原因究明）/ [secureNvsInit.cpp](IoT/ESP32/src/secureNvsInit.cpp) / [sensitiveData.cpp](IoT/ESP32/src/sensitiveData.cpp)
+
+- [ ] [020-0018] [2026-05-20][将来対応] **AP モード経由での OTA ファームウェア更新対応**。現在の AP モード HTTP サーバ（`maintenanceApServer.cpp`）は設定変更 API のみ提供し、OTA（ファームウェアバイナリアップロード）エンドポイントを持たない。現在のファームウェア更新手段: (1) LocalServer 経由 local MQTT OTA、(2) LocalServer 経由 cloud MQTT OTA、(3) USB シリアル直接書込み。
+  - [背景][2026-05-20] ユーザー要求: 「AP モード経由 OTA も今後の課題にする」。USB 接続なしで AP モードからもファームウェアを更新できると、現地でのメンテナンスが容易になる。
+  - [実装案] `maintenanceApServer.cpp` に `/api/system/ota` POST エンドポイントを追加し、バイナリを受け取って `Update.h`（ESP32 Arduino OTA ライブラリ）で書込む。認証は既存の Bearer Token 方式を流用。
+  - [前提] `020-0007`（Wi-Fi ステートマシン）/ AP モード認証フロー整備後が望ましい。
+  - [着手条件] `012-0008` クラウド統合試験完了後の将来対応フェーズ。
+
 - [ ] [020-0001] [2026-04-29][将来対応][重要] `k-iot-secure-boot` / `k-iot-flash-encryption` を**本番専用**に分離する（オフライン生成、`鍵一覧仕様書.md` / `コマンド仕様書.md` **§10.2.5a** に沿った運用、試験用との保管・適用境界の明文化、`004-0006` / `004-0007` 相当の再導入）。
   - [着手条件][2026-04-29] 量産・鍵失効・試験/本番の分離要件、または**製品鍵への切替で仕組み（実装・手順・設定・証跡・判定条件）が変わる**と判断した場合に着手する。
   - [試験方針][2026-04-29] **仕組み変更あり**: `020-0001` の一部として追加試験を行う。**仕組み変更なし**: 鍵差し替え・適用確認・運用確認の最小確認を行い、全面再試験は要求しない。
@@ -496,6 +580,11 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
   - [重要] 文鎮化リスクの早期検知を目的とし、成功証跡は 4 点証跡（旧 `007-0006`）に追加で添付
   - [`020-0011` ゲート組込] 本タスクは `020-0011` の各段階ゲートとして組込み、`ProductionTool` `PT-005z stability` で自動収集する
   - [移管理由][2026-05-19] `007` 章を空にして `012` クラウド連携前に着手前タスクを整理するため、`020` 章へ移管
+- [完了タスク退避][2026-05-20] `020-0015` は `todo_old20260520.md` へ完了退避済み。Wi-Fi_lab で ESP32 AP 接続成功を確認（2026-05-20）し、`configureEsp32CloudMode.ps1` の `$AP_IFACE` を `'Wi-Fi_lab'` に戻した。根本原因は (1) AP Wi-Fi パスワード不一致（`#0040`）と (2) Wi-Fi_lab GCMP 選択（`#0045`）の複合。詳細は `問題点記録書.md #0045`。
+- [ ] [020-0014] [2026-05-20][将来対応] **ESP32 AP モード移行の自動化**（MQTT 暗号化対応）。`esp32lab/call/maintenance/<deviceName>` は kStrict モードで AES-256-GCM 暗号化が必須のため、平文の `mosquitto_pub` では受け付けられない。LocalServer が local モードで動作中であれば `/api/admin/commands/maintenance-reboot` API（暗号化済み）で自動移行できるが、cloud モード時は手動 GPIO 4 ボタン長押しが唯一の方法。
+  - [発見日] 2026-05-20（012-0008 試験中）
+  - [暫定対処] GPIO 4 ボタン 3 秒長押し（起動時）で手動 AP モード遷移
+  - [改善案] LocalServer に `/api/admin/esp32/trigger-ap-mode` エンドポイントを追加し、cloud/local 両モードで一時 local 接続 → 暗号化 publish → cloud 復帰の自動フローを実装する（`020-0007` の Wi-Fi ステートマシンと同期要）
 - [ ] [020-0012] [2026-05-19→旧 `007-0014`][重要] **`ProductionTool` を不可逆工程の責任主体として実装へ収束**する。
   - [進捗（移管時点）] `ProductionTool/src/irreversible_stage_plan.rs`（段階計画固定）／`irreversible_command_runner.rs`（`espefuse`/`espsecure`/`esptool` テンプレート + Windows CLI 最小実ランナー + 二重ゲート `PRODUCTION_TOOL_ENABLE_IRREVERSIBLE_COMMAND_RUNNER=1` + `PRODUCTION_TOOL_ALLOW_IRREVERSIBLE_EXECUTION=1`）／`pc004_check_state.rs`（PC-004 鍵ID・署名素材ID・ロット・作業指示番号照合）／`PT-005z precheck/run/段階指定実行/前段 stability ゲート/Stage1→4 逐次実行/段階4 USB シリアル切替`は実装済み。
   - [未了] `espefuse` / `espsecure` / `esptool` を `ProductionTool` 管理下で実行する完全な段階ランナーは未実装（`precheck → stage_execute → readback → evidence → stability` を各段階で閉じる、秘密値をログへ出さない）
@@ -599,6 +688,9 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
 - [厳守] 完了タスクは `todo_oldYYYYMMDD.md` へ退避し、本書から削除する。
 
 ## 変更履歴
+- 2026-05-20（続³）: **`020-0016` 新規追加**（NVS 消失原因究明・`012-0008` 着手前に実施）。`012-0008` 試験中に k-device が NVS から消失（`loadKDeviceBytes failed. actual=0`）した件について、`createSensitiveDataJsonForRecovery.cjs` で復旧済みだが根本原因は未特定のため、クラウド試験着手前に調査する方針に変更。調査候補: パーティション CSV アドレス設定誤り / `uploadfs` 副作用 / ファームウェア書込み時 chip erase / NVS 初期化コード。次の着手順: **`020-0016`**（原因究明）→ **`012-0008`**（クラウド統合試験）。未完了 **9 / 82**（約 89%）。
+- 2026-05-20（続²・**セッション終了**）: **`012-0006` 完了退避**。**AWS 環境構築完了**：エンドポイント取得 / ESP32 用 X.509 cert 発行（`cert_id=0a38a0c5...` ACTIVE）/ LocalServer 用 X.509 cert 発行（`cert_id=5311eb1a...` ACTIVE）/ `esp32lab-esp32-policy`（Connect `IoT_*` / Pub+Sub `esp32lab/*`）/ `esp32lab-localserver-policy`（Connect `localserver-*` / Sub `esp32lab/*` / Pub `esp32lab/call/*`）/ Thing `esp32s3-dev001` / LittleFS `data/certs/` 配備（`.gitignore` 除外追加）/ `.env` 7 項目追記（`CLOUD_MQTT_ENABLED=false` 既定）/ `.env.example.sample.txt` 構造追記 / `クラウド構築手順書.md §10` に実施記録追加（コマンド・説明・伏せ字・手動再現手順付き）。**TypeScript `tsc --noEmit` OK**。未完了 **8 / 81**（約 90%）。次の本線は **`012-0008`**（クラウド統合試験 7200〜7209）。⚠️ 要手動: ESP32 USB 接続 → `pio run --target uploadfs` → AP モードで `brokerMode=cloud` 設定。
+- 2026-05-20（続・セッション継続）: **`012-0005` / `009-0004` / `012-0007` 完了退避**（`todo_old20260520.md`）。**ESP32 クラウドモード実装完了**：`IoT/shared/include/common.h`（`kBrokerMode`/`kCloudEndpoint`）/ `sensitiveDataService.h`（`saveBrokerModeConfig`/`loadBrokerModeConfig` API）/ `sensitiveData.cpp`（NVS 読み書き）/ `mqtt.cpp`（X.509 mutual TLS・LittleFS `/certs/` cert ロード・cloud clientId `IoT_<mac>`）/ `main.cpp`（cloud endpoint override）/ `maintenanceApServer.cpp`（AP UI `brokerMode`/`cloudEndpoint` 追加）。**LocalServer クラウドサブスクライバ実装完了**：`config.ts`（cloud 7 フィールド追加・validation）/ `cloudMqttSubscriber.ts`（新規・X.509 mutual TLS factory / `rejectUnauthorized: true` 維持）/ `mqttGateway.ts`（`clientOverride?: MqttClient` 追加）/ `server.ts`（cloud/local gateway 切替）。**TypeScript `tsc --noEmit` OK**。未完了 **9 / 81**（約 89%）。設計ルール遵守：ローカル技術スタック非破壊 / いつでもローカル復帰可 / `rejectUnauthorized: true` 維持 / raw k-device クラウド送信なし。
 - 2026-05-19（続¹⁶・**セッション終了・`v1.0.0-local` 確定**）: **ローカル環境構築完了マイルストーン**。Git タグ **`v1.0.0-local`** / **`local-env-complete-20260519`** 付与。**Cursor + Claude Code 併用方針を明文化**：`.cursorrules` 冒頭と `CLAUDE.md` 冒頭に相互参照ブロックを追加（判断ルール優先順、ツール切替時の手順、最終整合確認日）。**AWS 認証情報を `IoT/LocalServer/.env` に保存**（Git 除外確認済み、`.gitignore:10` で除外、5 観点で漏洩なし確認：① `.env` 自体が追跡外 ② Access Key 文字列が Git 履歴に無い ③ Secret Key 文字列が Git 履歴に無い ④ check-ignore で除外確認 ⑤ git status に出ない）。**変更履歴 195 行を `todo_history_until_20260512.md` へ退避**。**`CLAUDE.md` を新規作成**（152 行、Claude Code・Cursor 共通の引継ぎノート）。次セッション開始は `CLAUDE.md` → `IoT/todo.md` → `IoT/システム構成と通信フロー.md` の順で読む。次の本線は **`012` 章 AWS クラウド連携**（`012-0004` 責務分界表初版から着手）。残件 **15 / 81**（約 81%）。本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管 + 020 章 10 件追加 + 013 章 5 件全件完了 + 新規文書 4 本（システム構成 645 行 / セキュア全般ノウハウ 1196 行 / 設計書実装マッピング表 680 行 / CLAUDE.md 152 行 = 計約 2,700 行）+ 既存文書拡張 + コードヘッダー強化**。
 - 2026-05-19（続¹⁵）: **`013-0003` / `013-0004` 完了**で **`013` 章全 5 件完了**。`013-0003`：`ソース概要.md` に §3.1「セキュア技術別の実装場所索引」（10 サブセクション）を新規追加、`設計概要.md` に §4.1「OTA Rollback（旧称 Dual バンク）正式名称」を新規追加。`013-0004`：`SecretCore/src/dpapi.rs` にモジュールヘッダー新規追加（目的・仕組み・設計判断・限界・関連文書）、`key_manager.rs` 主要 4 関数（`get_k_device` / `sign_by_k_device` / `encrypt_by_k_device` / `decrypt_by_k_device`）に詳細 rustdoc 追加（用途・引数・戻り値・注意・ESP32 側対向実装・試験 ID）、`ESP32/src/MQTT/mqtt_network.cpp` / `mqtt_set.cpp` / `mqtt_get.cpp` / `mqtt_call.cpp` / `mqttProtocol.cpp` のヘッダーを目的・主要関数・トピック構造・関連文書込みで充実化。LocalServer TS 主要 8 ファイル + ProductionTool 全 Rust ファイル + SecretCore 他ファイルは確認の上既に充実したヘッダー整備済みと確認。残件 **15 / 81**（約81%）。本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管**。
 - 2026-05-19（続¹⁴）: **`013-0002` 完了**。`設計書実装マッピング表.md` を新規作成（全 12 章、横串リファレンス表形式）。全技術項目について設計書 § / 実装ファイル:行 / コード抜粋 / 試験 ID の対応を表形式で網羅：鍵階層・鍵管理 / 暗号アルゴリズム実装 / ESP32 セキュリティ機能 / TLS・MQTT / 初回ペアリング・AP モード / ESP32 タスク構成 / LocalServer-SecretCore 連携 / ProductionTool 段階ランナー / 機能仕様書 F3-XXX 対応 / 試験仕様書 7XXX 対応 / 機密情報サンプル対応 / 関連文書索引。`ドキュメント概要.md` 文書一覧に索引追加。残件 **17 / 81**（約79%）。理由: 再設計・移管・新規参画者の onboarding・設計実装齟齬チェック・試験範囲漏れ確認を、文書横断 grep せず一つの表で参照可能にするため。

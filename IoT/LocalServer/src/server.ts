@@ -25,6 +25,7 @@ import { loadConfig } from "./config";
 import { DeviceRegistry } from "./deviceRegistry";
 import { deviceTransport } from "./deviceTransport";
 import { mqttGateway } from "./mqttGateway";
+import { createCloudMqttGateway } from "./cloudMqttSubscriber";
 import { SettingsStore } from "./settingsStore";
 import { keyService } from "./keyService";
 import {
@@ -78,14 +79,18 @@ const localKeyService = new keyService(config, secretCoreFacade, USE_SECRET_CORE
 const serverPayloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
 const LOCAL_HISTORY_DELETE_DB_CONFIRM = "DELETE_LOCAL_HISTORY_DB";
 const localHistoryStore = new LocalHistoryStore(config, settingsStore.getSettings().localHistoryRetentionDays);
-const gateway: deviceTransport = new mqttGateway(
-  config,
-  registry,
-  localKeyService,
-  secretCoreFacade,
-  MQTT_TRANSPORT_MODE,
-  localHistoryStore
-);
+// [重要] クラウドモード有効時は AWS IoT Core 向けゲートウェイを使用する。
+//        CLOUD_MQTT_ENABLED=false（既定）はローカル Mosquitto 接続のみ。試験後は必ず false に戻すこと。
+const gateway: deviceTransport =
+  createCloudMqttGateway(config, registry, localKeyService, localHistoryStore) ??
+  new mqttGateway(
+    config,
+    registry,
+    localKeyService,
+    secretCoreFacade,
+    MQTT_TRANSPORT_MODE,
+    localHistoryStore
+  );
 const adminSessionMap = new Map<string, number>();
 const adminSessionTtlMs = 3 * 60 * 60 * 1000;
 const adminLoginLockoutThreshold = 3;

@@ -454,6 +454,139 @@
 - [重要] export 時の既定出力先は `data/secure-backups` 配下のタイムスタンプ付きファイルとし、import 時は明示ファイルパスを必須とする。
 - [禁止] `k-user` の平文バックアップファイルを新規作成しない。
 
+## 5. クラウド連携（第4段階）責務分界表 [012-0004][2026-05-20 初版]
+
+[重要] 本章はローカル鍵階層とクラウド側デバイス認証の **責務分界・禁止事項** を初版化する。`012-0005` / `009-0004`（LocalServer クラウド連携 I/F 設計）の前提とする。  
+[参照] クラウド連携ロードマップは `todo.md` `### 012. クラウド連携・第4段階` を参照。AWS 認証情報は `IoT/LocalServer/.env`（Git 除外）に保存済み。
+
+### 5.1 責務分界の概念図
+
+```text
+[ローカル環境（Windows PC）]                   [クラウド環境（AWS ap-northeast-1）]
+┌──────────────────────────────────────┐      ┌──────────────────────────────────────┐
+│ SecretCore（Rust）                    │      │ AWS IoT Core                         │
+│  wrapped_secret                      │      │                                      │
+│    ↓ Windows DPAPI 復号              │      │  ・X.509 クライアント証明書認証       │
+│  S_random                            │      │  ・IoT Policy（topic 単位の認可）     │
+│    ↓ HKDF + S_app                    │      │  ・TLS 8883                          │
+│  k-user                              │      │  ・MQTT topic routing                │
+│    ↓ HMAC-SHA256(publicId)           │      │  ・デバイス証明書管理               │
+│  k-device  ← [平文禁出境界] ─────── │×     │  （k-device は到達しない）           │
+│                                      │      │                                      │
+│ LocalServer（TypeScript）            │      │                                      │
+│  ・Mosquitto MQTT ブローカ（ローカル）│←TLS→│  ・AWS IoT MQTT ブローカ（クラウド） │
+│  ・MQTT payload AES-256-GCM 暗号化   │      │  ・デバイス証明書認証               │
+│  ・SecretCore IPC 経由で鍵管理       │      │  ・IoT Policy 評価                  │
+│  ・ProductionTool（不可逆 eFuse 等） │      │                                      │
+└──────────────────────────────────────┘      └──────────────────────────────────────┘
+         ↑ TLS 8883（ID/Password + CA）               ↑ TLS 8883（X.509 証明書）
+      ESP32 MQTT（現行ローカル）              ESP32 MQTT（将来クラウド直接 or 経由）
+```
+
+### 5.2 責務分界表
+
+| 責務カテゴリ | ローカル側（LocalServer / SecretCore）| クラウド側（AWS IoT Core）| 方針 |
+|---|---|---|---|
+| **MQTT ブローカ** | Mosquitto（`172.17.1.100:8883`）← ローカルモード | AWS IoT エンドポイント（TLS 8883）← クラウドモード | ESP32 が NVS `brokerMode` で直接切替。LocalServer は両方を subscribe |
+| **デバイス認証（MQTT）** | ID/Password（`allow_anonymous false`）| X.509 クライアント証明書 | クラウド側は X.509 が必須（ID/Password より強い）|
+| **MQTT topic 認可** | Mosquitto `acl_file`（device / role 単位）| IoT Policy（ARN / topic 単位）| 構造は同一（`esp32lab/<kind>/<sub>/<name>`）を維持 |
+| **MQTT payload 暗号化** | AES-256-GCM（`k-device`、現行実装）| AES-256-GCM（`k-device`、変更なし）| クラウドに転送されても payload は暗号化済みのまま |
+| **k-device 管理** | SecretCore が LocalServer ローカルで導出・保持 | **不関与**（k-device をクラウドへ送出しない）| ローカル境界外に raw k-device を出さない原則を維持 |
+| **S_random / k-user 管理** | Windows DPAPI で保護（SecretCore 内部のみ）| **不関与** | DPAPI 保護は OS ユーザー資格情報拘束のため転送不可 |
+| **デバイス証明書管理** | （クラウド連携前は不関与）| AWS IoT Core が device cert + Root CA を管理 | cert は `LittleFS /certs` に保存、AWS コンソール or CLI で発行 |
+| **OTA 配布** | LocalServer HTTPS（`:4443`）が現行の主経路 | （将来拡張：AWS IoT Jobs / S3 等）| 現行は変更なし |
+| **不可逆処理（eFuse / Secure Boot）** | ProductionTool（ローカル工場ツール）のみ | **永久禁止（クラウドトリガ不可）** | 不可逆工程はネットワーク非依存の物理工程として維持 |
+
+### 5.3 禁止事項（クラウド境界を越えてはならない情報）
+
+| 禁止内容 | 理由 |
+|---|---|
+| [禁止] raw `k-device` をクラウドへ平文送信しない | クラウド側の漏えいがローカル全デバイス通信の解読につながるため |
+| [禁止] `wrapped_secret` / `S_random` をクラウドへ送信しない | DPAPI 保護が無効化され、k-user / k-device 一括解読が可能になるため |
+| [禁止] `k-user` をクラウドへ送信しない | k-user が漏えいすると全デバイスの k-device を再導出できるため |
+| [禁止] `k-iot-secure-boot` / `k-iot-flash-encryption` 秘密鍵をクラウドへ送信しない | eFuse 不可逆処理に直結し、復旧不能な損害につながるため |
+| [禁止] eFuse / Secure Boot / Flash Encryption 書込みをクラウドトリガで実行しない | 不可逆工程は ProductionTool + ローカル物理工程として分離する設計のため |
+| [禁止] AWS 認証情報（Access Key / Secret Key）を TS/Rust ソースに平文埋込しない | `IoT/LocalServer/.env`（Git 除外）のみに保持する。誤コミット防止 |
+
+### 5.4 AWS IoT Core 側のデバイス認証方式（X.509）[2026-05-20 Option B 確定]
+
+- **採用アーキテクチャ（ESP32 直接接続方式 Option B）** [2026-05-20 確定]:
+  - クラウドモード: ESP32 → AWS IoT Core（X.509 mutual TLS） ← LocalServer（subscriber）
+  - ローカルモード: ESP32 → Mosquitto（TLS + ID/Password） ← LocalServer（subscriber）
+  - モード切替: ESP32 NVS `brokerMode=local|cloud`（AP モード設定 UI から変更）
+
+- **証明書体制（ESP32 用）**:
+  - AWS IoT コンソール or CLI で **ESP32 専用 device cert** を発行
+  - 発行したファイルを ESP32 LittleFS `/certs/` に配備:
+    - `/certs/aws-device-cert.pem`（デバイス証明書）
+    - `/certs/aws-private-key.pem`（秘密鍵）
+    - `/certs/AmazonRootCA1.pem`（Amazon Root CA）
+  - 証明書の書込み方法: OTA or LocalServer 経由の専用 Web API（`012-0005` で設計）
+  - `clientId` はクラウドモードでも `publicId`（`esp32s3-<hex>`）を使用
+
+- **証明書体制（LocalServer 用）**:
+  - AWS IoT コンソール or CLI で **LocalServer 専用 device cert** を別途発行
+  - 証明書・秘密鍵・Amazon Root CA を LocalServer 側の安全なファイル領域に配備
+  - ファイルの実パスは `IoT/LocalServer/.env`（Git 除外）に記載する（§5.6 参照）
+  - LocalServer は AWS IoT Core を **subscribe のみ**で使用（受信専用）
+
+- **IoT Policy 設計方針**:
+  - topic 構造は現行 `esp32lab/<kind>/<sub>/<name>` を維持（完全互換）
+  - ESP32 用 Policy: ESP32 の certARN に `Connect/Publish/Subscribe/Receive` を topic 単位で許可
+  - LocalServer 用 Policy: LocalServer の certARN に `Connect/Subscribe/Receive` を許可（コマンド送信が必要になった場合は `Publish` を追加）
+  - `clientId` 命名規則: ESP32 は `publicId`（`esp32s3-<hex>`）、LocalServer は `localserver-<hostname>`
+
+- **JITP（Just-In-Time Provisioning）**:
+  - 将来拡張候補。初版では静的 X.509 発行＋手動 IoT Policy 設定で実装
+
+- **フォールバック方式**:
+  - ESP32: AP モード → Web 設定 UI で `brokerMode=local` に変更 → 再起動 → ローカル Mosquitto へ接続
+  - LocalServer: `CLOUD_MQTT_ENABLED=false` に変更 → 再起動 → AWS IoT Core への接続を試みない
+  - [厳守] ESP32 と LocalServer は同時にモードを統一すること（片方だけ切替すると通信が分断される）
+
+### 5.6 クラウド接続 ON/OFF 切替 IF [2026-05-20]
+
+**LocalServer 側（`IoT/LocalServer/.env`）**:
+- `CLOUD_MQTT_ENABLED=true|false`（クラウド subscribe 有効化フラグ）
+- `CLOUD_PROVIDER=aws-iot-core`
+- `AWS_IOT_ENDPOINT=<custom endpoint>.iot.ap-northeast-1.amazonaws.com`（AWS コンソールで取得）
+- `AWS_IOT_CLIENT_CERT_PATH=<絶対パス>/localserver-cert.pem`（LocalServer 用証明書）
+- `AWS_IOT_PRIVATE_KEY_PATH=<絶対パス>/localserver-private.key`（LocalServer 用秘密鍵）
+- `AWS_IOT_CA_CERT_PATH=<絶対パス>/AmazonRootCA1.pem`（Amazon Root CA）
+- `AWS_IOT_CLIENT_ID=localserver-<hostname>`（固定 clientId）
+
+**ESP32 側（NVS、AP モード設定 UI から書込み）**:
+- `brokerMode=local|cloud`（接続先切替フラグ）
+- `cloudEndpoint=<endpoint>.iot.ap-northeast-1.amazonaws.com`（クラウド接続先）
+- X.509 証明書は LittleFS `/certs/` に配備（上記 §5.4 参照）
+
+- [厳守] 証明書実ファイルパスは `.env`（Git 除外）のみに記載し、ソースには記載しない
+- [厳守] `CLOUD_MQTT_ENABLED=false` 時は AWS IoT Core への接続を試みない（LocalServer 起動時に判定）
+- [厳守] LocalServer のクラウド設定を変更しても、ESP32 ↔ ローカル Mosquitto 通信には影響を与えない
+- [厳守] ESP32 と LocalServer のモードは常に統一する（片方だけクラウドモードにしない）
+
+### 5.7 Lambda / Cognito の役割 [2026-05-20]
+
+| サービス | 本プロジェクトの役割 | 採用タイミング |
+|---|---|---|
+| **AWS IoT Core** | クラウド MQTT ブローカー（必須）| `012-0005` 実装時 |
+| **IoT Rules Engine** | topic フィルタ → Lambda 実行 | 必要に応じて追加 |
+| **Lambda** | IoT Rules 経由のメッセージ処理（DynamoDB / S3 等）| 必要に応じて追加 |
+| **Cognito** | Web ダッシュボード / Mobile からの MQTT subscribe | 将来拡張候補 |
+| **IAM** | LocalServer の AWS SDK 認証（`.env` の AccessKey/SecretKey）| `012-0005` 実装時 |
+
+### 5.5 `009-0004`（LocalServer クラウド連携 I/F）への前提制約
+
+[重要] `009-0004` / `012-0005` の LocalServer クラウド連携 I/F 設計は、本章の以下制約を必須前提とする。
+
+| 前提制約 | 詳細 |
+|---|---|
+| k-device 非公開 | REST API / MQTT bridge いずれの経路でも raw k-device をクラウドへ送信しない |
+| MQTT payload 暗号化維持 | クラウド経由時も AES-256-GCM（k-device）による payload 暗号化を外さない |
+| 認証境界の分離 | ローカル側認証（ID/Password）とクラウド側認証（X.509）は別個に管理し、混在させない |
+| 不可逆操作の排除 | クラウド連携 I/F から eFuse / Secure Boot 操作への経路を持ち込まない |
+| AWS 認証情報の保護 | `LocalServer/.env` のみに保持し、API 応答・ログ・TS ソースへ含めない |
+
 ## 5. Cloud IF [将来対応]
 - AWS IoT Core または Google Cloud IoT相当サービスを候補とする。
 - 認証フロー、デバイス証明書配布、更新承認フローは第4段階で確定する。

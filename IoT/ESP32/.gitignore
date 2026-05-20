@@ -12,3 +12,11 @@
 # runtime logs / temporary files
 logs/
 *.log
+
+# [厳守][2026-05-20] AWS IoT Core X.509 証明書（秘密鍵を含む・Git コミット禁止）
+# 証明書ファイルは C:\mydata\project\myproject\certs\esp32\ に正本を保管すること。
+# LittleFS アップロード用にここへコピーするが、Git には含めない。
+data/certs/
+
+# [厳守][2026-05-20] k-device を含む回復用一時ファイル（NVS 移行後に削除）
+data/sensitiveData.json
