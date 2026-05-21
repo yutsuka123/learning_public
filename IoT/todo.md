@@ -4,14 +4,15 @@ marp: true
 
 # IoT TODO
 
-### タスク進捗統計 [2026-05-20]
+### タスク進捗統計 [2026-05-21]
 | 計測日 | 残り個数 / 全個数 | 進捗率 | 備考 |
 | :--- | :--- | :--- | :--- |
-| **現在 (05-20)** | **11 / 84** | **約87%** | **`020-0017A/B` コード修正完了**（`secureNvsInit.cpp` 自動消去廃止 / `sensitiveData.cpp` `readLegacyJsonText` delete 廃止・build SUCCESS）。SecretCore health check 失敗問題を新規発見（`connect ENOENT` → 回復スクリプト実行ブロック中）。AWS 確認: Thing/Policy 正常・接続なし・課金なし。次は SecretCore 調査 → 回復スクリプト → `012-0008` へ。 |
-| 前回 (05-19) | 15 / 81 | 約81% | 本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管**。`009` 章退避完了、`007` 章空、**`013` 章 5 件全件完了**（システム構成 + セキュア全般ノウハウ + 設計書↔実装マッピング表 + 既存文書充実化 + コードコメント充実化、新規文書 3 本計 2521 行 + 既存文書拡張 + コードヘッダー強化）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。`020` 章新規 10 件。**進行順序**: `011` ローカル確立 → `013` 文書整備 → `012` クラウド連携 |
-| 前々回 (05-18) | 34 / 69 | 約51% | `009-0006` 完了退避（`試験記録書.md` `7108` OK・LocalServer ↔ デバイス双方向テスト） |
-| 前々々回 (05-17) | 35 / 69 | 約49% | `009-0001`〜`009-0003` / `009-0005` 完了退避（Task Scheduler 自動起動・SQLite 履歴・定期エクスポート・`機能仕様書.md` §7.1）。`009-0004` を `012` 章移管。`008` 完了 12 件退避（`todo_old20260512.md`） |
-| 前々々々回 (05-16) | 39 / 69 | 約43% | `020-0003` 完了退避（ルータ WAN 管理 / UPnP / DMZ / port forward 不採用方針）。`009-0001` Task Scheduler 手順整備 |
+| **現在 (05-21 続²)** | **13 / 90** | **約86%** | 🎉🎉**`012-0008` 大部分クリア**：7200 ESP32→AWS 接続 ✅ / 7201 cloud subscribe 受信（onlineState=online UI 反映）✅ / 7203 X.509 認証 ✅ / 7204 AES-256-GCM 暗号化維持 ✅ / 7207 第三者アクセス拒否 ✅（無/偽証明書とも拒否）/ 7208 cloud→local フォールバック ✅（brokerMode mismatch 移行ロジック追加）/ 7209 ローカル復帰後通常通信 ✅。**7205/7206 OTA は `020-0025` で S3 化後に正式試験へ延期**。`CLOUD_MQTT_ENABLED=false` に戻し済み（課金停止）。**新規 todo 4 件追加**：`020-0022`（cloud/local UI 切替）/ `020-0023`（local retain 検討）/ `020-0024`（接続経路表示列）/ `020-0025`（OTA S3 化）。
+| **(05-21)** | **13 / 87** | **約85%** | 🎉**`012-0008` 7200 試験クリア（ESP32 → AWS IoT Core 接続成功・Online ステータス publish 完了）**。連鎖して 4 つの根本原因を順次解消：(1) `#0047` cloud mode `pingBrokerHost` ローカル broker IP 強制使用 → cloud 分岐追加（local 無変更）/ (2) `#0048` AP-IoTESP32Test は閉域 AP・WAN なしのため `Buffalo-G-41E0` へ切替（`.env` `CLOUD_WIFI_SSID/PASSWORD` 追加・回復スクリプト wifi 対応・`SENSITIVE_DATA_USE_HEADER_VALUES` cloud ガード・`ensureDefaultFileExists` wifi 移行対応）/ (3) `MqttTlsClient::connect(IPAddress)` override が client cert/key を nullptr で渡し AWS が mTLS で TCP リセット → `setClientAuthContext` 追加 / (4) `willRetain=true` で AWS CONNECT 拒否（`iot:RetainPublish` 権限要求） → cloud のみ `false`。**PC 側 CoreDNS bind 限定**（`Corefile bind 172.17.1.100`）も併せて適用。**新規タスク 3 件追加・2 件解消**（残：`020-0019` DNS 経路調査は実質不要・要クローズ判断 / `020-0020` cloud 修正試験記録 / `020-0021` AP 設定化）。次は `7201`〜`7209` の継続試験。 |
+| 前回 (05-20) | 11 / 84 | 約87% | **`020-0017A/B` コード修正完了**（`secureNvsInit.cpp` 自動消去廃止 / `sensitiveData.cpp` `readLegacyJsonText` delete 廃止・build SUCCESS）。SecretCore health check 失敗問題を新規発見（`connect ENOENT` → 回復スクリプト実行ブロック中）。AWS 確認: Thing/Policy 正常・接続なし・課金なし。次は SecretCore 調査 → 回復スクリプト → `012-0008` へ。 |
+| 前々回 (05-19) | 15 / 81 | 約81% | 本日累計 **21 件完了 + 1 件不採用 + 3 件 007→020 移管**。`009` 章退避完了、`007` 章空、**`013` 章 5 件全件完了**（システム構成 + セキュア全般ノウハウ + 設計書↔実装マッピング表 + 既存文書充実化 + コードコメント充実化、新規文書 3 本計 2521 行 + 既存文書拡張 + コードヘッダー強化）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。`020` 章新規 10 件。**進行順序**: `011` ローカル確立 → `013` 文書整備 → `012` クラウド連携 |
+| 前々々回 (05-18) | 34 / 69 | 約51% | `009-0006` 完了退避（`試験記録書.md` `7108` OK・LocalServer ↔ デバイス双方向テスト） |
+| 前々々々回 (05-17) | 35 / 69 | 約49% | `009-0001`〜`009-0003` / `009-0005` 完了退避（Task Scheduler 自動起動・SQLite 履歴・定期エクスポート・`機能仕様書.md` §7.1）。`009-0004` を `012` 章移管。`008` 完了 12 件退避（`todo_old20260512.md`） |
 
 [運用ルール][2026-05-19] 同日の複数回更新は **1 行に集約**、保持は **直近 5 日分** まで。詳細経緯は `## 変更履歴` 節と各 `todo_oldYYYYMMDD.md` を参照。
 
@@ -25,9 +26,10 @@ marp: true
 理由: 後から番号がずれて、他文書や試験記録、会話ログの参照修正が大量発生することを防ぐため。
 
 ## 未完了
-### 再開インデックス（本書の読む順）[2026-05-20]
-- [正] **いまの作業の正**: 下記「直近ゴール・現在地サマリ」→「#### 次セッション開始メモ」→ **`012-0008`**（クラウド統合試験 7200〜7209）→ 参照: `クラウド構築手順書.md §5`（試験手順）/ `IF仕様書.md §5`（責務分界表）。
-- [最重要][2026-05-20][**`012-0001`/`012-0002`/`012-0004`/`012-0005`/`009-0004`/`012-0007`/`012-0006` 完了**] **進行順序**: **`011` ✅ → `013` ✅ → `012` 進行中**（7件完了・残 2件）。**AWS 環境構築完了**（cert 2種・Policy 2件・Thing・`.env`・LittleFS 準備）。次は **`012-0008`**（統合試験）→ `012-0009`（まとめ・文書整合）。`007` 章は空（`020-0011`〜`020-0013` へ移管済み）。
+### 再開インデックス（本書の読む順）[2026-05-21]
+- [正] **いまの作業の正**: 下記「直近ゴール・現在地サマリ」→「#### 次セッション開始メモ」→ **`020-0019`**（DNS 経路調査 / `012-0008` 着手前提）→ **`012-0008`**（クラウド統合試験 7200〜7209）→ 参照: `クラウド構築手順書.md §5`（試験手順）/ `IF仕様書.md §5`（責務分界表）/ `問題点記録書.md #0047 #0048`。
+- [最重要][2026-05-21][**新規ブロッカー: ESP32 → DNS 経路不通**] **進行順序**: **`011` ✅ → `013` ✅ → `012` 進行中**（7件完了・残 2件）+ 着手前ブロッカー **`020-0019`**（DNS 経路調査）。**`#0047` 修正済**（cloud mode の `pingBrokerHost` がローカル broker IP を強制使用するバグ）。**`#0048` 未解決**（cloud mode で ESP32 から DNS 解決不可。PC からは可。AP クライアント分離 or CoreDNS ACL 疑い）。
+- [最重要][2026-05-20][**`012-0001`/`012-0002`/`012-0004`/`012-0005`/`009-0004`/`012-0007`/`012-0006` 完了**] **AWS 環境構築完了**（cert 2種・Policy 2件・Thing・`.env`・LittleFS 準備）。次は **`012-0008`**（統合試験）→ `012-0009`（まとめ・文書整合）。`007` 章は空（`020-0011`〜`020-0013` へ移管済み）。
 - [重要] **鍵・将来対応**: `k-iot` は当面試験用を本番にも流用し、鍵新規発行は行わない。製品鍵分離は **`020-0001`**。クラウドは **`012` 章**。
 - [重要] **文書引継ぎ**: 完了タスクは `todo_old20260430.md`（2026-04-30 クローズ群）および過去の `todo_old*.md` を参照。
 - [重要] **中長期の正**（ローカル第3段階完了後）: `007-A` → `007-B` → `007-C`（4点証跡・安定性セットは `本番セキュア化出荷準備試験計画書.md` を正とする）。
@@ -43,22 +45,39 @@ marp: true
 3. **`7099` / `007-0009`**：最新の記録・クローズ状況は `試験記録書.md` の **`7099`** 欄を正とする。**本番1台目（`007`）の各段階**では計画書所定の安定性セットを省略しない。短時間の切り分けに限り、同欄の **「当日次回計画 2026-04-04b」**（AP5分 / STA5分 / OTA×2）を簡易ゲートとして索引できる。**10分派生や正式な所要・合否**は `本番セキュア化出荷準備試験計画書.md` を正とする。
 4. **`007-B` 以降**は、`007-A` 完了・案A・ゲーターを満たした場合のみ着手する。
 
-### 直近ゴール・現在地サマリ（2026-05-20 セッション③終了時点）
-- [最重要][2026-05-20] **`020-0017A/B` コード修正完了**（build SUCCESS）。未完了 **11 / 84**（約 87%）。
-- [最重要] **本セッション（③）の作業**：
-  1. ✅ **020-0017A**: `secureNvsInit.cpp` の `nvs_flash_erase()` 自動実行廃止（`fallbackPlaintextNvsInit` / `initializeSecureNvs` 双方）
-  2. ✅ **020-0017B**: `sensitiveData.cpp` の `readLegacyJsonText()` 内 `LittleFS.remove()` 廃止（ファイル保持に変更）
-  3. ✅ **ビルド確認**: `esp32s3_secure` SUCCESS（Flash 31.5% / RAM 16.9%）
-  4. ⚠️ **SecretCore health check 失敗**（`connect ENOENT \\.\pipe\iot-secret-core-CF-FV_1-...`）→ 回復スクリプト実行ブロック中
-  5. ✅ **AWS 確認**: Thing `esp32s3-dev001` / Policy 2件 正常・接続なし・課金なし
+### 直近ゴール・現在地サマリ（2026-05-21 セッション継続中）
+- [🎉最重要][2026-05-21 続³] **ESP32 → AWS IoT Core 接続成功！** `connectToMqttBroker success. state=0` / `Certificate verified` / `publishStatusNotice success. topic=esp32lab/notice/status/IoT_04CEF94EB580 onlineState=Online`。**`012-0008` 7200 試験クリア**。`#0048` の真因は当初推測の DNS だけではなく、複合要因：
+  1. `pingBrokerHost` のローカル fallback IP 強制使用バグ（`#0047`）→ 修正済
+  2. ESP32 の AP `AP-IoTESP32Test` は閉域 AP（インターネット未接続）。クラウドモードでは `Buffalo-G-41E0`（WAN 接続あり）へ切替が必要 → `.env` に `CLOUD_WIFI_SSID`/`CLOUD_WIFI_PASSWORD` 追加・回復スクリプトで JSON へ書き出し・`ensureDefaultFileExists` を wifi 移行対応に拡張・`SENSITIVE_DATA_USE_HEADER_VALUES` を cloud で wifi 上書きしないようガード
+  3. `MqttTlsClient::connect(IPAddress, port)` override で client cert/key を nullptr 固定 → AWS が mTLS で TCP リセット → `setClientAuthContext` 追加し IP 接続経路でも cert/key を渡すよう修正
+  4. `willRetain=true` で MQTT CONNECT 拒否（AWS IoT Core は retained will message に `iot:RetainPublish` Policy 権限要求） → cloud mode のみ `willRetain=false` に固定（local モードは無変更）
+- [最重要][2026-05-21 続²] **PC 側 DNS インフラ修正完了**：`C:\coredns\Corefile` を `.:53 { bind 172.17.1.100; ... }` に変更（bind plugin 追加、ゾーン header は `.:53` のまま）/ CoreDNS 再起動（172.17.1.100:53 専用 bind）/ PC からの nslookup で内部・外部 FQDN とも解決成功。**ICS（SharedAccess）停止は管理者権限でも失敗**（Cannot open service、SYSTEM-only ACL 推定）が、CoreDNS bind 限定で実害なし。
+- [最重要][2026-05-21 続] **`#0048` 真因特定**（他ツール調査連携）：(a) ルータ Aterm 172.17.1.1 が DNS Query refused（外部・内部 FQDN とも） / (b) PC 上で CoreDNS（PID 13176）と ICS / SharedAccess（PID 5392）が UDP/53 競合 / (c) CoreDNS 設定 `C:\coredns\Corefile` 自体に ACL 制限なし。**Corefile bind を 172.17.1.100:53 へ限定 + ICS 停止 + ルータ DNS フィルタ OFF** が解消手順。**`020-0021` 新規追加**（ESP32 ローカル broker IP の AP 設定化）。未完了 **14 / 87**（約 84%）。
+- [最重要][2026-05-21] **5 件進捗 + 2 件新規バグ修正 + 1 件未解決ブロッカー発見**。
+- [最重要] **本セッションの作業**：
+  1. ✅ **SecretCore 再ビルド**（`cargo build`）→ ENOENT 解消。前提：LocalServer + 旧 SecretCore プロセス停止後に再ビルド。
+  2. ✅ **回復スクリプト実行成功**：`createSensitiveDataJsonForRecovery.cjs IoT_04CEF94EB580 cloud` → k-device fingerprint=`2445cc99fcc4c4e7` 復元 + `mqtt.brokerMode=cloud` + `cloudEndpoint` 同時付加した sensitiveData.json 生成。
+  3. ✅ **LittleFS uploadfs**（COM4）→ 証明書 4 ファイル + sensitiveData.json 反映。
+  4. ✅ **FW upload**（COM4、`esp32s3_secure`）→ 020-0017A/B 修正版を反映。
+  5. ✅ **020-0017A/B 効果確認**：シリアルで `secureNvsInit::initializeSecureNvs: plaintext NVS initialized successfully (fallback)`、再フラッシュ後も k-device 保持。
+  6. ✅ **`#0047` 新規発見 → 修正済**：cloud mode で `pingBrokerHost` がローカル broker IP（172.17.1.100）を強制使用し AWS TLS が `(-9984) X509` で失敗していたバグ。`mqtt.cpp:pingBrokerHost` を `mqttBrokerMode=="cloud"` 時に DNS のみ使用するよう分岐追加（local は完全に既存挙動維持）。
+  7. ✅ **`mqtt.cpp:connectToMqttBroker` に cloud 専用 DNS 再設定追加**：cloud のみ `primary=172.17.1.100 (CoreDNS), secondary=8.8.8.8` を明示。local は無変更。
+  8. ❌ **`#0048` 新規発見・未解決ブロッカー**：上記修正後も `hostByName(): DNS Failed for ...amazonaws.com` が約 8 秒タイムアウトで継続。PC からは CoreDNS / 8.8.8.8 とも解決可。**ESP32 → DNS サーバの経路問題**（AP クライアント分離 or CoreDNS ACL or ルータ設定）。
 - [最重要] **ファームウェア現在状態（COM4 ESP32）**：
-  - 最新 FW は Bug #1/2/3 修正済み＋020-0017A/B 修正済みを **まだフラッシュしていない**（build は成功）
-  - **k-device が NVS から消失している状態**（前セッション②から継続）
-  - brokerMode = local
-  - `sensitiveData.json` は LittleFS にない（前セッション②で削除済み）
-- [重要] **SecretCore 問題**：回復スクリプト（`createSensitiveDataJsonForRecovery.cjs`）実行時に `SecretCore health check failed. connect ENOENT` が発生。原因未特定。SecretCore バイナリは存在・直接実行時は `Listening on \\.\pipe\iot-secret-core-ipc` で正常起動。動的パイプ名への切替で不一致が起きている可能性。
+  - 最新 FW（`#0047` 対応 + cloud DNS 明示設定）反映済み
+  - brokerMode = cloud（NVS + sensitiveData.json）
+  - k-device 保持確認済み
+  - DNS 経路問題で MQTT 接続まで到達できず（再起動毎に `MQTT RECON FAIL` ループ）
+- [重要] **`#0048` ESP32 → DNS 経路** 切り分け候補（次セッション）：
+  - (a) 物理 AP（`AP-IoTESP32Test`）のクライアント分離設定確認
+  - (b) PC 上 CoreDNS の bind / ACL 設定確認（CoreDNS 設定ファイル所在を特定）
+  - (c) PC ホストファイアウォール 53 ポートの実効ブロック有無
+  - (d) ルータ（172.17.1.1）の DNS forwarding / NAT 設定
 - [最重要] **`007-B` 不可逆本体**: 依然 **No-Go 継続**。
-- [重要] **AWS・コスト管理**：`CLOUD_MQTT_ENABLED=false` 確認済み（本セッション終了時）。接続なし・課金なし。
+- [重要] **AWS・コスト管理**：`CLOUD_MQTT_ENABLED=false`（LocalServer 側）。ESP32 単独で AWS への接続試行はしているが、DNS 解決不可のため AWS 到達なし → 課金なし。次セッションで DNS 経路解消後、AWS 接続成立時に試験用 `CLOUD_MQTT_ENABLED=true` を確認。
+
+#### 旧直近ゴール（2026-05-20 セッション③終了時点・参考用）
+- [到達点][2026-05-20 ③] **`020-0017A/B` コード修正完了**（build SUCCESS）。未完了 **11 / 84**（約 87%）。SecretCore health check 失敗で回復スクリプトブロック中。
 
 #### 旧直近ゴール（2026-05-20 セッション②終了時点・参考用）
 - [到達点][2026-05-20 ②] **`020-0016` 根本原因特定完了**。Bug #3（`missingMqttConfig` X.509 対応）修正。`020-0017`/`020-0018` 追加。未完了 **11 / 84**（87%）。
@@ -69,25 +88,27 @@ marp: true
 #### 旧直近ゴール（2026-05-19 セッション終了時点・参考用）
 - [到達点][2026-05-19] **`009-0008` 〜 `009-0024` / `009-1020` / `010-0001` 完了**＋ `009-0014` 不採用＋ `007→020` 3 件移管＋ `013` 章 5 件全件完了（`todo_old20260519.md`）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。未完了 **15 / 81**（81%）。Git タグ `v1.0.0-local` / `local-env-complete-20260519` 付与。
 
-#### 次セッション開始メモ（2026-05-20 セッション③終了時点）
-- [最重要][2026-05-20] 未完了 **11 / 84**（約 87%）。本セッション: `020-0017A/B` コード修正完了・SecretCore 問題発見。
+#### 次セッション開始メモ（2026-05-21 セッション終了時点）
+- [最重要][2026-05-21] 未完了 **13 / 86**（約 85%）。本セッション: SecretCore 再ビルド・回復スクリプト・FW フラッシュ・`#0047` cloud DNS バイパス修正・`#0048` DNS 経路ブロッカー発見。
 - [最重要] **⚠️ 次回開始時の ESP32 現在状態**：
-  - k-device が NVS から消失している（前セッション②から継続）
-  - brokerMode = local
-  - `sensitiveData.json` は LittleFS にない
-  - 最新ファームウェア（020-0017A/B 込み）は **まだ未フラッシュ**（build のみ成功）
+  - k-device 保持確認済み（020-0017A 効果）
+  - brokerMode = cloud（NVS + LittleFS sensitiveData.json）
+  - LittleFS に証明書 4 件 + sensitiveData.json あり
+  - 最新 FW（`#0047` 対応 + cloud DNS 明示設定）反映済み
+  - DNS 経路問題で MQTT 接続まで到達できず（`hostByName Failed → MQTT RECON FAIL` ループ）
 - [最重要] **⚠️ 次回の最優先着手順序**：
-  1. **SecretCore 調査**：`node scripts/createSensitiveDataJsonForRecovery.cjs` 実行時に `SecretCore health check failed. connect ENOENT \\pipe\\iot-secret-core-CF-FV_1-...` が発生。原因調査してから回復スクリプトを実行すること。
-     - ヒント: `SecretCoreManager` は動的パイプ名（`machineId + sessionId`）を stdin bootstrap で SecretCore に渡す。SecretCore は ACK を返すが pipe が未作成 → health check 失敗の可能性。SecretCore を `cargo build` で再ビルドすると解消するかも。
-     - 再ビルド: `cd IoT/SecretCore && cargo build`
-  2. **回復スクリプト実行**（SecretCore 修正後）：
-     - `cd IoT/LocalServer && nvm use 22 && node scripts/createSensitiveDataJsonForRecovery.cjs IoT_04CEF94EB580 cloud` → `sensitiveData.json` 生成
-     - `cd IoT/ESP32 && pio run -e esp32s3_secure --target uploadfs --upload-port COM4` → LittleFS に書込み
-  3. **FW フラッシュ**（020-0017A/B 込みの最新 FW）：
-     - `cd IoT/ESP32 && pio run -e esp32s3_secure --target upload --upload-port COM4`
-  4. ESP32 リブート → シリアル確認「`recovered keyDevice from legacy LittleFS sensitive data`」 + `kept for future recovery`（020-0017B で削除しなくなったはず）
-  5. FW を再度フラッシュして k-device が保持されることを確認（020-0017A の効果）
-  6. 確認できたら **`012-0008`**（クラウド統合試験 7200〜7209）へ
+  1. **`020-0019` DNS 経路調査**（`012-0008` 着手前提）：
+     - PC 上 CoreDNS の設定ファイル所在を特定（`Corefile` 検索、Windows サービス・Docker・直接バイナリのいずれか）
+     - CoreDNS の bind アドレス / ACL plugin / hosts plugin を確認し、ESP32（172.17.1.200）からの forward を許可するよう設定変更
+     - もしくは物理 AP（`AP-IoTESP32Test`）の管理画面で「クライアント分離（AP isolation / wireless isolation）」設定を解除
+     - 検証方法: ESP32 を再フラッシュせずに、シリアルで `connectToMqttBroker: cloud DNS configured. primary=172.17.1.100 secondary=8.8.8.8` の直後の `hostByName` が成功するかを確認
+  2. **DNS 解決成功後**、`012-0008` クラウド統合試験 `7200`〜`7209` を順次実施
+  3. **LocalServer 側で `CLOUD_MQTT_ENABLED=true`** に設定し、サブスクライバを起動（`クラウド構築手順書.md §9` 参照）
+  4. 試験合格後 **`012-0009`**（まとめ・文書整合・`v1.0.0-cloud-test` タグ）
+- [重要] **本セッションのコード修正（未コミット）**：
+  - `IoT/ESP32/src/MQTT/mqtt.cpp`: `pingBrokerHost` cloud mode 分岐追加 / `connectToMqttBroker` cloud DNS 明示設定追加（local mode はデグレなし）
+  - `IoT/問題点記録書.md`: `#0047`（cloud DNS バイパスバグ）/ `#0048`（ESP32 → DNS 経路不通）追加
+  - `IoT/todo.md`: 進捗統計 05-21 行・サマリ・次セッション開始メモ・`020-0019` / `020-0020` 追加
 - [重要] **アーキテクチャ確定（Option B）・実装完了・AWS 環境構築完了**：
   - ESP32 → AWS IoT Core（X.509, TLS 8883）← LocalServer（subscriber, X.509）
   - 証明書正本: `C:\mydata\project\myproject\certs\esp32\` / `localserver\`（Git 管理外）
@@ -567,6 +588,136 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
   - [前提] `020-0007`（Wi-Fi ステートマシン）/ AP モード認証フロー整備後が望ましい。
   - [着手条件] `012-0008` クラウド統合試験完了後の将来対応フェーズ。
 
+- [ ] [020-0019] [2026-05-21][緊急・`012-0008` 着手前][重要] **ESP32 → DNS 経路不通の調査と解消**（`問題点記録書.md #0048` 参照）。クラウド統合試験 `7200`〜`7209` に進む前提として必須。
+  - [症状] ESP32 cloud mode で DNS 設定が `dns1=172.17.1.100 dns2=8.8.8.8` と正しく適用されているが `hostByName()` が約 8 秒タイムアウトで失敗。PC からは両 DNS とも解決成功。
+  - [調査ポイント]
+    1. PC 上 CoreDNS の設定ファイル所在を特定（`Corefile` 検索、Windows サービス・Docker・直接バイナリのいずれか）
+    2. CoreDNS の bind アドレス・ACL plugin・forward plugin を確認し、外部クライアント（ESP32 = 172.17.1.200）からの forward を許可するよう設定変更
+    3. もしくは物理 AP（`AP-IoTESP32Test`）の管理画面で「クライアント分離（AP isolation / wireless isolation）」設定を解除
+    4. PC ホストファイアウォール 53 ポートの実効ブロック有無を ESP32 → PC で実機確認（例: 既知の UDP echo で）
+    5. ルータ（172.17.1.1）の DNS forwarding / NAT 設定確認
+  - [対策候補]
+    - **本命**: CoreDNS の bind / ACL を見直し、ESP32 を含む 172.17.1.0/16 全体から forward 可能にする（`010-0011` / `010-0012` の本格対応の一部）
+    - **暫定**: 物理 AP のクライアント分離を解除する
+    - **代替**: PC 上に簡易 DNS proxy を Wi-Fi_lab 側に追加し、ESP32 専用 DNS とする
+  - [試験方針] 解消確認後、`試験仕様書.md 7200` の前提条件として「ESP32 から `iot.ap-northeast-1.amazonaws.com` の DNS 解決が成功すること」を明記する。
+  - [関連] `問題点記録書.md #0048` / `010-0011` / `010-0012` / `020-0020`（mqtt.cpp 修正） / `012-0008`
+
+- [ ] [020-0021] [2026-05-21][重要] **ESP32 AP メンテナンス画面の Wi-Fi / broker / IP 設定統合化（クラウド・ローカル共通の1セットへ）**。
+  - [設計方針][2026-05-21 確定] **AP 画面の Wi-Fi 設定はクラウド・ローカルの区別なく1セットのみ**（SSID/Pass は単一）。**broker mode（cloud / local）の選択肢は AP 画面に必要**（既存 `brokerMode` フィールド継続活用）。`.env` の `CLOUD_WIFI_SSID` / `CLOUD_WIFI_PASSWORD` は **開発者向け回復スクリプト便宜**であり本番 UI 設計の正本ではない。本タスク完了時には AP 画面 + MQTT コマンド経由で同一フィールド集合を編集可能とし、`.env` 経路はあくまで補助。
+  - [背景][2026-05-21] (1) `IoT/ESP32/header/sensitiveDataSample.h` の `SENSITIVE_MQTT_FALLBACK_IP` マクロが固定（`172.17.1.100`）でビルド差替えが必要 / (2) クラウドエンドポイント IP も将来的に AP 画面 / MQTT 経由で変更可能とする想定 / (3) cloud / local の運用差は broker mode 選択肢だけで吸収する設計。
+  - [背景][2026-05-21] `#0047` 修正の調査中に判明した設計改善ポイント。ローカル broker IP が変わる環境（新しい LocalServer ホスト・客先環境）でファームウェア再ビルドなしに対応できる必要。
+  - [設計方針][2026-05-21 確定]
+    - **Wi-Fi 認証情報は AP 画面 1 セット**（既存 `wifiSSID` / `wifiPass`）。クラウド/ローカルで別管理しない。
+    - **`brokerMode` 選択肢**（`local` / `cloud`）は AP 画面に既存実装あり。継続。
+    - **ローカル broker IP（`mqttFallbackIp`）**：既存 `mqttUrl`（FQDN）と並列に IPv4 文字列フィールド追加。
+    - **クラウドエンドポイント IP（`cloudEndpointIp`, 任意）**：将来的にクラウドモードでも IP 直接接続対応を選択可能とするため。空欄なら従来通り DNS 解決。
+    - NVS 永続化（`sensitiveDataService::saveMqttConfig` を拡張 or 個別 setter 追加）。
+    - `mqtt.cpp:pingBrokerHost` の `SENSITIVE_MQTT_FALLBACK_IP` マクロ参照を NVS 値（fallback はマクロ値）に置換。
+    - 既定値: ローカル broker IP=`172.17.1.100`（NVS 未設定時にマクロから移行）。クラウドエンドポイント IP=空（DNS 解決）。
+  - [MQTT 経由設定] 既存の暗号化 MQTT コマンド（`esp32lab/set/...`）で同フィールドも変更可能とする。`MQTTコマンド仕様書.md` への追記要。
+  - [更新範囲]
+    - `IoT/ESP32/header/sensitiveDataSample.h`: `SENSITIVE_MQTT_FALLBACK_IP` を「初期値マクロ」位置付けへコメント変更
+    - `IoT/ESP32/header/sensitiveDataService.h` / `IoT/ESP32/src/sensitiveData.cpp`: `loadMqttFallbackIp` / `saveMqttFallbackIp`（または既存 `saveMqttConfig` 拡張）
+    - `IoT/ESP32/src/maintenanceApServer.cpp`: AP UI HTML + `POST` ハンドラ + `GET` レスポンス
+    - `IoT/ESP32/src/MQTT/mqtt.cpp:pingBrokerHost`: NVS 値優先・マクロ fallback
+    - `IoT/APメンテナンス画面仕様書.md` / `IoT/MQTTコマンド仕様書.md` 更新
+    - `試験仕様書.md` 7XXX：fallback IP 変更 → 再接続成功確認試験
+  - [機密事項禁止] IP 値は機密ではないが、`sensitiveDataSample.h` の構造踏襲のため `sensitiveDataService` 配下で管理する
+  - [関連] `問題点記録書.md #0047`（cloud DNS バイパスバグ）/ `IoT/ESP32/header/sensitiveDataSample.h:35` / `IoT/ESP32/src/MQTT/mqtt.cpp:3124-3125`
+
+- [ ] [020-0025] [2026-05-21][重要・設計改修] **cloud モードの OTA 経路を完全クラウド化（firmware バイナリも S3 / CloudFront 経由 HTTPS GET に変更）**。
+  - [背景][2026-05-21] 現状の cloud OTA はハイブリッド構成：
+    - コマンド: LocalServer → AWS IoT Core → ESP32（MQTT）✅ クラウド
+    - バイナリ: ESP32 → LocalServer:4443（HTTPS）❌ ローカル直結
+    本セッションでは ESP32 と LocalServer が**たまたま家庭ルータ配下の同一 LAN（172.16/172.17）**にいるため両者到達可能だが、本番想定（ESP32 = 顧客先 / LocalServer = データセンタ等）では**異ネットワーク**となり、ESP32 → LocalServer:4443 への HTTPS は到達不能。
+  - [設計方針]
+    - **AWS S3** に firmware.bin を upload（バージョン毎にキー区別、例: `s3://esp32lab-firmware/v1.1.0-beta.40/firmware.bin`）
+    - **CloudFront**（任意・低レイテンシ用）で配信
+    - **署名付き URL**（presigned URL）で時限アクセス制御（OTA 開始時に LocalServer が生成）
+    - LocalServer の OTA workflow は MQTT コマンドに presigned URL を埋め込んで ESP32 へ送信
+    - ESP32 は受信した URL で HTTPS GET（既存の HTTPS OTA クライアントを流用、host が S3 / CloudFront に変わるのみ）
+  - [既存実装との関係]
+    - 現行 `OTA HTTPS started. httpsPort=4443`（LocalServer 内 HTTPS サーバ）は **ローカルモード専用**として残す
+    - cloud モード時は LocalServer の HTTPS サーバを起動しない or 内部用のみ
+    - `IoT/LocalServer/.env` の `OTA_FIRMWARE_PATH`（ローカルファイル）に加えて `OTA_S3_BUCKET` / `OTA_S3_KEY_PREFIX` / `OTA_PRESIGN_TTL_SECONDS` 等を追加
+  - [セキュリティ]
+    - 署名鍵検証は既存の OTA 署名検証フローを維持（バイナリは署名済み、改ざん検知可能）
+    - presigned URL の TTL を短く（例: 10 分）して URL 漏洩リスクを低減
+    - S3 bucket は private、presigned URL 経由のみアクセス可
+  - [更新範囲]
+    - `IoT/LocalServer/src/ota*.ts`: S3 upload + presigned URL 生成
+    - `IoT/LocalServer/src/server.ts` / `mqttGateway.ts`: OTA コマンドに URL 埋め込み
+    - `IoT/ESP32/src/ota.cpp`: 受信 URL での HTTPS GET（既存ロジック流用）
+    - `IoT/OTA仕様書.md` / `IoT/OTA_HTTPコマンド仕様書.md` 更新
+    - `IoT/環境仕様書.md` に S3 bucket 設計追記
+    - 試験仕様書 `7XXX`: cloud OTA 経路確認（ESP32 → S3 直接 GET、LocalServer:4443 経由でないこと）
+  - [運用設計] `OTA_FIRMWARE_VERSION` 更新時に S3 へ自動 upload するスクリプト整備
+  - [関連] `012-0008` cloud 試験 / 現行 `OTA HTTPS started. httpsPort=4443` / AWS IoT Core サンプル
+
+- [ ] [020-0024] [2026-05-21][重要] **LocalServer デバイス一覧にデバイス毎のクラウド/ローカル接続経路表示列を追加**。
+  - [背景][2026-05-21] 現状の LocalServer デバイス一覧（`index.html`）には接続経路（cloud / local）の表示がない。本セッションでは LocalServer と ESP32 は同一ローカルネットワーク（Buffalo-G-41E0 内）に**たまたま**居るが、クラウド運用ではデバイスごとに：
+    - (a) **ローカル直結**（同一 LAN・Mosquitto 経由）
+    - (b) **クラウド経由**（AWS IoT Core 経由・異なる LAN / 顧客先など）
+    の 2 経路があり、運用者は経路を識別できる必要がある。
+  - [設計方針]
+    - device 一覧テーブルに新規列「接続経路」を追加（例：`local` / `cloud` / `cloud (AP-XXX)` / `unknown`）
+    - 判定ロジック：受信メッセージのソース broker（LocalServer の cloud subscriber 経由か local mqttGateway 経由か）を device 状態に付与
+    - LocalServer 自体が cloud subscriber と local mqttGateway の両方を持つ場合の前提（`mqttGateway.ts:clientOverride` 経路に応じて区別）
+    - 既存 `connectionMode: "mqtt"` を `connectionMode: "local-mqtt" | "cloud-mqtt"` に拡張案、もしくは別フィールド `mqttBrokerSource: "local" | "cloud"` を追加
+    - WebSocket 経由でブラウザへ即時反映
+  - [更新範囲]
+    - `IoT/LocalServer/src/mqttGateway.ts`: メッセージソース識別ロジック追加
+    - `IoT/LocalServer/src/deviceRegistry.ts`（or 該当箇所）: device state に経路フィールド
+    - `IoT/LocalServer/public/index.html` / `admin.html`: 列追加・色分け表示
+    - `IoT/LocalServer管理画面仕様書.md` 更新
+    - `IoT/機能仕様書.md` 関連節更新
+  - [試験仕様] `7XXX`: cloud / local 両モードで同時に device が見えるとき、各 device の経路が正しく表示されることを確認
+  - [関連] `020-0022`（cloud/local mode UI 切替）/ `012-0008` cloud 試験成果 / `機能仕様書.md`
+
+- [ ] [020-0023] [2026-05-21][将来対応] **ローカルモード（Mosquitto）でも MQTT publish の `retain` 必要性を検討**。
+  - [背景][2026-05-21] cloud mode 修正で `iot:RetainPublish` 権限不足を回避するため、cloud のみ `retain=false` とした（`mqttBrokerMode != "cloud"` のとき従来通り `retain=true`）。これは cloud / local の挙動差を生む。
+  - [検討観点]
+    - (a) **retain=true（現状ローカル）の利点**: LocalServer 再起動・新規 subscriber 接続時に Mosquitto から最新ステータスが即時 push される
+    - (b) **retain=false（cloud と統一）の利点**: 設計シンプル化、ステイルなオフライン状態をマスクしない、subscriber は fresh 状態を能動的に問い合わせる前提
+    - (c) **ハイブリッド案**: status 系は retain、command 系は no-retain など使い分け
+  - [判断材料] ローカル運用で「LocalServer 再起動後の即時 device 表示」がどれだけ重要か、設計仕様書の意図（`機能仕様書.md` / `MQTTコマンド仕様書.md`）はどちら寄りか
+  - [更新範囲]
+    - `IoT/ESP32/src/MQTT/mqtt.cpp:3548` 付近 (`useRetain` 条件)
+    - `IoT/MQTTコマンド仕様書.md` 該当節
+    - 試験追加：retain=false で LocalServer 再起動 → fresh state 取得の動線確認
+  - [関連] `問題点記録書.md #0047` / cloud mode `iot:RetainPublish` 制約 / `012-0008` 7200 系試験
+
+- [ ] [020-0022] [2026-05-21][重要] **LocalServer / ProductionTool の cloud/local mode 切替を UI 上で**（ビルド固定・`.env` 編集による切替を廃止）。
+  - [背景][2026-05-21] 現状 LocalServer は `.env` の `CLOUD_MQTT_ENABLED=true/false` で起動時に決定。ProductionTool も同様の設定があれば同様に画面で切替可能とする。`.env` 編集 → 再起動の運用は煩雑かつコスト管理ミス（cloud のまま放置）の温床。
+  - [設計方針]
+    - LocalServer 管理画面（`admin.html` or `settings.html`）に「broker mode: local / cloud」トグル追加。クラウドオプション選択時は AWS 接続パラメータ表示（endpoint / clientId 等）。
+    - 切替時の挙動: 現行 mqttGateway を graceful disconnect → 新 broker mode で再接続。SQLite 履歴は継続。
+    - 認証: 管理者ロール必須（OTA と同等の権限ゲート）。
+    - 状態永続化: `keyStore.json` or 別の運用設定 JSON に格納（`.env` は初期値のみ）。
+    - ProductionTool 側に類似設定があれば同等の UI 切替対応。設計時点で要確認。
+  - [更新範囲]
+    - `IoT/LocalServer/src/server.ts` / `mqttGateway.ts` / `config.ts`: 動的切替対応
+    - `IoT/LocalServer/public/admin.html` / `settings.html`: UI トグル追加
+    - `IoT/LocalServer管理画面仕様書.md` 更新
+    - ProductionTool 側調査・要対応
+  - [試験仕様] `7XXX`: 画面切替操作 → 既存接続切断 → 新モード接続成立 → 設定永続化確認
+  - [関連] `012-0008` cloud 試験成果 / `020-0021`（AP 設定統合化）
+
+- [ ] [020-0020] [2026-05-21][重要] **`mqtt.cpp` cloud mode 修正（`#0047`）の試験記録化**。`pingBrokerHost` cloud 分岐追加・`connectToMqttBroker` cloud DNS 明示設定追加を `試験仕様書.md` の `7200` 前段として手順・観点を明記する。
+  - [背景] 本セッション（2026-05-21）でコード修正済み（build SUCCESS / FW フラッシュ済）。局所的にデグレなしを確認したが、`020-0019` の DNS 経路問題で AWS 接続まで到達できず、cloud TLS 確立の最終確認は未完了。
+  - [実施事項]
+    1. `020-0019` DNS 解消後、ESP32 シリアルログで以下を確認：
+       - `pingBrokerHost: cloud DNS resolved host. brokerHost=...amazonaws.com resolvedIp=<global IP>`（172.17.1.100 ではないこと）
+       - `connectToMqttBroker: mqttClient.setServer uses resolved IP. host=...amazonaws.com ip=<global IP>`
+       - X.509 mutual TLS handshake 成功（`(-9984)` X509 error が出ないこと）
+    2. local mode に戻して MQTT 接続が従来通り成功することを確認（デグレなし検証）：
+       - `brokerMode=local` で再起動 → `pingBrokerHost: configured IP will be used before DNS. brokerHost=mqtt.esplab.home.arpa configuredIp=172.17.1.100`（既存挙動）が出ること
+       - Mosquitto への TLS + ID/Password 接続成功
+    3. `問題点記録書.md #0047` に試験結果を追記
+    4. `試験記録書.md` `7200` 前段として記録
+  - [関連] `問題点記録書.md #0047` / `IoT/ESP32/src/MQTT/mqtt.cpp` / `020-0019`（DNS 経路）/ `012-0008`
+
 - [ ] [020-0001] [2026-04-29][将来対応][重要] `k-iot-secure-boot` / `k-iot-flash-encryption` を**本番専用**に分離する（オフライン生成、`鍵一覧仕様書.md` / `コマンド仕様書.md` **§10.2.5a** に沿った運用、試験用との保管・適用境界の明文化、`004-0006` / `004-0007` 相当の再導入）。
   - [着手条件][2026-04-29] 量産・鍵失効・試験/本番の分離要件、または**製品鍵への切替で仕組み（実装・手順・設定・証跡・判定条件）が変わる**と判断した場合に着手する。
   - [試験方針][2026-04-29] **仕組み変更あり**: `020-0001` の一部として追加試験を行う。**仕組み変更なし**: 鍵差し替え・適用確認・運用確認の最小確認を行い、全面再試験は要求しない。
@@ -688,6 +839,20 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
 - [厳守] 完了タスクは `todo_oldYYYYMMDD.md` へ退避し、本書から削除する。
 
 ## 変更履歴
+- 2026-05-21（続⁴・🎉**012-0008 7200/7201/7203/7204/7207/7208/7209 クリア**）: 本セッションでクラウド連携の主要試験項目を完了。
+  - **7207** 第三者アクセス拒否: AWS IoT Core エンドポイントへ (a) 無証明書 → ECONNRESET / (b) 自己署名偽証明書 → silent close、両方拒否確認。
+  - **7208** cloud→local フォールバック: ESP32 を `brokerMode=local` JSON で uploadfs → ESP32 再起動 → brokerMode mismatch 検出して再移行 → `wifi loaded. ssid=AP-IoTESP32Test` / `connectToMqttBroker start. mode=local host=mqtt.esplab.home.arpa` / `state=0`。
+  - **7209** ローカル復帰後通常通信: LocalServer を `CLOUD_MQTT_ENABLED=false` で再起動 → local Mosquitto 経由で device 認識 (`onlineState=online`, `wifiSsid=AP-IoTESP32Test`, `ipAddress=172.17.1.200`)。
+  - **新規バグ修正**: `sensitiveData.cpp:ensureDefaultFileExists` が brokerMode 切替時の再移行を扱わない設計だったため、brokerMode mismatch 検出 + `migrateNeeded` 条件拡張で解消（cloud↔local 双方向移行に対応）。
+  - **OTA 試験 7205/7206 は延期**: 現行 OTA はコマンド経由 cloud + バイナリ経由 LocalServer:4443 ハイブリッド構成のため、本番想定（ESP32 と LocalServer が異ネットワーク）で動かない。S3/CloudFront 経由配信に改修してから正式試験 → `020-0025` 新規追加。
+  - **新規 todo 4 件**: `020-0022`（cloud/local UI 切替）/ `020-0023`（local retain 検討）/ `020-0024`（接続経路表示列）/ `020-0025`（OTA S3 化）。
+- 2026-05-21（続³・🎉**ESP32 → AWS IoT Core 接続成功 / 012-0008 7200 クリア**）: TLS handshake 成功（TLSv1.2 / TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256 / Certificate verified）→ `connectToMqttBroker success. state=0` → `publishStatusNotice success. topic=esp32lab/notice/status/IoT_04CEF94EB580 onlineState=Online`。本セッションで判明・修正した連鎖根本原因 4 件：
+  1. **`pingBrokerHost` ローカル fallback 強制使用**（`#0047`）→ cloud mode で hostByName のみに分岐（local 完全維持）
+  2. **AP-IoTESP32Test 閉域 AP（WAN なし）でクラウド到達不可** → ESP32 を `Buffalo-G-41E0`（WAN 接続あり）へ切替。`.env` に `CLOUD_WIFI_SSID` / `CLOUD_WIFI_PASSWORD` 追加（Git 除外）、`createSensitiveDataJsonForRecovery.cjs` cloud 指定時に wifi セクションも書き出し（health check リトライも追加）、`main.cpp` の `SENSITIVE_DATA_USE_HEADER_VALUES` ブロックを cloud で wifi/mqtt 上書きしないようガード、`sensitiveData.cpp:ensureDefaultFileExists` の legacy JSON 移行トリガを「keyDevice 欠落」だけでなく「wifi 欠落」も含むよう拡張
+  3. **`MqttTlsClient::connect(IPAddress, port)` override の client cert/key nullptr 固定** → `setClientAuthContext(cert, key)` を新設し IP 接続経路でも mTLS cert/key を提示するよう修正。AWS が mTLS で TCP リセット（`MBEDTLS_ERR_NET_CONN_RESET -0x0050`）していたのが解消
+  4. **MQTT CONNECT の willRetain=true で AWS 拒否**（retained will には `iot:RetainPublish` Policy 権限が必要） → cloud mode のみ `willRetain=false` に固定（local mode は既存 retain=true 維持）
+- 2026-05-21（続・**PC 側 DNS 修正完了 / ルータ操作待ち**）: 他ツール調査で `#0048` 真因確定（CoreDNS ACL 仮説は除外）。**PC 側修正実施**：`C:\coredns\Corefile` を `.:53 { bind 172.17.1.100; ... }` に変更（backup: `Corefile.backup-20260521`） / CoreDNS 再起動（PID 24744）/ PC nslookup で内部・外部 FQDN とも解決成功（AWS = 13.158.166.76）。ICS（SharedAccess）停止は管理者権限でも `Cannot open service` で失敗（SYSTEM-only ACL）。**PC 側修正後も ESP32 → 172.17.1.100:53/UDP は依然失敗**（UDP/123 NTP は成功 / UDP/53 DNS のみ失敗）→ **AP/ルータ Aterm 172.17.1.1 の UDP/53 横取り**で確定。**`#0047`/`#0048` 追記更新**。**ユーザー操作待ち**：Aterm 管理画面で DNS フィルタ / DNS お預かり / ワイヤレス分離 OFF。**`020-0021` 新規追加**（ESP32 ローカル broker IP の AP 設定化）。**未完了 14 / 87（約 84%）**。
+- 2026-05-21（**セッション終了・`012-0008` 着手前ブロッカー発見**）: **SecretCore 再ビルド成功**（`cargo build`、LocalServer + 旧 SecretCore プロセス停止後に実施）→ ENOENT 解消。**回復スクリプト成功**（`createSensitiveDataJsonForRecovery.cjs IoT_04CEF94EB580 cloud`、k-device fingerprint=`2445cc99fcc4c4e7` 復元 + cloud endpoint 同時付加）。**LittleFS uploadfs + FW upload 成功**（COM4、020-0017A/B 反映、k-device NVS 保持確認）。**新規バグ修正 `#0047`**：cloud mode で `pingBrokerHost` がローカル broker IP（172.17.1.100）を強制使用し AWS TLS が `(-9984) X509` で失敗するバグ発見。`mqtt.cpp:pingBrokerHost` に `mqttBrokerMode=="cloud"` 分岐を追加（local 完全維持）、`connectToMqttBroker` に cloud 専用 DNS 明示設定追加（`primary=172.17.1.100, secondary=8.8.8.8`）。**新規未解決ブロッカー `#0048`**：上記修正後も ESP32 から DNS 解決失敗（`hostByName Failed`、約 8 秒タイムアウト）。PC からは CoreDNS / 8.8.8.8 とも解決可。ESP32 → DNS サーバの経路問題（AP クライアント分離 / CoreDNS ACL / ルータ NAT のいずれか）。**新規タスク 2 件追加**：`020-0019`（DNS 経路調査・`012-0008` 着手前提）/ `020-0020`（mqtt.cpp 修正の試験記録化）。**未完了 13 / 86（約 85%）**。`012-0008` は `020-0019` 解消後に着手。本セッションのコード修正は未コミット、次セッション開始時にコミット要。
 - 2026-05-20（続³）: **`020-0016` 新規追加**（NVS 消失原因究明・`012-0008` 着手前に実施）。`012-0008` 試験中に k-device が NVS から消失（`loadKDeviceBytes failed. actual=0`）した件について、`createSensitiveDataJsonForRecovery.cjs` で復旧済みだが根本原因は未特定のため、クラウド試験着手前に調査する方針に変更。調査候補: パーティション CSV アドレス設定誤り / `uploadfs` 副作用 / ファームウェア書込み時 chip erase / NVS 初期化コード。次の着手順: **`020-0016`**（原因究明）→ **`012-0008`**（クラウド統合試験）。未完了 **9 / 82**（約 89%）。
 - 2026-05-20（続²・**セッション終了**）: **`012-0006` 完了退避**。**AWS 環境構築完了**：エンドポイント取得 / ESP32 用 X.509 cert 発行（`cert_id=0a38a0c5...` ACTIVE）/ LocalServer 用 X.509 cert 発行（`cert_id=5311eb1a...` ACTIVE）/ `esp32lab-esp32-policy`（Connect `IoT_*` / Pub+Sub `esp32lab/*`）/ `esp32lab-localserver-policy`（Connect `localserver-*` / Sub `esp32lab/*` / Pub `esp32lab/call/*`）/ Thing `esp32s3-dev001` / LittleFS `data/certs/` 配備（`.gitignore` 除外追加）/ `.env` 7 項目追記（`CLOUD_MQTT_ENABLED=false` 既定）/ `.env.example.sample.txt` 構造追記 / `クラウド構築手順書.md §10` に実施記録追加（コマンド・説明・伏せ字・手動再現手順付き）。**TypeScript `tsc --noEmit` OK**。未完了 **8 / 81**（約 90%）。次の本線は **`012-0008`**（クラウド統合試験 7200〜7209）。⚠️ 要手動: ESP32 USB 接続 → `pio run --target uploadfs` → AP モードで `brokerMode=cloud` 設定。
 - 2026-05-20（続・セッション継続）: **`012-0005` / `009-0004` / `012-0007` 完了退避**（`todo_old20260520.md`）。**ESP32 クラウドモード実装完了**：`IoT/shared/include/common.h`（`kBrokerMode`/`kCloudEndpoint`）/ `sensitiveDataService.h`（`saveBrokerModeConfig`/`loadBrokerModeConfig` API）/ `sensitiveData.cpp`（NVS 読み書き）/ `mqtt.cpp`（X.509 mutual TLS・LittleFS `/certs/` cert ロード・cloud clientId `IoT_<mac>`）/ `main.cpp`（cloud endpoint override）/ `maintenanceApServer.cpp`（AP UI `brokerMode`/`cloudEndpoint` 追加）。**LocalServer クラウドサブスクライバ実装完了**：`config.ts`（cloud 7 フィールド追加・validation）/ `cloudMqttSubscriber.ts`（新規・X.509 mutual TLS factory / `rejectUnauthorized: true` 維持）/ `mqttGateway.ts`（`clientOverride?: MqttClient` 追加）/ `server.ts`（cloud/local gateway 切替）。**TypeScript `tsc --noEmit` OK**。未完了 **9 / 81**（約 89%）。設計ルール遵守：ローカル技術スタック非破壊 / いつでもローカル復帰可 / `rejectUnauthorized: true` 維持 / raw k-device クラウド送信なし。

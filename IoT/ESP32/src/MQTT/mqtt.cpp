@@ -79,10 +79,27 @@ class MqttTlsClient : public WiFiClientSecure {
   }
 
   /**
+   * @brief IP接続時に使うクライアント認証情報（mTLS用）を設定する。
+   * @details
+   * - [重要] AWS IoT Core 等の mTLS 必須サーバ向け。IP 接続時にも client cert/key を提示するため、
+   *          setCertificate()/setPrivateKey() に加えて本メソッドにも同じ値を保持する。
+   * - [理由] connect(IPAddress, port) override で `WiFiClientSecure::connect(ip,port,host,CA,cert,key)`
+   *          を呼ぶ際、cert/key を nullptr で渡すと事前の setCertificate/setPrivateKey が無視されるため。
+   * @param clientCertificate デバイス証明書PEM（null可・local TLS では未使用）。
+   * @param clientPrivateKey デバイス秘密鍵PEM（null可・local TLS では未使用）。
+   */
+  void setClientAuthContext(const char* clientCertificate, const char* clientPrivateKey) {
+    clientCertificate_ = clientCertificate;
+    clientPrivateKey_ = clientPrivateKey;
+  }
+
+  /**
    * @brief IPアドレス向けconnectを上書きする。
    * @details
    * - [重要] PubSubClientはIP接続時にこの関数を呼ぶ。
    * - [重要] TLS検証文脈（host + CA）が有効なら、その文脈でconnectする。
+   * - [重要] mTLS（クライアント認証）が設定されていれば client cert/key も渡す。
+   *          AWS IoT Core では client cert/key の提示が必須のため、nullptr では握り切られない。
    * @param ip 接続先IPアドレス。
    * @param port 接続先ポート番号。
    * @return 接続成功時1、失敗時0。
@@ -94,7 +111,11 @@ class MqttTlsClient : public WiFiClientSecure {
       return WiFiClientSecure::connect(ip, port);
     }
 
-    return WiFiClientSecure::connect(ip, port, tlsHostName_, tlsCaCertificate_, nullptr, nullptr);
+    const char* effectiveClientCert =
+        (clientCertificate_ != nullptr && strlen(clientCertificate_) > 0) ? clientCertificate_ : nullptr;
+    const char* effectiveClientKey =
+        (clientPrivateKey_ != nullptr && strlen(clientPrivateKey_) > 0) ? clientPrivateKey_ : nullptr;
+    return WiFiClientSecure::connect(ip, port, tlsHostName_, tlsCaCertificate_, effectiveClientCert, effectiveClientKey);
   }
 
   /**
@@ -153,6 +174,10 @@ class MqttTlsClient : public WiFiClientSecure {
   const char* tlsHostName_ = nullptr;
   /** @brief IP接続時のCA証明書。 */
   const char* tlsCaCertificate_ = nullptr;
+  /** @brief IP接続時のクライアント証明書PEM（mTLS 用、cloud のみ）。 */
+  const char* clientCertificate_ = nullptr;
+  /** @brief IP接続時のクライアント秘密鍵PEM（mTLS 用、cloud のみ）。 */
+  const char* clientPrivateKey_ = nullptr;
   /** @brief DNS失敗時のフォールバックIP。 */
   IPAddress fallbackEndpointIp_ = IPAddress(0, 0, 0, 0);
   /** @brief フォールバックIP有効フラグ。 */
@@ -899,6 +924,10 @@ bool configureMqttTransportClient(bool tlsEnabled) {
       mqttTlsNetworkClient.setCertificate(mqttCloudDeviceCertRuntime.c_str());
       mqttTlsNetworkClient.setPrivateKey(mqttCloudPrivateKeyRuntime.c_str());
       mqttTlsNetworkClient.setTlsValidationContext(mqttHost, mqttTlsCaCertRuntime.c_str());
+      // [重要] IP 直接接続時にも mTLS クライアント証明書を提示するため、
+      //        MqttTlsClient::connect(IPAddress, port) override から参照される client cert/key を保持する。
+      //        setCertificate/setPrivateKey だけでは IP 接続経路で nullptr に上書きされてしまい AWS が TCP リセットする問題への対処。
+      mqttTlsNetworkClient.setClientAuthContext(mqttCloudDeviceCertRuntime.c_str(), mqttCloudPrivateKeyRuntime.c_str());
       mqttClient.setClient(mqttTlsNetworkClient);
       appLogInfo("%s: cloud X.509 mutual TLS selected. host=%s", functionName, mqttHost);
       return true;
@@ -3103,14 +3132,28 @@ bool pingBrokerHost(const char* brokerHost) {
 
   mqttResolvedBrokerIpValid = false;
   IPAddress brokerIpAddress;
+  // [重要] cloud モードでは SENSITIVE_MQTT_FALLBACK_IP（ローカル broker IP）バイパスを禁止する。
+  // ローカル broker 用の DNS 短絡を AWS IoT Core 等の FQDN に適用すると、TLS 検証が壊れるため。
+  const bool isCloudBrokerMode = (mqttBrokerMode == "cloud");
   if (brokerIpAddress.fromString(brokerHost)) {
     appLogInfo("pingBrokerHost: direct IP host will be used. brokerHost=%s", brokerHost);
+  } else if (isCloudBrokerMode) {
+    // [厳守] クラウドモードは必ず DNS 解決を行う（fallback IP は使わない）。
+    const bool resolveResult = WiFi.hostByName(brokerHost, brokerIpAddress);
+    if (!resolveResult) {
+      appLogError("pingBrokerHost failed. hostByName failed in cloud mode (fallback IP not applicable). brokerHost=%s",
+                  brokerHost);
+      return false;
+    }
+    appLogInfo("pingBrokerHost: cloud DNS resolved host. brokerHost=%s resolvedIp=%s",
+               brokerHost,
+               brokerIpAddress.toString().c_str());
   } else {
     IPAddress configuredIpAddress;
     const bool configuredIpAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
     const bool configuredIpParseResult = configuredIpAvailable && configuredIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
     if (configuredIpParseResult) {
-      // [重要] DNS試行より先にIP直指定で疎通を確認する。
+      // [重要] ローカルモードのみ: DNS試行より先にIP直指定で疎通を確認する。
       brokerIpAddress = configuredIpAddress;
       appLogWarn("pingBrokerHost: configured IP will be used before DNS. brokerHost=%s configuredIp=%s",
                  brokerHost,
@@ -3202,6 +3245,27 @@ bool connectToMqttBroker() {
     appLogInfo("connectToMqttBroker: cloud host override. endpoint=%s port=8883", mqttHost);
   }
 
+  // [重要] クラウドモード時のみ、DNS 構成を明示する。
+  // 理由: DHCP 経由でルータ DNS (172.17.1.1) が primary になることがあり、ルータは外部 FQDN を解決できない場合がある。
+  //       CoreDNS (172.17.1.100) は外部 FQDN を forward する設定で動作確認済み（PC nslookup 検証）。
+  //       cloud 接続中は primary=CoreDNS, secondary=public(8.8.8.8) とし、両系の冗長性で外部 FQDN を解決する。
+  // [厳守] local mode は本処理を行わず、既存の DNS 構成（primary=CoreDNS, secondary=0.0.0.0）を維持する。
+  // [将来対応] CoreDNS forward 設定が整備されたら本処理は不要になる（todo: 010-0011 / 010-0012）。
+  if (isCloudMode && WiFi.status() == WL_CONNECTED) {
+    IPAddress cloudPrimaryDns(172, 17, 1, 100);
+    IPAddress cloudSecondaryDns(8, 8, 8, 8);
+    bool dnsConfigResult = WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, cloudPrimaryDns, cloudSecondaryDns);
+    if (dnsConfigResult) {
+      appLogInfo("connectToMqttBroker: cloud DNS configured. primary=%s secondary=%s dns1Now=%s dns2Now=%s",
+                 cloudPrimaryDns.toString().c_str(),
+                 cloudSecondaryDns.toString().c_str(),
+                 WiFi.dnsIP(0).toString().c_str(),
+                 WiFi.dnsIP(1).toString().c_str());
+    } else {
+      appLogWarn("connectToMqttBroker: cloud DNS reconfigure failed. continuing with existing DNS.");
+    }
+  }
+
   if (strlen(mqttHost) == 0) {
     appLogError("connectToMqttBroker failed. host is empty.");
     return false;
@@ -3256,6 +3320,12 @@ bool connectToMqttBroker() {
                static_cast<long>(mqttPort));
   }
   mqttClient.setCallback(onMqttMessageReceived);
+  // [重要] MQTT keepalive を 60 秒に設定（PubSubClient デフォルト 15 秒は AWS IoT Core に対し短すぎる）。
+  //        AWS IoT Core は keepalive×1.5 = 90 秒で idle 切断するため、60 秒 keepalive で安定運用する。
+  //        ローカル Mosquitto も同値で問題なし。
+  mqttClient.setKeepAlive(60);
+  // [重要] PubSubClient の socket timeout を 30 秒に拡張（デフォルト 15 秒は TLS handshake で短すぎる場合あり）。
+  mqttClient.setSocketTimeout(30);
   // [重要] 4096byteバッファは暗号化payloadの肥大化対策として優先的にPSRAM利用を狙う。
   // [厳守] 実割当先はライブラリ内部malloc依存のため、ヒープ差分をログで常時監視する。
   const size_t spiramFreeBefore = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
@@ -3378,6 +3448,9 @@ bool connectToMqttBroker() {
     ledController::indicateMqttConnecting();
     ledController::indicateCommunicationActivity();
     // [重要] クラウドモードは X.509 認証のためユーザー名/パスワードなしで接続する。
+    // [重要] クラウドモードでは willRetain=false に固定する。AWS IoT Core は retained will message に
+    //        iot:RetainPublish Policy 権限を要求し、既定 Policy（iot:Publish のみ）では CONNECT が拒否される。
+    //        ローカルモード（Mosquitto）は retain=true を維持して既存挙動を保つ。
     bool connectResult;
     if (isCloudMode) {
       connectResult = mqttClient.connect(clientId.c_str(),
@@ -3385,7 +3458,7 @@ bool connectToMqttBroker() {
                                          nullptr,
                                          willTopicText.c_str(),
                                          1,
-                                         true,
+                                         false,
                                          willOutgoingPayloadText.c_str());
     } else {
       connectResult = mqttClient.connect(clientId.c_str(),
@@ -3472,7 +3545,11 @@ bool publishStatusNotice(const char* subName, const char* onlineStateText, uint3
     appLogError("publishStatusNotice failed. resolveOutgoingPayloadText failed. topic=%s", topicText.c_str());
     return false;
   }
-  bool publishResult = mqttClient.publish(topicText.c_str(), outgoingPayloadText.c_str(), true);
+  // [重要] cloud モードでは retain=false に固定（AWS IoT Core は retained publish に iot:RetainPublish Policy 権限を要求し、
+  //        既定 Policy（iot:Publish のみ）では retained publish が拒否される → AWS が ESP32 を切断 → Will のみ subscriber に届く問題）。
+  //        ローカルモード（Mosquitto）は従来通り retain=true で latest status を retained する。
+  const bool useRetain = (mqttBrokerMode != "cloud");
+  bool publishResult = mqttClient.publish(topicText.c_str(), outgoingPayloadText.c_str(), useRetain);
   ledController::indicateCommunicationActivity();
   if (!publishResult) {
     appLogError("publishStatusNotice failed. topic=%s sub=%s onlineState=%s",

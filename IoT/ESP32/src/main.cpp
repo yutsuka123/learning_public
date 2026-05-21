@@ -794,11 +794,13 @@ void mainTaskEntry(void* taskParameter) {
 #if defined(SENSITIVE_DATA_USE_HEADER_VALUES) && (SENSITIVE_DATA_USE_HEADER_VALUES == 1)
   // [重要] 開発初期はヘッダー機密値を優先して即時反映する。
   // [将来対応] 本ブロックはNVS移行完了後に廃止し、NVS読込値を唯一の正とする。
-  // [重要] クラウドモード有効時は MQTT 設定を上書きしない。
-  //        cloudEndpoint/user/pass は NVS のクラウド設定が正本のため。
-  wifiSsid = SENSITIVE_WIFI_SSID;
-  wifiPass = SENSITIVE_WIFI_PASS;
+  // [重要] クラウドモード有効時は Wi-Fi / MQTT 設定を上書きしない。
+  //        クラウドモードはインターネット接続のため WAN 接続のある AP（NVS 値）を使用する。
+  //        AP-IoTESP32Test（SENSITIVE_WIFI_SSID）は閉域 AP のため cloud では使えない。
+  //        cloudEndpoint / wifi credentials は NVS のクラウド設定が正本。
   if (!cloudModeActive) {
+    wifiSsid = SENSITIVE_WIFI_SSID;
+    wifiPass = SENSITIVE_WIFI_PASS;
     mqttUrl = SENSITIVE_MQTT_URL;
     mqttUser = SENSITIVE_MQTT_USER;
     mqttPass = SENSITIVE_MQTT_PASS;
@@ -808,7 +810,7 @@ void mainTaskEntry(void* taskParameter) {
   timeServerUrl = SENSITIVE_TIME_SERVER_URL;
   timeServerPort = static_cast<int32_t>(SENSITIVE_TIME_SERVER_PORT);
   timeServerTls = (SENSITIVE_TIME_SERVER_TLS != 0);
-  appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden. cloudModeActive=%d", static_cast<int>(cloudModeActive));
+  appLogWarn("mainTaskEntry: using sensitiveData.h macro values. file-based values are overridden. cloudModeActive=%d (wifi/mqtt preserved when cloud)", static_cast<int>(cloudModeActive));
 #endif
 
   if (mqttPort == 8883 && !mqttTls) {

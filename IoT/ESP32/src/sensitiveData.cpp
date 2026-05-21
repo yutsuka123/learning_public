@@ -1433,8 +1433,13 @@ bool sensitiveDataService::ensureDefaultFileExists() {
     // [重要][修正 2026-04-05] NVS に空の keyDevice が作成済みでも、
     // LittleFS の legacy sensitiveData.json に実値が残っている場合は再移行を許可する。
     // 理由: 初期化順序によって空 keyDevice が固定化され、MQTT 暗号化通信が復旧できなくなるため。
+    // [追加][修正 2026-05-21] keyDevice 同様、wifi.wifiSSID も移行対象に追加。
+    //   理由: クラウドモード切替時に AP-IoTESP32Test → Buffalo 系等の Wi-Fi 変更を
+    //         sensitiveData.json から ESP32 NVS へ反映するため。NVS に空の wifi が残っていても再移行を許可する。
     cJSON* existingRootObject = cJSON_Parse(existingJsonText.c_str());
     bool hasValidCurrentKeyDevice = false;
+    bool hasValidCurrentWifiSsid = false;
+    String currentBrokerMode = "";
     if (existingRootObject != nullptr && cJSON_IsObject(existingRootObject)) {
       cJSON* credentialsObject = cJSON_GetObjectItemCaseSensitive(existingRootObject, credentialsRootKey);
       if (credentialsObject != nullptr && cJSON_IsObject(credentialsObject)) {
@@ -1443,17 +1448,59 @@ bool sensitiveDataService::ensureDefaultFileExists() {
         const String currentKeyDevice = currentKeyDeviceChars == nullptr ? "" : String(currentKeyDeviceChars);
         hasValidCurrentKeyDevice = currentKeyDevice.length() > 0;
       }
+      cJSON* wifiObject = cJSON_GetObjectItemCaseSensitive(existingRootObject, wifiRootKey);
+      if (wifiObject != nullptr && cJSON_IsObject(wifiObject)) {
+        const char* currentWifiSsidChars =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(wifiObject, iotCommon::mqtt::jsonKey::network::kWifiSsid));
+        const String currentWifiSsid = currentWifiSsidChars == nullptr ? "" : String(currentWifiSsidChars);
+        hasValidCurrentWifiSsid = currentWifiSsid.length() > 0;
+      }
+      cJSON* mqttObjectExisting = cJSON_GetObjectItemCaseSensitive(existingRootObject, mqttRootKey);
+      if (mqttObjectExisting != nullptr && cJSON_IsObject(mqttObjectExisting)) {
+        const char* brokerModeCharsExisting =
+            cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObjectExisting, iotCommon::mqtt::jsonKey::network::kBrokerMode));
+        if (brokerModeCharsExisting != nullptr) {
+          currentBrokerMode = String(brokerModeCharsExisting);
+        }
+      }
     }
     cJSON_Delete(existingRootObject);
 
-    if (hasValidCurrentKeyDevice) {
-      return true;
+    // [追加][修正 2026-05-21] brokerMode 切替時（cloud↔local フォールバック試験 7208 等）の再移行を許可する。
+    //   keyDevice / wifi が NVS にあっても、legacy JSON の brokerMode が NVS と異なる場合は legacy で上書き移行する。
+    bool brokerModeMismatchDetected = false;
+    if (hasValidCurrentKeyDevice && hasValidCurrentWifiSsid) {
+      // 通常は移行不要だが、brokerMode 不一致のときだけ legacy JSON をピーク確認して mismatch を判定する。
+      String legacyJsonPeek;
+      if (readLegacyJsonText(&legacyJsonPeek, functionName)) {
+        cJSON* legacyRoot = cJSON_Parse(legacyJsonPeek.c_str());
+        if (legacyRoot != nullptr && cJSON_IsObject(legacyRoot)) {
+          cJSON* mqttObjectLegacy = cJSON_GetObjectItemCaseSensitive(legacyRoot, mqttRootKey);
+          if (mqttObjectLegacy != nullptr && cJSON_IsObject(mqttObjectLegacy)) {
+            const char* brokerModeCharsLegacy =
+                cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(mqttObjectLegacy, iotCommon::mqtt::jsonKey::network::kBrokerMode));
+            if (brokerModeCharsLegacy != nullptr && strlen(brokerModeCharsLegacy) > 0 &&
+                String(brokerModeCharsLegacy) != currentBrokerMode) {
+              brokerModeMismatchDetected = true;
+              appLogWarn("%s brokerMode mismatch detected. NVS=%s legacy=%s. trigger re-migration.",
+                         functionName,
+                         currentBrokerMode.c_str(),
+                         brokerModeCharsLegacy);
+            }
+          }
+        }
+        cJSON_Delete(legacyRoot);
+      }
+      if (!brokerModeMismatchDetected) {
+        return true;
+      }
     }
 
     String legacyJsonTextForRecovery;
     if (readLegacyJsonText(&legacyJsonTextForRecovery, functionName)) {
       cJSON* legacyRootObject = cJSON_Parse(legacyJsonTextForRecovery.c_str());
       bool hasValidLegacyKeyDevice = false;
+      bool hasValidLegacyWifiSsid = false;
       if (legacyRootObject != nullptr && cJSON_IsObject(legacyRootObject)) {
         cJSON* legacyCredentialsObject = cJSON_GetObjectItemCaseSensitive(legacyRootObject, credentialsRootKey);
         if (legacyCredentialsObject != nullptr && cJSON_IsObject(legacyCredentialsObject)) {
@@ -1462,15 +1509,32 @@ bool sensitiveDataService::ensureDefaultFileExists() {
           const String legacyKeyDevice = legacyKeyDeviceChars == nullptr ? "" : String(legacyKeyDeviceChars);
           hasValidLegacyKeyDevice = legacyKeyDevice.length() > 0;
         }
+        cJSON* legacyWifiObject = cJSON_GetObjectItemCaseSensitive(legacyRootObject, wifiRootKey);
+        if (legacyWifiObject != nullptr && cJSON_IsObject(legacyWifiObject)) {
+          const char* legacyWifiSsidChars =
+              cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(legacyWifiObject, iotCommon::mqtt::jsonKey::network::kWifiSsid));
+          const String legacyWifiSsid = legacyWifiSsidChars == nullptr ? "" : String(legacyWifiSsidChars);
+          hasValidLegacyWifiSsid = legacyWifiSsid.length() > 0;
+        }
       }
       cJSON_Delete(legacyRootObject);
 
-      if (hasValidLegacyKeyDevice) {
+      // keyDevice か wifi のいずれかが legacy JSON にあり、NVS 側が不足している場合は legacy で上書き移行する。
+      // [追加][修正 2026-05-21] brokerMode 切替（cloud↔local フォールバック試験 7208 等）時も移行を実行する。
+      const bool migrateNeeded =
+          (!hasValidCurrentKeyDevice && hasValidLegacyKeyDevice) ||
+          (!hasValidCurrentWifiSsid && hasValidLegacyWifiSsid) ||
+          brokerModeMismatchDetected;
+      if (migrateNeeded) {
         if (!writeJsonText(legacyJsonTextForRecovery, functionName)) {
-          appLogError("%s failed. writeJsonText for keyDevice recovery migration returned false.", functionName);
+          appLogError("%s failed. writeJsonText for legacy recovery migration returned false.", functionName);
           return false;
         }
-        appLogWarn("%s recovered keyDevice from legacy LittleFS sensitive data.", functionName);
+        appLogWarn("%s recovered from legacy LittleFS sensitive data. keyDeviceMigrated=%d wifiMigrated=%d brokerModeMigrated=%d",
+                   functionName,
+                   (!hasValidCurrentKeyDevice && hasValidLegacyKeyDevice) ? 1 : 0,
+                   (!hasValidCurrentWifiSsid && hasValidLegacyWifiSsid) ? 1 : 0,
+                   brokerModeMismatchDetected ? 1 : 0);
       }
     }
     return true;
