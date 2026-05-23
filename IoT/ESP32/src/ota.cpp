@@ -10,6 +10,7 @@
 
 #include "ota.h"
 
+#include <LittleFS.h>
 #include <Update.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
@@ -85,6 +86,37 @@ bool resolveOtaTlsCaCertificate(String* tlsCaCertOut) {
     return false;
   }
 
+  // [重要] クラウドモード時は AmazonRootCA1.pem を使用する（S3 / AWS IoT Core 向け）。
+  //        理由: mqtt-ca.pem はローカル Mosquitto CA であり S3 証明書の検証に使えないため。
+  String brokerMode;
+  String cloudEndpoint;
+  if (otaSensitiveDataService.loadBrokerModeConfig(&brokerMode, &cloudEndpoint) && brokerMode == "cloud") {
+    constexpr const char* amazonRootCaPath = "/certs/AmazonRootCA1.pem";
+    if (!LittleFS.begin(false)) {
+      appLogError("resolveOtaTlsCaCertificate failed. LittleFS.begin returned false (cloud mode).");
+      return false;
+    }
+    if (!LittleFS.exists(amazonRootCaPath)) {
+      appLogError("resolveOtaTlsCaCertificate failed. AmazonRootCA1.pem not found. path=%s", amazonRootCaPath);
+      return false;
+    }
+    File certFile = LittleFS.open(amazonRootCaPath, "r");
+    if (!certFile) {
+      appLogError("resolveOtaTlsCaCertificate failed. open failed. path=%s", amazonRootCaPath);
+      return false;
+    }
+    *tlsCaCertOut = certFile.readString();
+    certFile.close();
+    if (tlsCaCertOut->length() == 0) {
+      appLogError("resolveOtaTlsCaCertificate failed. AmazonRootCA1.pem is empty. path=%s", amazonRootCaPath);
+      return false;
+    }
+    appLogInfo("resolveOtaTlsCaCertificate: cloud mode OTA will use AmazonRootCA1.pem. length=%d",
+               static_cast<int>(tlsCaCertOut->length()));
+    return true;
+  }
+
+  // ローカルモード: mqtt-ca.pem (Mosquitto CA) を使用する。
   String certIssueNo;
   String certSetAt;
   String storedTlsCaCert;
@@ -105,7 +137,7 @@ bool resolveOtaTlsCaCertificate(String* tlsCaCertOut) {
   }
   if (storedTlsCaCert.length() > 0) {
     *tlsCaCertOut = storedTlsCaCert;
-    appLogInfo("resolveOtaTlsCaCertificate: use /certs certificate for OTA. issueNo=%s setAt=%s",
+    appLogInfo("resolveOtaTlsCaCertificate: use /certs/mqtt-ca.pem for OTA. issueNo=%s setAt=%s",
                certIssueNo.c_str(),
                certSetAt.c_str());
     return true;
@@ -409,8 +441,19 @@ bool resolveOtaTargetIp(const otaUrlInfo& urlInfo, IPAddress* resolvedIpAddressO
     return true;
   }
 
+  // [重要] クラウドモード時は fallback IP をスキップし DNS 解決を優先する。
+  // 理由: S3 presigned URL のホスト（*.amazonaws.com）を SENSITIVE_OTA_FALLBACK_IP（LocalServer）へ誤送信しないため。
+  bool skipFallback = false;
+  if (ensureOtaSensitiveDataReady()) {
+    String brokerMode;
+    String cloudEndpoint;
+    if (otaSensitiveDataService.loadBrokerModeConfig(&brokerMode, &cloudEndpoint)) {
+      skipFallback = (brokerMode == "cloud");
+    }
+  }
+
   IPAddress fallbackIpAddress;
-  if (strlen(SENSITIVE_OTA_FALLBACK_IP) > 0 && fallbackIpAddress.fromString(SENSITIVE_OTA_FALLBACK_IP)) {
+  if (!skipFallback && strlen(SENSITIVE_OTA_FALLBACK_IP) > 0 && fallbackIpAddress.fromString(SENSITIVE_OTA_FALLBACK_IP)) {
     *resolvedIpAddressOut = fallbackIpAddress;
     *fallbackUsedOut = true;
     appLogWarn("resolveOtaTargetIp fallback will be used. host=%s fallbackIp=%s",

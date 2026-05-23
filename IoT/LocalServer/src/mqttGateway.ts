@@ -508,8 +508,21 @@ export class mqttGateway implements deviceTransport {
       this.emitter.emit("disconnected");
     });
 
+    this.client.on("reconnect", () => {
+      console.warn("mqttGateway: reconnecting...");
+    });
+
+    this.client.on("offline", () => {
+      console.warn("mqttGateway: client went offline.");
+    });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    this.client.on("disconnect", (packet: any) => {
+      console.warn(`mqttGateway: DISCONNECT packet received. reasonCode=${packet?.reasonCode as number | undefined} properties=${JSON.stringify(packet?.properties)}`);
+    });
+
     this.client.on("error", (clientError) => {
-      console.error(`mqttGateway client error. message=${clientError.message}`);
+      console.error(`mqttGateway client error. message=${clientError.message} code=${(clientError as NodeJS.ErrnoException).code ?? ""} stack=${clientError.stack ?? ""}`);
     });
 
     this.client.on("message", async (topic, payloadBuffer) => {

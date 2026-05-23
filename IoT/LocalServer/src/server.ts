@@ -21,7 +21,9 @@ import { promisify } from "util";
 import express, { Request, Response } from "express";
 import multer from "multer";
 import { WebSocketServer } from "ws";
-import { loadConfig } from "./config";
+import { loadConfig, appConfig } from "./config";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { DeviceRegistry } from "./deviceRegistry";
 import { deviceTransport } from "./deviceTransport";
 import { mqttGateway } from "./mqttGateway";
@@ -2040,6 +2042,29 @@ app.post("/api/commands/status", async (request: Request, response: Response) =>
 });
 
 /**
+ * @description クラウドモード時に firmware を S3 へアップロードし presigned GET URL を返す。
+ * cloudMqttEnabled=true かつ otaS3Bucket 設定済みの場合のみ呼ぶこと。
+ */
+async function generateCloudOtaFirmwareUrl(cfg: appConfig, firmwarePath: string, firmwareVersion: string): Promise<string> {
+  const s3 = new S3Client({ region: "ap-northeast-1" });
+  const s3Key = `${cfg.otaS3KeyPrefix}${firmwareVersion}/firmware.bin`;
+  const fileBuffer = fs.readFileSync(firmwarePath);
+  await s3.send(new PutObjectCommand({
+    Bucket: cfg.otaS3Bucket,
+    Key: s3Key,
+    Body: fileBuffer,
+    ContentType: "application/octet-stream"
+  }));
+  const presignedUrl = await getSignedUrl(
+    s3,
+    new GetObjectCommand({ Bucket: cfg.otaS3Bucket, Key: s3Key }),
+    { expiresIn: cfg.otaPresignTtlSeconds }
+  );
+  console.log(`generateCloudOtaFirmwareUrl success. s3Key=${s3Key} ttl=${cfg.otaPresignTtlSeconds}s`);
+  return presignedUrl;
+}
+
+/**
  * @description OTA要求コマンド発行API。
  * [003-0001][厳守] OTA実行には管理者認証必須。同一セッション内3時間有効、ブラウザ終了で失効。
  */
@@ -2052,8 +2077,12 @@ app.post("/api/commands/ota", async (request: Request, response: Response) => {
     const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
     const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
     const otaManifestUrl = requestBody.manifestUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/manifest.json`;
-    const otaFirmwareUrl = requestBody.firmwareUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`;
     const otaFirmwareVersion = requestBody.firmwareVersion ?? currentSettings.otaFirmwareVersion;
+    const otaFirmwareUrl = requestBody.firmwareUrl ?? (
+      config.cloudMqttEnabled && config.otaS3Bucket
+        ? await generateCloudOtaFirmwareUrl(config, activeFirmwarePath, otaFirmwareVersion)
+        : `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`
+    );
     const otaSha256 = requestBody.sha256 ?? otaFirmwareMetadata.sha256;
     const timeoutSeconds = requestBody.timeoutSeconds ?? 120;
     await gateway.requestOta(requestBody.targetNames, {
@@ -2194,8 +2223,12 @@ app.post("/api/workflows/signed-ota/start", async (request: Request, response: R
     const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
     const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
     const otaManifestUrl = requestBody.manifestUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/manifest.json`;
-    const otaFirmwareUrl = requestBody.firmwareUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`;
     const otaFirmwareVersion = requestBody.firmwareVersion ?? currentSettings.otaFirmwareVersion;
+    const otaFirmwareUrl = requestBody.firmwareUrl ?? (
+      config.cloudMqttEnabled && config.otaS3Bucket
+        ? await generateCloudOtaFirmwareUrl(config, activeFirmwarePath, otaFirmwareVersion)
+        : `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`
+    );
     const otaSha256 = requestBody.sha256 ?? otaFirmwareMetadata.sha256;
     const timeoutSeconds = requestBody.timeoutSeconds ?? 120;
     const workflowStatus = await secretCoreFacade.runSignedOtaCommand(targetDeviceName, {
@@ -2275,8 +2308,12 @@ app.post("/api/admin/tests/ota/tampered-signature", async (request: Request, res
     const activeFirmwarePath = settingsStore.resolveActiveFirmwarePath();
     const otaFirmwareMetadata = readOtaFirmwareMetadata(activeFirmwarePath, true);
     const otaManifestUrl = requestBody.manifestUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/manifest.json`;
-    const otaFirmwareUrl = requestBody.firmwareUrl ?? `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`;
     const otaFirmwareVersion = requestBody.firmwareVersion ?? currentSettings.otaFirmwareVersion;
+    const otaFirmwareUrl = requestBody.firmwareUrl ?? (
+      config.cloudMqttEnabled && config.otaS3Bucket
+        ? await generateCloudOtaFirmwareUrl(config, activeFirmwarePath, otaFirmwareVersion)
+        : `https://${config.otaPublicHost}:${config.otaHttpsPort}/ota/firmware.bin`
+    );
     const otaSha256 = requestBody.sha256 ?? otaFirmwareMetadata.sha256;
     const timeoutSeconds = requestBody.timeoutSeconds ?? 120;
     const unsignedPayload = {

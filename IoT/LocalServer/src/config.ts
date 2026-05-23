@@ -86,6 +86,15 @@ export interface appConfig {
   cloudIotPrivateKeyPath: string;
   /** @description Amazon Root CA 証明書の絶対パス。.env の AWS_IOT_CA_CERT_PATH。 */
   cloudIotCaCertPath: string;
+  /**
+   * @description cloud OTA で firmware を保管する S3 バケット名。.env の OTA_S3_BUCKET。
+   * @remarks cloudMqttEnabled=true かつ本フィールドが空でない場合に S3 presigned URL 経由 OTA を使用する。
+   */
+  otaS3Bucket: string;
+  /** @description S3 presigned URL の有効期限（秒）。.env の OTA_PRESIGN_TTL_SECONDS。既定 600 秒。 */
+  otaPresignTtlSeconds: number;
+  /** @description S3 バケット内のキープレフィックス。.env の OTA_S3_KEY_PREFIX。既定 "firmware/"。 */
+  otaS3KeyPrefix: string;
 }
 
 /**
@@ -255,7 +264,10 @@ export function loadConfig(): appConfig {
     cloudIotClientId,
     cloudIotClientCertPath,
     cloudIotPrivateKeyPath,
-    cloudIotCaCertPath
+    cloudIotCaCertPath,
+    otaS3Bucket: getStringEnv("OTA_S3_BUCKET", ""),
+    otaPresignTtlSeconds: getNumberEnv("OTA_PRESIGN_TTL_SECONDS", 600),
+    otaS3KeyPrefix: getStringEnv("OTA_S3_KEY_PREFIX", "firmware/")
   };
 
   if (nextConfig.mqttHostName.length === 0) {
