@@ -54,6 +54,7 @@
 - **Mosquitto**：稼働中
 - **CoreDNS**：`Corefile bind 172.17.1.100` 限定（cloud 試験で適用済み）
 - **AWS**：無接続（課金なし）
+- **AWS S3**：`esp32lab-firmware` バケット内 FW オブジェクト全削除済み（ストレージ課金ゼロ）。次回クラウド OTA 試験時に再アップロードする。
 
 ### cloud モードへ戻す手順（参考）
 1. `IoT/LocalServer/.env` の `CLOUD_MQTT_ENABLED=true`
