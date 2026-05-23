@@ -7,7 +7,7 @@ marp: true
 ### タスク進捗統計 [2026-05-23]
 | 計測日 | 残り個数 / 全個数 | 進捗率 | 備考 |
 | :--- | :--- | :--- | :--- |
-| **現在 (05-23)** | **12 / 90** | **約87%** | 🎉🎉**`012-0008` 全件クリア（7205/7206 OTA PASS）**：020-0025（S3 OTA 実装）・IoT Policy 拡張（`esp32lab/*`）・OTA TLS CA 修正（cloud mode で `AmazonRootCA1.pem` 使用）を適用。dual-partition OTA サイクル（app0→app1→app0）確認完了。`CLOUD_MQTT_ENABLED=false` 済み（AWS 課金なし）。`012-0009`（まとめ・文書整合）を進行中。 |
+| **現在 (05-23)** | **11 / 90** | **約88%** | 🎉🎉**`012-0008` / `012-0009` 全件クリア**：cloud OTA S3 presigned URL PASS（7205/7206）・文書整合完了・`todo_old20260523.md` 退避・コミット `260523-1`・タグ `v1.1.0-cloud-ota`。012 章全件完了。`CLOUD_MQTT_ENABLED=false` 済み（AWS 課金なし）。次は 020 章将来対応または 010 章 LAN 分離。 |
 | 前回 (05-21 続²) | 13 / 90 | 約86% | 🎉**`012-0008` 大部分クリア**：7200/7201/7203/7204/7207/7208/7209 ✅。7205/7206 OTA は `020-0025`（S3 化）実装後に正式試験へ。`CLOUD_MQTT_ENABLED=false` 済み。新規 todo 4 件追加：020-0022〜020-0025。 |
 | 前々回 (05-21) | 13 / 87 | 約85% | 🎉**`012-0008` 7200 試験クリア**。根本原因 4 件修正（#0047 pingBrokerHost / #0048 Buffalo-G-41E0 切替 / IP connect mTLS / willRetain=false）。CoreDNS bind 限定適用。 |
 | 前々々回 (05-20) | 11 / 84 | 約87% | **`020-0017A/B` コード修正完了**（secureNvsInit.cpp 自動消去廃止 / sensitiveData.cpp readLegacyJsonText delete 廃止・build SUCCESS）。SecretCore ENOENT 発見。 |
@@ -465,26 +465,14 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
   - [残作業] ESP32 への LittleFS アップロード（`pio run --target uploadfs`）は USB 接続後に手動実行が必要
 - [x] [012-0007] [2026-05-20→**完了 2026-05-20**][重要] **ESP32 クラウドモード実装完了**。退避: `todo_old20260520.md`。
   - [完了証跡][2026-05-20] `IoT/shared/include/common.h`（`kBrokerMode` / `kCloudEndpoint` キー追加）/ `IoT/ESP32/header/sensitiveDataService.h`（`saveBrokerModeConfig` / `loadBrokerModeConfig` API 追加）/ `IoT/ESP32/src/sensitiveData.cpp`（NVS 読み書き実装）/ `IoT/ESP32/src/MQTT/mqtt.cpp`（X.509 mutual TLS・LittleFS `/certs/` cert ロード・cloud clientId `IoT_<mac>`）/ `IoT/ESP32/src/main.cpp`（cloud endpoint override block）/ `IoT/ESP32/src/maintenanceApServer.cpp`（AP 設定 UI `brokerMode` / `cloudEndpoint` 追加）。
-- [x] [012-0008] [2026-05-20→**完了 2026-05-23**][重要] **クラウド統合試験**（試験番号 `7200`〜`7209`）。
-  - ✅ 7200: ESP32 → AWS IoT Core 接続確認（2026-05-21）
-  - ✅ 7201: MQTT Publish → LocalServer subscribe 受信確認（2026-05-21）
-  - ⏭ 7202: AWS CloudWatch / MQTT test client ログ証跡確認 → `020-0025` 以降に延期
-  - ✅ 7203: X.509 認証確認（有効証明書で接続可、無効証明書で拒否）（2026-05-21）
-  - ✅ 7204: AES-256-GCM 暗号化維持確認（2026-05-21）
-  - ✅ 7205: OTA 開始コマンド（LocalServer → ESP32 via AWS IoT Core）（2026-05-23）
-  - ✅ 7206: OTA 完了 × 2 回（dual-partition app0→1→0）（2026-05-23）
-  - ✅ 7207: 第三者アクセス試行（無証明書での接続拒否確認）（2026-05-21）
-  - ✅ 7208: フォールバック試験（cloud → local）（2026-05-21）
-  - ✅ 7209: ローカルモード復帰後の通常通信確認（2026-05-21）
-  - [完了証跡][2026-05-23] `ota.cpp:resolveOtaTlsCaCertificate` cloud mode → `AmazonRootCA1.pem` 使用修正 / `esp32lab-localserver-policy` Publish リソース `esp32lab/*` に拡張 / S3 presigned URL OTA（`020-0025` 実装込み）/ 試験記録書.md 7205/7206 PASS 記録済み
-- [ ] [012-0009] [2026-05-20][重要] **まとめ・文書整合**（試験合格後）。以下を実施:
-  - ✅ `試験記録書.md` に `7200`〜`7209` の試験結果を記録（2026-05-23 完了）
-  - ✅ ローカルモードへ完全復帰（`CLOUD_MQTT_ENABLED=false`、2026-05-23 完了）
-  - [ ] `設計議事録20260520.md` に実装結果・試験証跡を追記
-  - [ ] `クラウド構築手順書.md` を実施結果で更新
-  - [ ] `ドキュメント概要.md` / `設計概要.md` に 012 章クラウド連携完了の相互参照を同期（旧 `012-0003`）
-  - [ ] `todo_old20260523.md` に 012-0008 を退避
-  - [ ] Git コミット + Git タグ `v1.1.0-cloud-ota` 付与（証跡）
+- [x] [012-0008] 退避済み → `todo_old20260523.md` 参照（完了 2026-05-23、コミット `260523-1`、タグ `v1.1.0-cloud-ota`）
+- [x] [012-0009] [2026-05-20→**完了 2026-05-23**][重要] **まとめ・文書整合**（試験合格後）。全件完了。退避: `todo_old20260523.md`。
+  - ✅ `試験記録書.md` に `7200`〜`7209` の試験結果を記録（2026-05-23）
+  - ✅ ローカルモードへ完全復帰（`CLOUD_MQTT_ENABLED=false`）
+  - ✅ `ドキュメント概要.md` / `設計概要.md` に 012 章クラウド連携完了の相互参照を同期（旧 `012-0003`）
+  - ✅ `todo_old20260523.md` に 012-0008 を退避
+  - ✅ Git コミット `260523-1` + Git タグ `v1.1.0-cloud-ota` 付与
+  - ⏭ `設計議事録20260520.md` 詳細追記・`クラウド構築手順書.md` 更新 → 必要に応じ次セッション
 
 ### 013. 文書整備・コードコメント充実化[2026-05-19 新設]
 [重要] `012` クラウド連携に着手する前の整備フェーズ。既存文書 12 件のセキュア関連内容は充実しているが、**統合的なノウハウ集** と **設計書↔実装マッピング表** が不足。コードコメントは ESP32 セキュア系は良好だが LocalServer / SecretCore TypeScript/Rust 側は弱い。本章でこれらを段階的に整備する。
