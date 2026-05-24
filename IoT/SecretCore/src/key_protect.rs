@@ -1,43 +1,25 @@
-//! Cross-platform key protection: file-based wrapping key + AES-256-GCM.
+//! Key protection: file-based AES-256-GCM (default) or Windows DPAPI (PROTECT_MODE=dpapi).
 //!
-//! # Design
+//! # Protection modes
+//! Set env var `PROTECT_MODE=dpapi` to use Windows DPAPI (Windows only).
+//! Default (or `PROTECT_MODE=file`) uses file-based AES-256-GCM with `master_key.bin`.
+//!
+//! ## File-based mode (default)
 //! A 32-byte random wrapping key is generated on first use and stored in
-//! `../LocalServer/data/keys/master_key.bin` inside a dedicated `keys/` subfolder.
-//! All subsequent encrypt/decrypt operations on the same machine use this wrapping key.
+//! `../LocalServer/data/keys/master_key.bin`. All wrapped_*.bin files are encrypted with
+//! AES-256-GCM using this wrapping key.
 //!
-//! # Security model
-//! The `keys/` directory and all files within it receive OS-native restrictive permissions
-//! on creation, so that only the LocalServer process account (and SYSTEM) can read them.
-//! Administrators can delete files for maintenance but cannot read them without first
-//! taking ownership (which leaves an audit trail).
+//! File format: `[12-byte nonce][ciphertext][16-byte GCM tag]`
 //!
-//! ## Unix (Linux / macOS)
-//! - `keys/`          → chmod 700 (owner rwx only)
-//! - `master_key.bin` → chmod 600 (owner rw only)
+//! ## Windows DPAPI mode (PROTECT_MODE=dpapi)
+//! Uses `CryptProtectData` / `CryptUnprotectData` (user-scope, no extra entropy).
+//! `master_key.bin` is not used. The OS user's DPAPI secret is the protection boundary.
+//! This mode is Windows-only; setting it on other platforms falls back to file-based.
 //!
-//! ## Windows
-//! - `icacls /inheritance:r` removes inherited ACEs.
-//! - Current user + `NT AUTHORITY\SYSTEM` receive Full Control.
-//! - `BUILTIN\Administrators` receive Delete only (no Read).
-//! - Other accounts: no access.
-//! - An Administrator who must delete can Take Ownership first (standard Windows admin flow).
-//!
-//! # Why file-based instead of OS keyring
-//! The OS keyring (Windows Credential Manager, macOS Keychain, libsecret) is not reliably
-//! shared between a parent Node.js process and its spawned child (SecretCore). The file-based
-//! approach is predictable, cross-platform, and provides equivalent security when the
-//! `keys/` directory is protected by OS file permissions.
-//!
-//! # File format (protect_data output)
-//! [12-byte nonce][variable-length ciphertext][16-byte GCM tag]
-//!
-//! # Migration from DPAPI
-//! Existing wrapped_secret.bin / wrapped_k_user.bin encrypted with DPAPI cannot be
-//! decrypted by this module. Before switching builds:
-//!   1. Run IPC command: export_k_user  ->  saves k_user_backup.enc.json
-//!   2. After switching: delete wrapped_secret.bin and wrapped_k_user.bin
-//!   3. Restart SecretCore  ->  generates new s_random, creates new wrapped_secret.bin
-//!   4. Run IPC command: import_k_user_backup  ->  restores k-user from backup file
+//! # OS permissions (both modes)
+//! The `keys/` directory and all files within it receive restrictive OS permissions.
+//! ## Unix:  keys/=700, files=600
+//! ## Windows: current user+SYSTEM=Full; Administrators=Delete only (no Read).
 //!
 //! # Related
 //! - Design: `鍵管理および初期セットアップ設計仕様書.md` §4
@@ -182,15 +164,22 @@ fn get_or_create_wrapping_key() -> Result<[u8; 32], String> {
 }
 
 // ============================================================
-// Public encrypt / decrypt API
+// Protection mode detection
 // ============================================================
 
-/// Encrypt `data` using the file-based wrapping key + AES-256-GCM.
-///
-/// Output format: `[12-byte nonce][ciphertext][16-byte GCM tag]`
-///
-/// The wrapping key is loaded from `master_key.bin`, or created on first use.
-pub fn protect_data(data: &[u8]) -> Result<Vec<u8>, String> {
+/// Returns the active protection mode: "dpapi" or "file".
+/// Reads PROTECT_MODE env var; falls back to "file".
+pub fn active_protection_mode() -> String {
+    std::env::var("PROTECT_MODE")
+        .map(|s| s.to_lowercase())
+        .unwrap_or_else(|_| "file".to_string())
+}
+
+// ============================================================
+// File-based AES-256-GCM (internal)
+// ============================================================
+
+fn protect_data_file(data: &[u8]) -> Result<Vec<u8>, String> {
     let wk = get_or_create_wrapping_key()?;
     let cipher = Aes256Gcm::new(wk.as_ref().into());
     let mut nonce_bytes = [0u8; 12];
@@ -199,7 +188,7 @@ pub fn protect_data(data: &[u8]) -> Result<Vec<u8>, String> {
     let mut buffer = data.to_vec();
     let tag = cipher
         .encrypt_in_place_detached(nonce, b"", &mut buffer)
-        .map_err(|e| format!("protect_data encrypt error: {:?}", e))?;
+        .map_err(|e| format!("protect_data_file encrypt error: {:?}", e))?;
     let mut result = Vec::with_capacity(12 + buffer.len() + 16);
     result.extend_from_slice(&nonce_bytes);
     result.extend_from_slice(&buffer);
@@ -207,19 +196,12 @@ pub fn protect_data(data: &[u8]) -> Result<Vec<u8>, String> {
     Ok(result)
 }
 
-/// Decrypt `encrypted_data` using the file-based wrapping key + AES-256-GCM.
-///
-/// Input format: `[12-byte nonce][ciphertext][16-byte GCM tag]`
-///
-/// Returns an error if:
-/// - `master_key.bin` cannot be read
-/// - GCM tag verification fails (data corruption, wrong key, or DPAPI format)
-pub fn unprotect_data(encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
-    const MIN_LEN: usize = 12 + 16; // nonce + GCM tag
+fn unprotect_data_file(encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
+    const MIN_LEN: usize = 12 + 16;
     if encrypted_data.len() < MIN_LEN {
         return Err(format!(
-            "unprotect_data: data too short ({} bytes, need at least {}). \
-            If this file was created with DPAPI, see migration steps in key_protect.rs.",
+            "unprotect_data_file: data too short ({} bytes, need at least {}). \
+            If this file was encrypted with DPAPI, set PROTECT_MODE=dpapi.",
             encrypted_data.len(),
             MIN_LEN
         ));
@@ -233,10 +215,124 @@ pub fn unprotect_data(encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
     cipher
         .decrypt_in_place_detached(nonce, b"", &mut buffer, tag.into())
         .map_err(|e| format!(
-            "unprotect_data decrypt error: {:?}. \
-            If this file was created with DPAPI or a different key, \
-            see migration steps in key_protect.rs.",
+            "unprotect_data_file decrypt error: {:?}. \
+            If this file was encrypted with a different key or mode, \
+            check PROTECT_MODE and wrapped_*.bin consistency.",
             e
         ))?;
     Ok(buffer)
+}
+
+// ============================================================
+// Windows DPAPI (internal, Windows-only)
+// ============================================================
+
+#[cfg(windows)]
+fn protect_data_dpapi(data: &[u8]) -> Result<Vec<u8>, String> {
+    use winapi::ctypes::c_void;
+    use winapi::um::dpapi::CryptProtectData;
+    use winapi::um::winbase::LocalFree;
+    use winapi::um::wincrypt::DATA_BLOB;
+
+    let mut in_blob = DATA_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = DATA_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    let ok = unsafe {
+        CryptProtectData(
+            &mut in_blob,
+            std::ptr::null(),     // description (unused)
+            std::ptr::null_mut(), // optional entropy (none)
+            std::ptr::null_mut(), // reserved
+            std::ptr::null_mut(), // prompt struct (none)
+            0,                    // flags: 0 = current-user scope
+            &mut out_blob,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "protect_data_dpapi: CryptProtectData failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let result = unsafe {
+        std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec()
+    };
+    unsafe {
+        LocalFree(out_blob.pbData as *mut c_void);
+    }
+    Ok(result)
+}
+
+#[cfg(windows)]
+fn unprotect_data_dpapi(data: &[u8]) -> Result<Vec<u8>, String> {
+    use winapi::ctypes::c_void;
+    use winapi::um::dpapi::CryptUnprotectData;
+    use winapi::um::winbase::LocalFree;
+    use winapi::um::wincrypt::DATA_BLOB;
+
+    let mut in_blob = DATA_BLOB {
+        cbData: data.len() as u32,
+        pbData: data.as_ptr() as *mut u8,
+    };
+    let mut out_blob = DATA_BLOB {
+        cbData: 0,
+        pbData: std::ptr::null_mut(),
+    };
+
+    let ok = unsafe {
+        CryptUnprotectData(
+            &mut in_blob,
+            std::ptr::null_mut(), // description out (unused)
+            std::ptr::null_mut(), // optional entropy (none)
+            std::ptr::null_mut(), // reserved
+            std::ptr::null_mut(), // prompt struct (none)
+            0,                    // flags
+            &mut out_blob,
+        )
+    };
+    if ok == 0 {
+        return Err(format!(
+            "unprotect_data_dpapi: CryptUnprotectData failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    let result = unsafe {
+        std::slice::from_raw_parts(out_blob.pbData, out_blob.cbData as usize).to_vec()
+    };
+    unsafe {
+        LocalFree(out_blob.pbData as *mut c_void);
+    }
+    Ok(result)
+}
+
+// ============================================================
+// Public encrypt / decrypt API — dispatch on PROTECT_MODE
+// ============================================================
+
+/// Encrypt `data` using the active protection mode.
+/// `PROTECT_MODE=dpapi` → Windows DPAPI (Windows only).
+/// Default → file-based AES-256-GCM with master_key.bin.
+pub fn protect_data(data: &[u8]) -> Result<Vec<u8>, String> {
+    #[cfg(windows)]
+    if active_protection_mode() == "dpapi" {
+        return protect_data_dpapi(data);
+    }
+    protect_data_file(data)
+}
+
+/// Decrypt `encrypted_data` using the active protection mode.
+/// `PROTECT_MODE=dpapi` → Windows DPAPI (Windows only).
+/// Default → file-based AES-256-GCM with master_key.bin.
+pub fn unprotect_data(encrypted_data: &[u8]) -> Result<Vec<u8>, String> {
+    #[cfg(windows)]
+    if active_protection_mode() == "dpapi" {
+        return unprotect_data_dpapi(encrypted_data);
+    }
+    unprotect_data_file(encrypted_data)
 }

@@ -27,69 +27,60 @@
 #     確認する。差分があった場合は `.cursorrules` と `CLAUDE.md` の変更履歴の日付で新しい方を正とする。
 #   - 大規模整理時は両方を同日に更新し、本セクションの「最終整合確認日」を更新する。
 #
-# 【最終整合確認日】2026-05-24（全 90 件完了・残 0/90 🎉）
+# 【最終整合確認日】2026-05-24 セッション④（全 90 件完了・残 0/90 🎉 + 020-0026/0027 新規）
 # ============================================================================
 
 # ============================================================================
-# [最重要][2026-05-24] 現在地 - 全 90 件完了 🎉 残 0/90
+# [最重要][2026-05-24 セッション④] 現在地 - 全 90 件完了 🎉 残 0/90
 # ============================================================================
 # Git タグ:
 #   - v1.0.0-local              ローカル環境構築完了バージョン（2026-05-19）
 #   - local-env-complete-20260519  マイルストーンタグ
 #   - v1.1.0-cloud-ota          クラウド OTA S3 配信完了マイルストーン（2026-05-23 付与済み）
 #
-# 進捗: 未完了 0 / 90（100% 完了 🎉）
-# 直近成果（2026-05-24）:
-#   010-0011（CoreDNS ゾーン管理ルール）完了:
-#     - ネットワーク運用仕様書.md §2.4.2 新規追加
-#     - ローカル専用ゾーン（*.esplab.home.arpa）限定・fallthrough 必須・公開ドメイン禁止を文書化
-#   010-0012（DHCP 配布 DNS・ESP32 固定 DNS 廃止計画）完了:
-#     - ネットワーク運用仕様書.md §2.4.3 新規追加
-#     - 現状（cloud mode 固定 dns1=172.17.1.100）・Aterm 設定手順・移行条件・3 ステップを文書化
-#   012-0003（CloudServer/readme.txt ↔ 設計概要.md §3 双方向参照）完了:
-#     - ドキュメント概要.md CloudServer/readme.txt 項目に [参照補足][012-0003] 追加
-#     - 設計概要.md §3 に [文書索引][012-0003] ドキュメント概要.md との相互参照追加
-#   010-0014（IoT LAN Firewall サブネット限定）完了:
-#     - types.ts: localServerSettings.iotLanSubnet: string フィールド追加
-#     - settingsStore.ts: iotLanSubnet デフォルト（172.17.1.0/24）・CIDR バリデーション・永続化
-#     - server.ts: GET /api/admin/network/firewall-config / POST /api/admin/network/iot-subnet
-#     - admin.html: firewallConfigCard（サブネット表示・変更・apply/rollback コマンド生成）
-#     - scripts/applyIoTFirewallRules.ps1 新規作成（5 ルール・Profile=Private・Rollback 対応）
-#     - ネットワーク運用仕様書 §7.4.4c / 管理画面仕様書 §3.11 / 試験仕様書 7110 追加
-#   020-0022（LocalServer cloud/local mode 切替 UI）完了・020-0021（NVS fallback IP）完了
-#   020-0020（#0047 試験記録化）完了 + 020-0016/0017/0019/0025 正式退避（todo_old20260524.md）
+# 進捗: 未完了 0 / 90（100% 完了 🎉）将来対応 020 章 12 件（020-0026/0027 新規追加）
+#
+# 直近成果（2026-05-24 セッション④）:
+#   DPAPI 選択モード実装完了（key_protect.rs デュアルモード）
+#   - PROTECT_MODE=dpapi: Windows DPAPI モード（wrapped_secret.bin = 552B）
+#   - デフォルト（未設定）: ファイルベース AES-256-GCM（wrapped_secret.bin = 280B、master_key.bin = 32B）
+#   両方式 E2E テスト PASS:
+#   - DPAPI: MQTT PASS + OTA PASS（partition 1→0）
+#   - ファイルベース AES-256-GCM: MQTT PASS + OTA PASS（partition 0→1）
+#   020-0026（PROTECT_MODE 鍵作成時対話選択 UX）新規追加
+#   020-0027（管理画面への鍵保護モード表示）新規追加
+#   鍵管理設計仕様書 §2/§4 デュアルモード対応更新
+#
+# 直近成果（2026-05-24 セッション①〜③）:
+#   010-0011/010-0012/012-0003/010-0014 完了。020-0022/0021/0020 完了 + 020-0016/0017/0019/0025 退避。
+#   DPAPI → ファイルベース AES-256-GCM 移行。ESP32 MQTT PASS。
 #
 # 直近成果（2026-05-23）:
 #   012章 全件完了。コミット 260523-1〜260523-4・タグ v1.1.0-cloud-ota。
-#   - 7205/7206: S3 presigned URL 経由クラウド OTA PASS（dual-partition app0↔app1 確認）
 #   AWS 課金ゼロ確認: IoT Core 接続 0 / EC2 0 / RDS 0 / S3 FW ファイル削除済み
 #
 # 残り（将来対応・アクティブ 90 件外）:
-#   - 020 章: 020-0001/0004〜0013/0014/0018/0023〜0024（本番鍵分離・不可逆処理等）
+#   020-0026（PROTECT_MODE 対話選択）/ 020-0027（UI モード表示）/ 020-0001（本番鍵分離）
+#   020-0004〜0014/0018/0023〜0024（不可逆処理・Mac/Linux 汎用化等）
 #
-# 直近成果（2026-05-24 セッション③）:
-#   DPAPI → ファイルベース AES-256-GCM 鍵保護移行完了（key_protect.rs + data/keys/）
-#   ESP32 LittleFS uploadfs + MQTT ローカル通信確認 PASS（k-device=7d1271a61762c6c0）
-#   applyIoTFirewallRules.ps1 全英語化 + NIC 自動検出
-#   次の課題: ローカル OTA テスト + DPAPI 選択モード実装（Windows PROTECT_MODE=dpapi）
-#
-# 実環境の現在状態（2026-05-24 セッション③終了時点）:
+# 実環境の現在状態（2026-05-24 セッション④終了時点）:
 #   - ESP32: local mode（brokerMode=local, AP-IoTESP32Test, 172.17.1.200）
-#            FW = 1.1.0-beta.40。LittleFS 更新済み（k-device=7d1271a61762c6c0）。MQTT PASS。
-#   - LocalServer: local mode（CLOUD_MQTT_ENABLED=false）。SecretCore 稼働中（data/keys/ 使用）。
-#   - 鍵保護: ファイルベース AES-256-GCM（旧 DPAPI 退避済み）
-#   - Mosquitto: 稼働中
-#   - CoreDNS: Corefile bind 172.17.1.100 限定（cloud 試験で適用済み）
-#   - AWS: 無接続（課金なし）。S3 FW ファイル削除済み（バケットは空で残存）
+#            FW=1.1.0-beta.40, runningPartition=1（app1）
+#            k-device=9a57504897a75c5c（ファイルベースモード）
+#   - LocalServer: local mode（CLOUD_MQTT_ENABLED=false, PROTECT_MODE 未設定=ファイルベース）
+#                  SecretCore 稼働中（data/keys/ 使用）
+#   - 鍵保護: ファイルベース AES-256-GCM（master_key.bin=32B, wrapped_secret.bin=280B）
+#             DPAPI はオプション（PROTECT_MODE=dpapi で有効化可）
+#   - Mosquitto: 稼働中 / CoreDNS: Corefile bind 172.17.1.100 限定
+#   - AWS: 無接続（課金なし）。S3 バケット空
 #
 # 次セッション開始時の読む順:
 #   1. .cursorrules（本ファイル）→ CLAUDE.md → IoT/todo.md
 #   2. IoT/ドキュメント概要.md（文書索引）
-#   3. IoT/システムアーキテクチャ詳細.md（全モジュール・フロー詳細）
-#   4. 必要に応じ IoT/技術スタック一覧.md / IoT/クラウド構築手順書.md
+#   3. 必要に応じ IoT/鍵管理および初期セットアップ設計仕様書.md §4（デュアルモード）
 #
 # AWS 認証情報:
-#   IoT/LocalServer/.env (Git 除外済み、.gitignore:10 で確認済み)
+#   IoT/LocalServer/.env (Git 除外済み)
 #   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY / AWS_DEFAULT_REGION=ap-northeast-1
 #   CLOUD_WIFI_SSID / CLOUD_WIFI_PASSWORD（Buffalo-G-41E0、cloud 時に使用）
 #   原本は ~/.aws/credentials の default プロファイル。

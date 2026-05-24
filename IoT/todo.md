@@ -4,14 +4,14 @@ marp: true
 
 # IoT TODO
 
-### タスク進捗統計 [2026-05-23]
+### タスク進捗統計 [2026-05-24]
 | 計測日 | 残り個数 / 全個数 | 進捗率 | 備考 |
 | :--- | :--- | :--- | :--- |
-| **現在 (05-24)** | **0 / 90** | **100% 🎉** | **全件完了！** `010-0011` 完了（CoreDNS ゾーン管理ルール §2.4.2）。`010-0012` 完了（DHCP DNS 廃止計画 §2.4.3）。`012-0003` 完了（ドキュメント概要.md / 設計概要.md 相互参照）。`010-0014` 完了（IoT LAN Firewall）。`020-0022` 完了（brokerMode 切替 UI）。`020-0021` 完了（NVS fallback IP）。 |
-| 前回 (05-23) | 11 / 90 | 約88% | 🎉🎉**`012-0008` / `012-0009` 全件クリア**：cloud OTA S3 presigned URL PASS（7205/7206）・文書整合完了・`todo_old20260523.md` 退避・コミット `260523-1`・タグ `v1.1.0-cloud-ota`。012 章全件完了。 |
-| 前々回 (05-21 続²) | 13 / 90 | 約86% | 🎉**`012-0008` 大部分クリア**：7200/7201/7203/7204/7207/7208/7209 ✅。7205/7206 OTA は `020-0025`（S3 化）実装後に正式試験へ。新規 todo 4 件追加：020-0022〜020-0025。 |
-| 前々々回 (05-21) | 13 / 87 | 約85% | 🎉**`012-0008` 7200 試験クリア**。根本原因 4 件修正（#0047 pingBrokerHost / #0048 Buffalo-G-41E0 切替 / IP connect mTLS / willRetain=false）。CoreDNS bind 限定適用。 |
-| 前々々々回 (05-23→05-20 省略) | — | — | 詳細は `todo_old20260523.md` / `todo_old20260524.md` の退避記録参照。 |
+| **現在 (05-24 セッション④)** | **0 / 90** | **100% 🎉** | **DPAPI 選択モード実装完了 + 両方式 MQTT/OTA E2E テスト PASS**。`key_protect.rs` デュアルモード（`PROTECT_MODE=dpapi` / デフォルト AES-256-GCM）。`020-0026`/`020-0027` 新規追加。 |
+| 前回 (05-24 セッション①〜③) | 0 / 90 | 100% | `010-0011`/`010-0012`/`012-0003`/`010-0014`/`020-0022`/`020-0021` 完了・DPAPI→ファイルベース移行・MQTT PASS。OTA は次回へ。 |
+| 前々回 (05-23) | 11 / 90 | 約88% | 🎉`012-0008`/`012-0009` 全件クリア。cloud OTA S3 PASS（7205/7206）・タグ `v1.1.0-cloud-ota`。 |
+| 前々々回 (05-21) | 13 / 90 | 約85〜86% | `012-0008` 7200〜7209 大部分クリア。CoreDNS bind 限定。 |
+| 前々々々回 (05-20) | — | — | 詳細は `todo_old20260520.md` / `todo_old20260523.md` / `todo_old20260524.md` 参照。 |
 
 [運用ルール][2026-05-19] 同日の複数回更新は **1 行に集約**、保持は **直近 5 日分** まで。詳細経緯は `## 変更履歴` 節と各 `todo_oldYYYYMMDD.md` を参照。
 
@@ -90,40 +90,36 @@ marp: true
 #### 旧直近ゴール（2026-05-19 セッション終了時点・参考用）
 - [到達点][2026-05-19] **`009-0008` 〜 `009-0024` / `009-1020` / `010-0001` 完了**＋ `009-0014` 不採用＋ `007→020` 3 件移管＋ `013` 章 5 件全件完了（`todo_old20260519.md`）。**TPM→DPAPI 整合 19 文書 / HKDF→HMAC 整合 8 文書**。未完了 **15 / 81**（81%）。Git タグ `v1.0.0-local` / `local-env-complete-20260519` 付与。
 
-#### 次セッション開始メモ（2026-05-24 セッション③終了時点）
-- [最重要][2026-05-24③] **DPAPI → ファイルベース AES-256-GCM 鍵保護へ移行完了 + ESP32 MQTT 通信確認 PASS**（完了）。
-  - `SecretCore/src/key_protect.rs` 新規作成（AES-256-GCM + `LocalServer/data/keys/master_key.bin`）
-  - `keys/` サブディレクトリ新設・OS パーミッション適用済み（Windows: icacls, Unix: chmod 600/700）
-  - 管理者は Delete のみ（Read 不可）で保守可能。SYSTEM + 実行ユーザ = Full Control。
-  - `Cargo.toml` から `keyring = "3"` 削除・`winapi` 依存なし → cargo build 成功
-  - 旧 DPAPI ファイル退避済み: `wrapped_secret.bin.dpapi.bak` / `wrapped_k_user.bin.dpapi.bak` / `wrapped_secret.bin.keyring.bak`（Git 除外済み）
-  - `master_key.bin`（32バイト CSPRNG）+ `wrapped_secret.bin` / `wrapped_k_user.bin` を `data/keys/` に新規生成
-  - LocalServer 起動 → SecretCore bootstrap 成功（`"SecretCore ready. attempt=1"`）
-  - k-device fingerprint=`7d1271a61762c6c0`（`sensitiveData.json` 現在値）
-  - `applyIoTFirewallRules.ps1` 全英語化（PS5 文字化け修正）+ NIC 自動検出機能追加
-  - **✅ LittleFS uploadfs 完了** + **✅ MQTT ローカル通信確認 PASS**
-- [最重要][2026-05-24③] **⚠️ OTA テスト未実施**。
-  - **次セッション開始時に実行**: LocalServer `POST /api/ota/start` → ESP32 がローカル OTA で FW 更新できることを確認
-  - その後、Windows DPAPI 選択モード（`PROTECT_MODE=dpapi`）実装・両方式テスト
-- [最重要][2026-05-24] **`020-0021` 完了**（`mqttFallbackIp` NVS 保存・AP REST API・`pingBrokerHost` NVS 優先・試験仕様書 7089・AP 仕様書・MQTT 仕様書更新）。進捗 **5/90**（約 94%）。
-- [最重要][2026-05-24] **020-0020 完了退避**（#0047 試験記録化）＋ **020-0016/0017/0019/0025 正式退避完了**。進捗 **6/90**（約 93%）。
-- [最重要] **実環境の現在状態（2026-05-24③セッション終了時点）**：
-  - ESP32: local mode（brokerMode=local, AP-IoTESP32Test, 172.17.1.200, FW=1.1.0-beta.40）。LittleFS 更新済み（k-device=`7d1271a61762c6c0`）
-  - LocalServer: **起動中**（local mode, CLOUD_MQTT_ENABLED=false）。SecretCore 動作中（`data/keys/` 使用）。
+#### 次セッション開始メモ（2026-05-24 セッション④終了時点）[最新・正]
+- [最重要][2026-05-24④] **DPAPI 選択モード実装 + 両方式 MQTT/OTA E2E テスト完了 🎉**
+  - `SecretCore/src/key_protect.rs` デュアルモード実装（`PROTECT_MODE=dpapi` / デフォルト AES-256-GCM）
+  - ファイルベース AES-256-GCM: `data/keys/master_key.bin`（32B）+ `wrapped_secret.bin`（280B）
+  - DPAPI: `PROTECT_MODE=dpapi` を `.env` に追加すると有効化、`wrapped_secret.bin`（552B）
+  - **両方式テスト結果**:
+    - DPAPI: MQTT PASS + OTA PASS（partition 1→0）
+    - ファイルベース AES-256-GCM: MQTT PASS + OTA PASS（partition 0→1）
+  - 現在: ファイルベースモードで復元済み（`.env` に `PROTECT_MODE` 未設定）
+- [最重要] **実環境の現在状態（2026-05-24④セッション終了時点）**：
+  - ESP32: local mode（brokerMode=local, AP-IoTESP32Test, 172.17.1.200, FW=1.1.0-beta.40, partition=1）
+  - k-device=`9a57504897a75c5c`（ファイルベースモード、LittleFS + NVS 移行済み）
+  - LocalServer: **起動中**（local mode, CLOUD_MQTT_ENABLED=false, PROTECT_MODE 未設定 = ファイルベース）
+  - SecretCore: `data/keys/` 使用中（master_key.bin=32B, wrapped_secret.bin=280B）
   - Mosquitto: 稼働中 / CoreDNS: Corefile bind 172.17.1.100 限定
-  - AWS: 無接続。S3 esp32lab-firmware バケット空（課金なし）
-  - AWS IoT Core 接続 0 / EC2 0 / RDS 0 → **課金なし確認済み**
+  - AWS: 無接続（課金なし）。S3 バケット空
 - [最重要] **次の本線選択肢**：
-  1. **⚠️ 最優先**: ローカル OTA テスト（`POST /api/ota/start`）
-  2. Windows DPAPI 選択モード実装（`PROTECT_MODE=dpapi` 環境変数）
-  3. `020-0001`: 本番鍵分離
-  4. 020 章その他将来対応（`020-0011`〜`020-0024` 参照）
+  1. `020-0026`: PROTECT_MODE 鍵作成時対話選択 UX（`.env` 手書き不要化）
+  2. `020-0001`: 本番鍵分離
+  3. `020-0011`/`020-0012`: 不可逆処理 ProductionTool 実装
+  4. 020 章その他将来対応（`020-0004`/`020-0007`〜`020-0010`/`020-0023`〜`020-0024`）
 - [重要] **クラウド OTA 再試験手順**（次回試験時）:
   1. FW ビルド: `cd IoT/ESP32 && pio run -e esp32s3_secure`
   2. S3 アップロード: `aws s3 cp .pio/build/esp32s3_secure/firmware.bin s3://esp32lab-firmware-603480426819/firmware/<version>/firmware.bin`
   3. `クラウド構築手順書.md §11` 以降の手順に従う
 - [重要] **AWS 認証情報**: `IoT/LocalServer/.env`（Git 除外済み）に保存済み
 - [Claude Code / Cursor 共通入口] **新セッション開始時は `.cursorrules`（0番）→ `CLAUDE.md`（自動読込）→ `IoT/todo.md` の順で読む**（`CLAUDE.md §4` 参照）。
+
+#### 次セッション開始メモ（2026-05-24 セッション③終了時点・旧版・参考用）
+- [到達点] DPAPI → ファイルベース AES-256-GCM 移行完了。MQTT PASS。OTA は次回へ（→ セッション④で完了）。
 
 #### 次セッション開始メモ（2026-05-23 最終・旧版・参考用）
 - [最重要][2026-05-23] **`012` 章全件完了**。進捗 11/90（約 88%）。020-0016/0017/0019/0025 は 012-0008 作業中に実質対処済み → 2026-05-24 正式退避完了（`todo_old20260524.md`）。
@@ -752,6 +748,26 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
     - 通常運用試験（実 240h）: 別個体または実 10 日間運用で実施（運用上の都合次第）
     - **試験後の必須措置**: 元の鍵へ戻す（`runKeyRotationSession()` で試験前の `currentKDevice` を再度 current 化）／設計時間に戻す（`-DKEY_ROTATION_TIME_SCALE=1` で再ビルド・配信）／結果を `試験記録書.md` `7038` 欄へ追記
   - [関連] `009-0020`（精査結果に基づき本タスクへ移管・退避済み）／`試験仕様書.md` `7038`／`機能仕様書.md` F3-035・F3-036／`要件定義書.md` FR-047／`IF仕様書.md:353`／`コマンド仕様書.md:528`／`SecretCore/src/key_manager.rs:454-465 get_k_device`（k-device 導出）
+- [ ] [020-0027] [2026-05-24][将来対応] **管理画面への鍵保護モード表示**（現在どちらのモードで動いているかを UI に表示する）。
+  - [背景][2026-05-24] `PROTECT_MODE` 環境変数でファイルベース AES-256-GCM と Windows DPAPI を切替可能になったが、現在の管理画面（`admin.html`）には active な保護モードが表示されない。
+  - [実装案]
+    - `SecretCore` に `active_protection_mode()` 関数がある（`key_protect.rs:172`）。LocalServer 側の health/info API または SecretCore facade 経由でモードを返す。
+    - `GET /api/admin/secret-core/info` に `protectionMode: "file" | "dpapi"` フィールドを追加。
+    - `admin.html` の SecretCore ステータスカードに保護モードを表示（例: `AES-256-GCM (file)` / `Windows DPAPI`）。
+    - `data/keys/master_key.bin` の有無・`wrapped_secret.bin` のサイズ（280 vs 552 bytes）でも簡易判定可能だが、API 経由の方が正確。
+  - [関連] `key_protect.rs:active_protection_mode()` / `020-0026`（対話選択）/ `LocalServer秘密処理別層仕様書.md`
+
+- [ ] [020-0026] [2026-05-24][将来対応][重要] **PROTECT_MODE 鍵作成時の対話選択 UX**（鍵生成スクリプト/セットアップ時にユーザーがモードを選択できるようにする）。
+  - [背景][2026-05-24] 現在は `PROTECT_MODE=dpapi` 環境変数を事前に設定してから `createSensitiveDataJsonForRecovery.cjs` を実行しないとモードが切り替わらない。設定し忘れると復号に失敗するため UX が悪く、次回セッションでの引継ぎが分かりにくい。
+  - [ユーザー要望] 「DPAPI と非 DPAPI はビルドでなく、鍵を作るとき、その場でユーザーが作るときに選択できるといい」
+  - [実装案]
+    - `createSensitiveDataJsonForRecovery.cjs` に `--protect-mode dpapi|file` オプションを追加し、指定がない場合は対話プロンプト（`readline`）でモードを選択させる。
+    - または LocalServer の管理画面（`admin.html`）に「SecretCore 初期セットアップ」ウィザードを追加し、モード選択 → 鍵生成 → LittleFS 書き出しまでをブラウザから実行できるようにする。
+    - `SecretCore` のヘルスチェック API に `currentMode` を含め、LocalServer 起動時にログ出力する。
+    - `PROTECT_MODE` は `.env` への永続化（`dotenv` 書き戻し）も検討。
+  - [着手条件] LocalServer のセットアップフローを改善したい時、または複数 PC 環境への展開が必要になった時。
+  - [関連] `key_protect.rs:active_protection_mode()` / `020-0027`（UI 表示）/ `createSensitiveDataJsonForRecovery.cjs`
+
 - [ ] [020-0004] [2026-05-19][将来対応][重要] `SecretCore` の OS 暗号化サービス（現行: Windows DPAPI）を Mac / Linux でも汎用対応できる方式へ抽象化する。
   - [背景][2026-05-19] 現実装は Windows DPAPI 単独（`SecretCore/src/dpapi.rs` / `SecretCore/src/key_manager.rs`、`WRAPPED_SECRET_ALG="DPAPI"`）。チップ非依存（TPM 不要）だが OS 依存（Windows 限定）。Mac / Linux 配布要件が出た時点で着手する。
   - [着手条件][2026-05-19] macOS または Linux 向けの LocalServer 配布要件が確定したとき、または現行 Windows 単独運用方針が変更されたとき。
@@ -770,6 +786,7 @@ IoT プロジェクトの継続です。回答は日本語でお願いします�
 - [厳守] 完了タスクは `todo_oldYYYYMMDD.md` へ退避し、本書から削除する。
 
 ## 変更履歴
+- 2026-05-24（**セッション④: DPAPI 選択モード実装 + 両方式 E2E テスト完了**）: `key_protect.rs` デュアルモード実装（`PROTECT_MODE=dpapi` / デフォルト AES-256-GCM）。DPAPI: MQTT PASS + OTA PASS（partition 1→0）。ファイルベース AES-256-GCM: MQTT PASS + OTA PASS（partition 0→1）。`020-0026`（PROTECT_MODE 対話選択）/`020-0027`（管理画面モード表示）新規追加。設計仕様書 §4 デュアルモード対応更新。コミット `260524-N`。
 - 2026-05-24（**020-0021 完了**）: `020-0021`（AP/NVS fallback IP 統合化）完了。実装：`common.h` kMqttFallbackIp 追加・`sensitiveDataService` `saveMqttFallbackIp`/`loadMqttFallbackIp` 追加・`maintenanceApServer.cpp` POST/GET 対応・`mqtt.cpp:pingBrokerHost` NVS 優先・マクロ fallback。文書：`APメンテナンス画面仕様書.md` §5.2 / §7・`MQTTコマンド仕様書.md` §3.3・`試験仕様書.md` `7089` 追加。進捗 **5/90**（約 94%）。
 - 2026-05-24（**020-0020 完了退避 + 020-0016/0017/0019/0025 正式退避**）: `020-0020`（`#0047` 試験記録化）完了。試験仕様書 7200 手順に `pingBrokerHost` cloud DNS 確認ステップ追加・試験記録書 7200 に `#0047 修正確認` エントリ追加・問題点記録書 `#0047` 試験結果確認セクション追記・`#0048` 状態「解決済み」更新。合わせて `012-0008` 作業中に実質対処済みだった 4 件（020-0016/0017/0019/0025）を正式クローズ。`todo_old20260524.md` へ退避。進捗 **6/90**（約 93%）。
 - 2026-05-23（🎉**012-0008 全件クリア・7205/7206 OTA PASS**）: **クラウドモードでの OTA S3 配信試験完了**。020-0025（S3 OTA）実装済み環境で 7205/7206 を正式実施し PASS。
