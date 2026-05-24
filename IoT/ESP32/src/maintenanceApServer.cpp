@@ -2266,6 +2266,7 @@ void handleNetworkSettingsApi() {
   String keyDevice;
   String brokerMode;
   String cloudEndpoint;
+  String mqttFallbackIp;
   long mqttPort = 8883;
   long serverPort = 443;
   long otaPort = 443;
@@ -2280,6 +2281,7 @@ void handleNetworkSettingsApi() {
   parseBodyStringValue(requestBody, "mqttUrlName", &mqttUrlName);
   parseBodyStringValue(requestBody, "brokerMode", &brokerMode);
   parseBodyStringValue(requestBody, "cloudEndpoint", &cloudEndpoint);
+  parseBodyStringValue(requestBody, "mqttFallbackIp", &mqttFallbackIp);
   parseBodyStringValue(requestBody, "mqttUser", &mqttUser);
   parseBodyStringValue(requestBody, "mqttPass", &mqttPass);
   parseBodyStringValue(requestBody, "mqttTlsCaCertPem", &mqttTlsCaCertPem);
@@ -2314,6 +2316,9 @@ void handleNetworkSettingsApi() {
   }
   if (brokerMode.length() > 0) {
     saveResult = saveResult && sensitiveDataServiceInstance->saveBrokerModeConfig(brokerMode, cloudEndpoint);
+  }
+  if (mqttFallbackIp.length() > 0) {
+    saveResult = saveResult && sensitiveDataServiceInstance->saveMqttFallbackIp(mqttFallbackIp);
   }
   if (mqttTlsCaCertPem.length() > 0 || mqttTlsCertIssueNo.length() > 0 || mqttTlsCertSetAt.length() > 0) {
     saveResult = saveResult && sensitiveDataServiceInstance->saveMqttTlsCertificate(mqttTlsCaCertPem, mqttTlsCertIssueNo, mqttTlsCertSetAt);
@@ -2381,6 +2386,7 @@ void handleNetworkSettingsGetApi() {
   String keyDevice;
   String brokerMode = "local";
   String cloudEndpoint;
+  String mqttFallbackIp;
 
   const bool loadResult =
       sensitiveDataServiceInstance->loadWifiCredentials(&wifiSsid, &wifiPass) &&
@@ -2390,8 +2396,9 @@ void handleNetworkSettingsGetApi() {
       sensitiveDataServiceInstance->loadOtaConfig(&otaUrl, &otaUrlName, &otaUser, &otaPass, &otaPort, &otaTls) &&
       sensitiveDataServiceInstance->loadTimeServerConfig(&timeServerUrl, &timeServerUrlName, &timeServerPort, &timeServerTls) &&
       sensitiveDataServiceInstance->loadKeyDevice(&keyDevice);
-  // brokerMode は任意フィールドのため loadResult に含めない（未設定でも正常動作）
+  // brokerMode / mqttFallbackIp は任意フィールドのため loadResult に含めない（未設定でも正常動作）
   sensitiveDataServiceInstance->loadBrokerModeConfig(&brokerMode, &cloudEndpoint);
+  sensitiveDataServiceInstance->loadMqttFallbackIp(&mqttFallbackIp);
   if (!loadResult) {
     maintenanceWebServer.send(500, "application/json", "{\"result\":\"NG\",\"detail\":\"load failed\"}");
     return;
@@ -2430,7 +2437,8 @@ void handleNetworkSettingsGetApi() {
   responseText += "\"timeServerTls\":" + String(timeServerTls ? "true" : "false") + ",";
   responseText += "\"keyDevice\":\"" + toJsonSafeText(keyDevice) + "\",";
   responseText += "\"brokerMode\":\"" + toJsonSafeText(brokerMode) + "\",";
-  responseText += "\"cloudEndpoint\":\"" + toJsonSafeText(cloudEndpoint) + "\"";
+  responseText += "\"cloudEndpoint\":\"" + toJsonSafeText(cloudEndpoint) + "\",";
+  responseText += "\"mqttFallbackIp\":\"" + toJsonSafeText(mqttFallbackIp) + "\"";
   responseText += "}";
   maintenanceWebServer.send(200, "application/json", responseText);
 }

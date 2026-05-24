@@ -2,12 +2,13 @@
 //
 // [重要] k-user は2つの経路で取得可能:
 //   (a) s_random → HKDF 導出（新規発行時）
-//   (b) wrapped_k_user.bin からDPAPI復号（TS版からのインポート時）
+//   (b) wrapped_k_user.bin から key_protect 復号（インポート時）
 // [厳守] wrapped_k_user.bin が存在する場合は (b) を優先する。
-// [厳守] k-user の平文をファイル保存しない（DPAPI暗号化のみ）。
+// [厳守] k-user の平文をファイル保存しない（key_protect 暗号化のみ）。
+// 変更日: 2026-05-24 DPAPI → key_protect（OS キーリング + AES-256-GCM）に置換。理由: PC 非依存化。
 // 変更日: 2026-05-11 wrapped_secret に version / createdAt / integrity を追加。理由: 008-0013 対応のため。
 
-use crate::dpapi;
+use crate::key_protect;
 use aes_gcm::aead::{AeadInPlace, KeyInit};
 use aes_gcm::{Aes256Gcm, Nonce};
 use base64::Engine;
@@ -22,8 +23,8 @@ use std::fs;
 use std::path::Path;
 use std::sync::Mutex;
 
-const WRAPPED_SECRET_PATH: &str = "../LocalServer/data/wrapped_secret.bin";
-const WRAPPED_K_USER_PATH: &str = "../LocalServer/data/wrapped_k_user.bin";
+const WRAPPED_SECRET_PATH: &str = "../LocalServer/data/keys/wrapped_secret.bin";
+const WRAPPED_K_USER_PATH: &str = "../LocalServer/data/keys/wrapped_k_user.bin";
 const DEFAULT_K_USER_BACKUP_PATH: &str = "../LocalServer/data/k_user_backup.enc.json";
 const BACKUP_FILE_VERSION: u32 = 1;
 const BACKUP_KDF_N_LOG2: u8 = 15;
@@ -31,7 +32,7 @@ const BACKUP_KDF_R: u32 = 8;
 const BACKUP_KDF_P: u32 = 1;
 const BACKUP_KDF_SALT_BYTES: usize = 16;
 const WRAPPED_SECRET_FILE_VERSION: u32 = 1;
-const WRAPPED_SECRET_ALG: &str = "DPAPI";
+const WRAPPED_SECRET_ALG: &str = "AES-GCM-KEYRING";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct KUserBackupKdfParams {
@@ -110,6 +111,9 @@ impl KeyManager {
                 let _ = fs::create_dir_all(parent);
             }
             fs::write(path, encrypted).map_err(|e| format!("Write error: {}", e))?;
+            if let Err(e) = key_protect::apply_key_file_permissions(path) {
+                eprintln!("Warning: could not set wrapped_secret.bin permissions: {}", e);
+            }
             Ok(s_random)
         }
     }
@@ -163,12 +167,15 @@ impl KeyManager {
         if k_user_bytes.len() != 32 {
             return Err(format!("Invalid k-user length: {} (expected 32)", k_user_bytes.len()));
         }
-        let encrypted = dpapi::protect_data(k_user_bytes)?;
+        let encrypted = key_protect::protect_data(k_user_bytes)?;
         let path = Path::new(WRAPPED_K_USER_PATH);
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
         fs::write(path, encrypted).map_err(|e| format!("Write wrapped_k_user.bin error: {}", e))?;
+        if let Err(e) = key_protect::apply_key_file_permissions(path) {
+            eprintln!("Warning: could not set wrapped_k_user.bin permissions: {}", e);
+        }
 
         let mut guard = self.imported_k_user.lock().unwrap();
         let mut k_user = [0u8; 32];
@@ -227,7 +234,7 @@ impl KeyManager {
     ///
     /// [重要] DPAPI で保護した後に version / createdAt / integrity を付与する。
     fn create_wrapped_secret_blob(secret_bytes: &[u8; 32]) -> Result<Vec<u8>, String> {
-        let protected_bytes = dpapi::protect_data(secret_bytes)?;
+        let protected_bytes = key_protect::protect_data(secret_bytes)?;
         let integrity_digest = Sha256::digest(&protected_bytes);
         let envelope = WrappedSecretEnvelope {
             version: WRAPPED_SECRET_FILE_VERSION,
@@ -248,8 +255,8 @@ impl KeyManager {
         match serde_json::from_slice::<WrappedSecretEnvelope>(wrapped_secret_blob) {
             Ok(envelope) => Self::decode_wrapped_secret_envelope(envelope),
             Err(_) => {
-                eprintln!("Warning: wrapped_secret.bin is legacy raw DPAPI blob. integrity metadata is unavailable.");
-                dpapi::unprotect_data(wrapped_secret_blob)
+                eprintln!("Warning: wrapped_secret.bin is a legacy raw blob (no JSON envelope). Attempting decryption...");
+                key_protect::unprotect_data(wrapped_secret_blob)
             }
         }
     }
@@ -264,7 +271,10 @@ impl KeyManager {
         }
         if envelope.alg != WRAPPED_SECRET_ALG {
             return Err(format!(
-                "wrapped_secret algorithm mismatch. expected={} actual={}",
+                "wrapped_secret algorithm mismatch. expected={} actual={}. \
+                If actual=DPAPI: this file was created with the old Windows DPAPI build. \
+                Migration: (1) export_k_user IPC, (2) delete wrapped_secret.bin + wrapped_k_user.bin, \
+                (3) restart SecretCore, (4) import_k_user_backup IPC.",
                 WRAPPED_SECRET_ALG, envelope.alg
             ));
         }
@@ -293,8 +303,8 @@ impl KeyManager {
         if expected_digest.as_slice() != actual_digest.as_slice() {
             return Err("wrapped_secret integrity mismatch.".to_string());
         }
-        dpapi::unprotect_data(&protected_bytes)
-            .map_err(|e| format!("wrapped_secret dpapi unprotect failed. detail={}", e))
+        key_protect::unprotect_data(&protected_bytes)
+            .map_err(|e| format!("wrapped_secret key_protect unprotect failed. detail={}", e))
     }
 
     /// 現在の k-user をパスワード暗号化バックアップJSONへ変換する。

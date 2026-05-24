@@ -31,6 +31,17 @@ data/localHistory-7106-disable-temp.db
 data/localHistory-7106-disable-temp.db-wal
 data/localHistory-7106-disable-temp.db-shm
 
+# [厳守] 暗号化ラッピング鍵ディレクトリ（master_key.bin 等の生鍵素材を含む）
+# 理由: ファイルに平文 32-byte 鍵を格納するため絶対に Git 管理しない
+data/keys/
+
+# 鍵ファイルのバックアップ・旧形式残留物（DPAPI/keyring 移行時の一時ファイル）
+data/*.bak
+data/*.old
+
+# 「ENABLED=false」試験専用エクスポート（再生成可・機微な運用データ）
+data/history-exports-7106-disable-autotest/
+
 # embedded build cache (IDEから混在する可能性があるため明示除外)
 .pio/
 IoT/ESP32/.pio/

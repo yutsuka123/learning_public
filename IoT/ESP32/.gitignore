@@ -20,3 +20,7 @@ data/certs/
 
 # [厳守][2026-05-20] k-device を含む回復用一時ファイル（NVS 移行後に削除）
 data/sensitiveData.json
+
+# Python キャッシュ（PlatformIO ビルドスクリプト等の副産物）
+scripts/__pycache__/
+**/__pycache__/

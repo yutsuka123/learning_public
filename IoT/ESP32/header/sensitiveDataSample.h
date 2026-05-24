@@ -31,7 +31,7 @@
 #define SENSITIVE_MQTT_PORT 8883
 /** MQTT TLS: 0=false, 1=true */
 #define SENSITIVE_MQTT_TLS 1
-/** MQTT DNS失敗時の暫定フォールバックIP */
+/** ローカルモード broker fallback IP の初期値マクロ（NVS 未設定時のデフォルト） */
 #define SENSITIVE_MQTT_FALLBACK_IP SENSITIVE_MQTT_HOST_IP
 /**
  * MQTT TLS CA証明書(PEM)サンプル。

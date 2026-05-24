@@ -659,6 +659,7 @@ JSON形式とし、リクエスト（Request）とレスポンス（Response）�
 - [厳守] `serverTls` / `otaTls` が `true` の場合は `serverPort` / `otaPort` を `443` に揃えること。理由: HTTPSの標準ポートに統一し、運用ミスを減らすため。
 - [推奨] `timeServer` はNTP(UDP/123)を基本とし、`timeServerTls` は原則 `false` 運用とする。理由: 現行実装がNTP前提のため。
 - [将来対応] `mqttUrlName` / `serverUrlName` / `otaUrlName` / `timeServerUrlName` / `keyDevice` は `common.h` へ追加済み。実装側の読書き反映は別タスクで実施する。
+- [将来対応] `brokerMode` / `cloudEndpoint` / `mqttFallbackIp` は `common.h` へ追加済み・NVS 保存済み（`020-0021`）。MQTT network コマンドへの読書き対応は別タスクで実施する。現時点は AP REST API `/api/settings/network` のみで変更可能。
 
 ### 3.3.1 Pairing / Re-Pairing 補足
 - [重要] `k-device` 初回投入および `k-user` 再発行後の再ペアリングは、MQTT 経由ではなく AP モード + `runPairingSession()` を正規経路とする。
@@ -1104,6 +1105,7 @@ ESP32からサーバーへ進捗を通知する。
 - 2026-03-10: `rollbackTestEnable` / `rollbackTestDisable` を追加。理由: 7025 の `未確定起動失敗` を実機で再現するため。
 - 2026-03-10: `status` / テレメトリの複数 `Server` 共有、要求元 `Server` に対する OTA 応答、`serverId` / `brokerId` の分離方針を追加。理由: 冗長化と多重接続の前提を MQTT 詳細仕様へ反映するため。
 - 2026-03-09: 7015 / 7025 確認用として `status` 通知へ `runningPartition` / `bootPartition` / `nextUpdatePartition` を一時追加し、試験完了後に廃止する方針を追加。理由: A/B 切替の確認を確実に行うため。
+- 2026-05-24: §3.3 備考に `brokerMode` / `cloudEndpoint` / `mqttFallbackIp` の将来対応注記を追記（`020-0021`）。現時点は AP REST API のみで変更可能。
 - 2026-03-09: `fileSyncPlan` / `fileSyncChunk` / `fileSyncCommit` / `fileSyncStatus` と、`/images` `/certs` `/logs` の運用補足を追加。理由: 画像一斉更新、証明書更新、ログ保持方針を MQTT 仕様へ反映するため。
 - 2026-03-09: Pairing / Re-Pairing 補足を `runPairingSession()` 正規経路と `createPairingBundle` 内部 helper 前提へ更新。理由: MQTT 仕様文書でも公開 workflow と内部秘密処理の境界を他文書と一致させるため。
 - 2026-03-09: [仕様変更] `public_id` の初期値を `IoT_<macアドレスからコロン除去>` とする前提へ更新。理由: 運用上わかりやすさを優先し、初期導入時の識別を容易にするため。

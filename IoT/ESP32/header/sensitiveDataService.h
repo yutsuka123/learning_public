@@ -222,6 +222,25 @@ class sensitiveDataService {
    */
   bool loadBrokerModeConfig(String* brokerModeOut, String* cloudEndpointOut);
 
+  /**
+   * @brief ローカルモード broker の fallback IP を保存する。
+   * @details
+   * - [重要] 未設定時は pingBrokerHost が SENSITIVE_MQTT_FALLBACK_IP マクロ値を使用する。
+   * - [推奨] AP 画面 / MQTT コマンドで変更可能にするための NVS 永続化。
+   * @param mqttFallbackIp fallback IP 文字列（例: "172.17.1.100"）。空文字でマクロ使用に戻す。
+   * @return 保存成功時true、失敗時false。
+   */
+  bool saveMqttFallbackIp(const String& mqttFallbackIp);
+
+  /**
+   * @brief ローカルモード broker の fallback IP を読み込む。
+   * @details
+   * - [重要] NVS に保存されていない場合は空文字を返す（呼び出し元がマクロ値へフォールバック）。
+   * @param mqttFallbackIpOut 読込先ポインタ（null不可）。
+   * @return 読込成功時true、失敗時false。
+   */
+  bool loadMqttFallbackIp(String* mqttFallbackIpOut);
+
  private:
   /**
    * @brief 設定データが存在しない場合にデフォルトJSONを生成する。

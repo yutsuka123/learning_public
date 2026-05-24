@@ -35,6 +35,7 @@ export interface deviceTransportEventMap {
  */
 export interface deviceTransport {
   connect(): void;
+  disconnect(): Promise<void>;
   on<EventKey extends keyof deviceTransportEventMap>(
     eventName: EventKey,
     listener: (...args: deviceTransportEventMap[EventKey]) => void

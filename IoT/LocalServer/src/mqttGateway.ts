@@ -118,6 +118,20 @@ export class mqttGateway implements deviceTransport {
     this.client.reconnect();
   }
 
+  public async disconnect(): Promise<void> {
+    if (this.rustPollTimer !== undefined) {
+      clearInterval(this.rustPollTimer);
+      this.rustPollTimer = undefined;
+    }
+    if (this.client !== undefined) {
+      await new Promise<void>((resolve) => {
+        this.client!.end(false, undefined, () => {
+          resolve();
+        });
+      });
+    }
+  }
+
   /**
    * @description MQTTイベント購読を登録する。
    * @param eventName イベント名。

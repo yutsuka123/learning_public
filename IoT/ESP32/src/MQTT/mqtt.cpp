@@ -3149,11 +3149,14 @@ bool pingBrokerHost(const char* brokerHost) {
                brokerHost,
                brokerIpAddress.toString().c_str());
   } else {
+    // [重要] ローカルモードのみ: NVS 保存値を優先し、未設定の場合はマクロ値にフォールバックする。
+    String nvsIp;
+    const bool nvsLoaded = ensureMqttSensitiveDataReady() && mqttSensitiveDataService.loadMqttFallbackIp(&nvsIp);
+    const char* effectiveFallbackIp = (nvsLoaded && nvsIp.length() > 0) ? nvsIp.c_str() : SENSITIVE_MQTT_FALLBACK_IP;
     IPAddress configuredIpAddress;
-    const bool configuredIpAvailable = strlen(SENSITIVE_MQTT_FALLBACK_IP) > 0;
-    const bool configuredIpParseResult = configuredIpAvailable && configuredIpAddress.fromString(SENSITIVE_MQTT_FALLBACK_IP);
+    const bool configuredIpAvailable = strlen(effectiveFallbackIp) > 0;
+    const bool configuredIpParseResult = configuredIpAvailable && configuredIpAddress.fromString(effectiveFallbackIp);
     if (configuredIpParseResult) {
-      // [重要] ローカルモードのみ: DNS試行より先にIP直指定で疎通を確認する。
       brokerIpAddress = configuredIpAddress;
       appLogWarn("pingBrokerHost: configured IP will be used before DNS. brokerHost=%s configuredIp=%s",
                  brokerHost,
@@ -3163,7 +3166,7 @@ bool pingBrokerHost(const char* brokerHost) {
       if (!resolveResult) {
         appLogError("pingBrokerHost failed. hostByName failed and configured IP is unavailable. brokerHost=%s configuredIp=%s",
                     brokerHost,
-                    SENSITIVE_MQTT_FALLBACK_IP);
+                    effectiveFallbackIp);
         return false;
       }
       appLogInfo("pingBrokerHost: DNS resolved host. brokerHost=%s resolvedIp=%s",

@@ -424,6 +424,9 @@ export interface rollbackTestCommandRequestBody extends commandRequestBody {
  */
 export type firmwareSourceType = "localPath" | "uploadedFile";
 
+/** @description MQTT ブローカー接続モード。 */
+export type brokerModeType = "local" | "cloud";
+
 /**
  * @description LocalServerの永続設定モデル。
  */
@@ -438,6 +441,16 @@ export interface localServerSettings {
    * @description SQLite ローカル履歴の保持日数（**非機密**）。`0` はパージなし（無期限）、`1`〜`99999` はその日数より古い行を削除。**新規 `settings.json` の既定は 30**（`settingsStore` で固定）。
    */
   localHistoryRetentionDays: number;
+  /**
+   * @description MQTT ブローカー接続モード。`"local"` = ローカル Mosquitto、`"cloud"` = AWS IoT Core。
+   * @remarks 初期値は `CLOUD_MQTT_ENABLED` 環境変数から決定し、UI 切替後は settings.json に永続化される。
+   */
+  brokerMode: brokerModeType;
+  /**
+   * @description IoT 専用 LAN のサブネット（CIDR 形式）。Windows Firewall の RemoteAddress 制限に使用する。
+   * @example "172.17.1.0/24"
+   */
+  iotLanSubnet: string;
 }
 
 /**

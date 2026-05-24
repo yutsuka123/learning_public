@@ -462,6 +462,58 @@
       <button id="securePingButton">secure-ping実行</button>
     </div>
 
+    <div class="card hidden" id="brokerModeCard">
+      <h2>MQTTブローカーモード切替</h2>
+      <div class="muted">
+        [重要] クラウドモードへ切替すると AWS IoT Core への接続が開始され課金が発生します。試験後は必ずローカルモードへ戻してください。
+      </div>
+      <div class="fieldRow" style="margin-top: 10px">
+        <label>現在のモード</label>
+        <span id="brokerModeCurrentText">(取得中...)</span>
+      </div>
+      <div class="fieldRow">
+        <label>切替先</label>
+        <select id="brokerModeSelect">
+          <option value="local">local（ローカル Mosquitto）</option>
+          <option value="cloud">cloud（AWS IoT Core）</option>
+        </select>
+      </div>
+      <button id="brokerModeSwitchButton" type="button">モード切替を実行</button>
+      <div id="brokerModeStatusText" class="muted" style="margin-top: 8px;"></div>
+    </div>
+
+    <div class="card hidden" id="firewallConfigCard">
+      <h2>IoT LAN Firewall 設定</h2>
+      <div class="muted">
+        [重要] IoT 専用 LAN のサブネットを設定し、Windows Firewall の RemoteAddress を制限するコマンドを生成します。<br>
+        実際のルール適用は <strong>管理者権限の PowerShell</strong> でコマンドを実行してください（LocalServer のインストールルートで実行）。
+      </div>
+      <div class="fieldRow" style="margin-top: 12px;">
+        <label>現在の IoT サブネット</label>
+        <span id="firewallSubnetCurrentText">(取得中...)</span>
+      </div>
+      <div class="fieldRow">
+        <label>新しいサブネット（CIDR）</label>
+        <input type="text" id="firewallSubnetInput" placeholder="例: 172.17.1.0/24" style="width: 200px;" />
+        <button id="firewallSubnetSaveButton" type="button" style="margin-left: 8px;">サブネットを保存</button>
+      </div>
+      <div style="margin-top: 12px;">
+        <label>適用コマンド（管理者PowerShellで実行）</label>
+        <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
+          <input type="text" id="firewallApplyCommandText" readonly style="width: 600px; font-family: monospace; font-size: 12px;" />
+          <button id="firewallCopyApplyButton" type="button">コピー</button>
+        </div>
+      </div>
+      <div style="margin-top: 8px;">
+        <label>ロールバックコマンド（旧ルール復元）</label>
+        <div style="display: flex; gap: 8px; align-items: center; margin-top: 4px;">
+          <input type="text" id="firewallRollbackCommandText" readonly style="width: 600px; font-family: monospace; font-size: 12px;" />
+          <button id="firewallCopyRollbackButton" type="button">コピー</button>
+        </div>
+      </div>
+      <div id="firewallStatusText" class="muted" style="margin-top: 8px;"></div>
+    </div>
+
     <div class="card hidden" id="localHistoryStorageCard">
       <h2>ローカル履歴（SQLite）ファイル削除</h2>
       <div class="muted">
@@ -764,6 +816,8 @@
           "wifiUsbCard",
           "apWorkflowCard",
           "securePingCard",
+          "brokerModeCard",
+          "firewallConfigCard",
           "localHistoryStorageCard",
           "deviceListCard"
         ];
@@ -959,6 +1013,88 @@
       /**
        * @description secure-ping試験APIを実行する。
        */
+      async function loadBrokerModeStatus() {
+        try {
+          const jsonObject = await callAdminApi("/api/admin/broker-mode", "GET");
+          const modeText = document.getElementById("brokerModeCurrentText");
+          if (modeText) {
+            modeText.textContent = jsonObject.mode === "cloud" ? "cloud（AWS IoT Core）" : "local（ローカル Mosquitto）";
+          }
+          const modeSelect = document.getElementById("brokerModeSelect");
+          if (modeSelect) {
+            modeSelect.value = jsonObject.mode;
+          }
+        } catch (_e) {
+          // 未ログイン時は取得しない
+        }
+      }
+
+      async function switchBrokerMode() {
+        const modeSelect = document.getElementById("brokerModeSelect");
+        const mode = modeSelect ? modeSelect.value : "";
+        if (mode !== "local" && mode !== "cloud") {
+          throw new Error("switchBrokerMode: モードを選択してください。");
+        }
+        if (mode === "cloud") {
+          const confirmed = window.confirm(
+            "[警告] クラウドモードへ切替すると AWS IoT Core への接続が開始され課金が発生します。\n試験後は必ずローカルモードへ戻してください。\n\n続行しますか？"
+          );
+          if (!confirmed) {
+            return;
+          }
+        }
+        const statusText = document.getElementById("brokerModeStatusText");
+        if (statusText) {
+          statusText.textContent = "切替中...";
+        }
+        const jsonObject = await callAdminApi("/api/admin/broker-mode", "POST", { mode });
+        const modeText = document.getElementById("brokerModeCurrentText");
+        if (modeText) {
+          modeText.textContent = jsonObject.mode === "cloud" ? "cloud（AWS IoT Core）" : "local（ローカル Mosquitto）";
+        }
+        if (statusText) {
+          statusText.textContent = jsonObject.changed ? `切替完了: ${jsonObject.mode}` : `変更なし（既に ${jsonObject.mode} モード）`;
+        }
+        appendLog(`broker-mode切替: mode=${jsonObject.mode} changed=${jsonObject.changed}`, "ok");
+      }
+
+      async function loadFirewallConfig() {
+        try {
+          const jsonObject = await callAdminApi("/api/admin/network/firewall-config", "GET");
+          const subnetText = document.getElementById("firewallSubnetCurrentText");
+          const applyInput = document.getElementById("firewallApplyCommandText");
+          const rollbackInput = document.getElementById("firewallRollbackCommandText");
+          if (subnetText) subnetText.textContent = jsonObject.iotLanSubnet ?? "(不明)";
+          if (applyInput) applyInput.value = jsonObject.applyCommand ?? "";
+          if (rollbackInput) rollbackInput.value = jsonObject.rollbackCommand ?? "";
+          const subnetInput = document.getElementById("firewallSubnetInput");
+          if (subnetInput && !subnetInput.value) subnetInput.value = jsonObject.iotLanSubnet ?? "";
+        } catch (error) {
+          const statusText = document.getElementById("firewallStatusText");
+          if (statusText) statusText.textContent = `取得失敗: ${error.message}`;
+        }
+      }
+
+      async function saveFirewallSubnet() {
+        const subnetInput = document.getElementById("firewallSubnetInput");
+        const newSubnet = subnetInput ? subnetInput.value.trim() : "";
+        if (newSubnet.length === 0) {
+          appendLog("サブネットが空です", "ng");
+          return;
+        }
+        const statusText = document.getElementById("firewallStatusText");
+        if (statusText) statusText.textContent = "保存中...";
+        try {
+          const jsonObject = await callAdminApi("/api/admin/network/iot-subnet", "POST", { iotLanSubnet: newSubnet });
+          if (statusText) statusText.textContent = `保存完了: iotLanSubnet=${jsonObject.iotLanSubnet}`;
+          appendLog(`IoT サブネット保存: ${jsonObject.iotLanSubnet}`, "ok");
+          await loadFirewallConfig();
+        } catch (error) {
+          if (statusText) statusText.textContent = `保存失敗: ${error.message}`;
+          appendLog(`IoT サブネット保存失敗: ${error.message}`, "ng");
+        }
+      }
+
       async function runSecurePing() {
         const targetDeviceName = document.getElementById("securePingTargetInput").value.trim();
         const plainText = document.getElementById("securePingTextInput").value;
@@ -1514,6 +1650,22 @@
         });
         document.getElementById("securePingButton").addEventListener("click", () => {
           runSecurePing().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("brokerModeSwitchButton").addEventListener("click", () => {
+          switchBrokerMode().catch((error) => appendLog(error.message, "ng"));
+        });
+        loadBrokerModeStatus().catch(() => {});
+        loadFirewallConfig().catch(() => {});
+        document.getElementById("firewallSubnetSaveButton").addEventListener("click", () => {
+          saveFirewallSubnet().catch((error) => appendLog(error.message, "ng"));
+        });
+        document.getElementById("firewallCopyApplyButton").addEventListener("click", () => {
+          const cmd = document.getElementById("firewallApplyCommandText").value;
+          if (cmd) { navigator.clipboard.writeText(cmd).then(() => appendLog("適用コマンドをコピーしました", "ok")); }
+        });
+        document.getElementById("firewallCopyRollbackButton").addEventListener("click", () => {
+          const cmd = document.getElementById("firewallRollbackCommandText").value;
+          if (cmd) { navigator.clipboard.writeText(cmd).then(() => appendLog("ロールバックコマンドをコピーしました", "ok")); }
         });
         document.getElementById("loadDevicesButton").addEventListener("click", () => {
           loadDevices().catch((error) => appendLog(error.message, "ng"));

@@ -10,7 +10,7 @@
 import fs from "fs";
 import path from "path";
 import { appConfig } from "./config";
-import { localServerSettings, firmwareSourceType } from "./types";
+import { localServerSettings, firmwareSourceType, brokerModeType } from "./types";
 import { validateLocalHistoryRetentionDays } from "./localHistoryRetention";
 
 /**
@@ -95,7 +95,9 @@ export class SettingsStore {
       firmwareUploadedFileName: "",
       otaFirmwareVersion: config.otaFirmwareVersion,
       wifiUsbInterfaceName: config.wifiUsbInterfaceName,
-      localHistoryRetentionDays: 30
+      localHistoryRetentionDays: 30,
+      brokerMode: config.cloudMqttEnabled ? "cloud" : "local",
+      iotLanSubnet: "172.17.1.0/24"
     };
 
     const settingsDirectoryPath = path.dirname(this.settingsFilePath);
@@ -147,6 +149,8 @@ export class SettingsStore {
     }
 
     validateLocalHistoryRetentionDays(settings.localHistoryRetentionDays);
+    this.validateBrokerMode(settings.brokerMode, functionName);
+    this.validateIotLanSubnet(settings.iotLanSubnet, functionName);
   }
 
   /**
@@ -157,6 +161,22 @@ export class SettingsStore {
   private validateFirmwareSource(firmwareSource: firmwareSourceType, functionName: string): void {
     if (firmwareSource !== "localPath" && firmwareSource !== "uploadedFile") {
       throw new Error(`${functionName} failed. invalid firmwareSource=${firmwareSource}`);
+    }
+  }
+
+  private validateBrokerMode(brokerMode: brokerModeType, functionName: string): void {
+    if (brokerMode !== "local" && brokerMode !== "cloud") {
+      throw new Error(`${functionName} failed. invalid brokerMode=${brokerMode}`);
+    }
+  }
+
+  private validateIotLanSubnet(subnet: string, functionName: string): void {
+    if (subnet.length <= 0) {
+      throw new Error(`${functionName} failed. iotLanSubnet is empty.`);
+    }
+    const cidrPattern = /^(\d{1,3}\.){3}\d{1,3}\/\d{1,2}$/;
+    if (!cidrPattern.test(subnet)) {
+      throw new Error(`${functionName} failed. invalid iotLanSubnet format=${subnet}. Expected CIDR notation like 172.17.1.0/24.`);
     }
   }
 

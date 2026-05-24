@@ -1425,6 +1425,84 @@ bool sensitiveDataService::loadBrokerModeConfig(String* brokerModeOut, String* c
   return true;
 }
 
+bool sensitiveDataService::saveMqttFallbackIp(const String& mqttFallbackIp) {
+  constexpr const char* functionName = "sensitiveDataService::saveMqttFallbackIp";
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_DeleteItemFromObjectCaseSensitive(rootObject, mqttRootKey);
+    mqttObject = cJSON_AddObjectToObject(rootObject, mqttRootKey);
+    if (mqttObject == nullptr) {
+      appLogError("%s failed. create mqtt object key=%s", functionName, mqttRootKey);
+      cJSON_Delete(rootObject);
+      return false;
+    }
+  }
+
+  bool updateResult = setStringItem(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttFallbackIp, mqttFallbackIp, functionName);
+  if (!updateResult) {
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  char* serializedText = cJSON_PrintUnformatted(rootObject);
+  if (serializedText == nullptr) {
+    appLogError("%s failed. cJSON_PrintUnformatted returned null.", functionName);
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  bool writeResult = writeJsonText(String(serializedText), functionName);
+  cJSON_free(serializedText);
+  cJSON_Delete(rootObject);
+  return writeResult;
+}
+
+bool sensitiveDataService::loadMqttFallbackIp(String* mqttFallbackIpOut) {
+  constexpr const char* functionName = "sensitiveDataService::loadMqttFallbackIp";
+  if (mqttFallbackIpOut == nullptr) {
+    appLogError("%s failed. output parameter is null.", functionName);
+    return false;
+  }
+
+  String jsonText;
+  if (!readJsonText(&jsonText, functionName)) {
+    return false;
+  }
+
+  cJSON* rootObject = cJSON_Parse(jsonText.c_str());
+  if (rootObject == nullptr || !cJSON_IsObject(rootObject)) {
+    appLogError("%s failed. cJSON_Parse error. payloadLength=%d", functionName, jsonText.length());
+    cJSON_Delete(rootObject);
+    return false;
+  }
+
+  cJSON* mqttObject = cJSON_GetObjectItemCaseSensitive(rootObject, mqttRootKey);
+  if (mqttObject == nullptr || !cJSON_IsObject(mqttObject)) {
+    cJSON_Delete(rootObject);
+    *mqttFallbackIpOut = "";
+    return true;
+  }
+
+  cJSON* fallbackIpItem = cJSON_GetObjectItemCaseSensitive(mqttObject, iotCommon::mqtt::jsonKey::network::kMqttFallbackIp);
+  *mqttFallbackIpOut = cJSON_IsString(fallbackIpItem) ? String(fallbackIpItem->valuestring) : String("");
+
+  cJSON_Delete(rootObject);
+  return true;
+}
+
 bool sensitiveDataService::ensureDefaultFileExists() {
   constexpr const char* functionName = "sensitiveDataService::ensureDefaultFileExists";
 

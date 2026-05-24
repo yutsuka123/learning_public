@@ -6,7 +6,7 @@
 // [厳守] LocalServer 起動時は IPC メッセージを AES-256-GCM + requestId + timestamp で保護する。
 // [旧仕様] 環境変数未指定の手動起動時のみ、互換の平文IPCを許可する。
 // 変更日: 2026-03-15 IPC 保護を追加。理由: 003-0014 対応のため。
-mod dpapi;
+mod key_protect;
 mod generic_workflow;
 mod key_manager;
 mod mqtt_transport;

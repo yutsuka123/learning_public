@@ -81,18 +81,10 @@ const localKeyService = new keyService(config, secretCoreFacade, USE_SECRET_CORE
 const serverPayloadSecurityService = new mqttPayloadSecurityService(localKeyService, resolveMqttPayloadEncryptionMode());
 const LOCAL_HISTORY_DELETE_DB_CONFIRM = "DELETE_LOCAL_HISTORY_DB";
 const localHistoryStore = new LocalHistoryStore(config, settingsStore.getSettings().localHistoryRetentionDays);
-// [重要] クラウドモード有効時は AWS IoT Core 向けゲートウェイを使用する。
-//        CLOUD_MQTT_ENABLED=false（既定）はローカル Mosquitto 接続のみ。試験後は必ず false に戻すこと。
-const gateway: deviceTransport =
-  createCloudMqttGateway(config, registry, localKeyService, localHistoryStore) ??
-  new mqttGateway(
-    config,
-    registry,
-    localKeyService,
-    secretCoreFacade,
-    MQTT_TRANSPORT_MODE,
-    localHistoryStore
-  );
+
+// [重要] ゲートウェイは動的モード切替のため let で保持する。
+// 初期モードは settings.json の brokerMode を優先し、未保存時は CLOUD_MQTT_ENABLED から決定する。
+let gateway: deviceTransport = buildGateway(settingsStore.getSettings().brokerMode);
 const adminSessionMap = new Map<string, number>();
 const adminSessionTtlMs = 3 * 60 * 60 * 1000;
 const adminLoginLockoutThreshold = 3;
@@ -862,7 +854,12 @@ app.post("/api/settings/backups/k-user/export", async (request: Request, respons
     const exportResult = await localKeyService.exportKUserBackup(backupPassword, backupFilePath);
     response.json({
       result: "OK",
-      ...exportResult
+      ...exportResult,
+      securityWarning: [
+        "このファイルには機密鍵情報が含まれています。",
+        "使用後は即座に安全削除してください（SSD では上書き削除は保証されません）。",
+        "長期保管する場合は暗号化ストレージ（BitLocker / FileVault / LUKS）上に置いてください。"
+      ].join(" ")
     });
   } catch (apiError) {
     const errMsg = getErrorMessage(apiError);
@@ -2649,6 +2646,99 @@ app.post("/api/admin/local-history/delete-database", (request: Request, response
   }
 });
 
+app.get("/api/admin/broker-mode", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const currentMode = settingsStore.getSettings().brokerMode;
+    response.json({ result: "OK", mode: currentMode });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({ result: "NG", detail: errMsg });
+  }
+});
+
+app.post("/api/admin/broker-mode", async (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as { mode?: string };
+    const requestedMode = (requestBody?.mode ?? "").trim();
+    if (requestedMode !== "local" && requestedMode !== "cloud") {
+      throw new Error(`broker-mode switch failed. mode must be "local" or "cloud". got=${requestedMode}`);
+    }
+    const currentMode = settingsStore.getSettings().brokerMode;
+    if (currentMode === requestedMode) {
+      response.json({ result: "OK", mode: requestedMode, changed: false });
+      return;
+    }
+    if (requestedMode === "cloud") {
+      if (config.cloudIotEndpoint.length === 0) {
+        throw new Error("broker-mode switch failed. AWS_IOT_ENDPOINT is not configured.");
+      }
+      if (config.cloudIotClientCertPath.length === 0) {
+        throw new Error("broker-mode switch failed. AWS_IOT_CLIENT_CERT_PATH is not configured.");
+      }
+    }
+    console.log(`broker-mode switch requested. from=${currentMode} to=${requestedMode}`);
+    await gateway.disconnect();
+    gateway = buildGateway(requestedMode);
+    attachGatewayEvents(gateway);
+    settingsStore.updateSettings({ brokerMode: requestedMode });
+    gateway.connect();
+    console.log(`broker-mode switch complete. mode=${requestedMode}`);
+    response.json({ result: "OK", mode: requestedMode, changed: true });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError =
+      errMsg.includes("admin token is required") ||
+      errMsg.includes("admin token is not found") ||
+      errMsg.includes("admin token expired");
+    response.status(isAuthError ? 401 : 400).json({ result: "NG", detail: errMsg });
+  }
+});
+
+app.get("/api/admin/network/firewall-config", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const settings = settingsStore.getSettings();
+    const subnet = settings.iotLanSubnet;
+    const scriptPath = "scripts\\applyIoTFirewallRules.ps1";
+    const applyCommand = `powershell -ExecutionPolicy Bypass -File "${scriptPath}" -IoTSubnet "${subnet}" -IoTNetworkAdapterName "イーサネット 2"`;
+    const rollbackCommand = `powershell -ExecutionPolicy Bypass -File "${scriptPath}" -Rollback`;
+    response.json({
+      result: "OK",
+      iotLanSubnet: subnet,
+      applyCommand,
+      rollbackCommand,
+      note: "管理者権限の PowerShell でコマンドを実行してください。LocalServer のインストールルートで実行すること。"
+    });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError = errMsg.includes("admin session");
+    response.status(isAuthError ? 401 : 500).json({ result: "NG", detail: errMsg });
+  }
+});
+
+app.post("/api/admin/network/iot-subnet", (request: Request, response: Response) => {
+  try {
+    requireAdminSession(request);
+    const requestBody = request.body as { iotLanSubnet?: string };
+    const newSubnet = (requestBody?.iotLanSubnet ?? "").trim();
+    if (newSubnet.length === 0) {
+      throw new Error("iot-subnet update failed. iotLanSubnet is empty.");
+    }
+    const updatedSettings = settingsStore.updateSettings({ iotLanSubnet: newSubnet });
+    response.json({ result: "OK", iotLanSubnet: updatedSettings.iotLanSubnet });
+  } catch (apiError) {
+    const errMsg = getErrorMessage(apiError);
+    const isAuthError = errMsg.includes("admin session");
+    response.status(isAuthError ? 401 : 400).json({ result: "NG", detail: errMsg });
+  }
+});
+
 /**
  * @description OTA用manifestを返す。
  */
@@ -2778,13 +2868,23 @@ webSocketServer.on("connection", (clientSocket) => {
   );
 });
 
-gateway.on("otaProgressUpdated", () => {
-  broadcastDeviceList();
-});
+/**
+ * @description ブローカーモードに応じた deviceTransport を生成する。
+ * @param mode "local" = ローカル Mosquitto、"cloud" = AWS IoT Core。
+ */
+function buildGateway(mode: "local" | "cloud"): deviceTransport {
+  if (mode === "cloud") {
+    const cloudGateway = createCloudMqttGateway(config, registry, localKeyService, localHistoryStore);
+    if (cloudGateway !== undefined) {
+      return cloudGateway;
+    }
+    console.warn("buildGateway: cloud mode requested but createCloudMqttGateway returned undefined. Falling back to local.");
+  }
+  return new mqttGateway(config, registry, localKeyService, secretCoreFacade, MQTT_TRANSPORT_MODE, localHistoryStore);
+}
 
-gateway.on("trhUpdated", () => {
-  broadcastDeviceList();
-});
+/** @description 直前のオンラインデバイス名セット（offline→online遷移検知用）。 */
+const previousOnlineDeviceSet = new Set<string>();
 
 /**
  * @description オンラインデバイスへ get/trh を送信する。
@@ -2806,53 +2906,66 @@ async function sendGetTrhToOnlineDevices(targetNames?: string[], reason?: string
   }
 }
 
-/** @description 直前のオンラインデバイス名セット（offline→online遷移検知用）。 */
-const previousOnlineDeviceSet = new Set<string>();
+/**
+ * @description ゲートウェイのイベントリスナーを登録する。モード切替後に新インスタンスへ再適用する。
+ * @param gw 登録対象ゲートウェイ。
+ */
+function attachGatewayEvents(gw: deviceTransport): void {
+  gw.on("otaProgressUpdated", () => {
+    broadcastDeviceList();
+  });
 
-gateway.on("statusUpdated", (status) => {
-  broadcastDeviceList();
-  const normalizedDeviceName = status.topic.split("/").at(-1) ?? status.srcId;
-  const normalizedOnlineState = status.onlineState.trim().toLowerCase();
-  const wasOnline = previousOnlineDeviceSet.has(normalizedDeviceName);
-  const isNowOnline = normalizedOnlineState.includes("online");
-  if (isNowOnline) {
-    previousOnlineDeviceSet.add(normalizedDeviceName);
-  } else {
-    previousOnlineDeviceSet.delete(normalizedDeviceName);
-  }
-  if (!wasOnline && isNowOnline) {
-    setTimeout(() => {
-      sendGetTrhToOnlineDevices([normalizedDeviceName], "offline-to-online");
-    }, 3000);
-  }
-});
+  gw.on("trhUpdated", () => {
+    broadcastDeviceList();
+  });
 
-gateway.on("deviceStateUpdated", (deviceState) => {
-  broadcastDeviceList();
-  if (deviceState.onlineState === "online") {
-    previousOnlineDeviceSet.add(deviceState.deviceName);
-    return;
-  }
-  previousOnlineDeviceSet.delete(deviceState.deviceName);
-});
+  gw.on("statusUpdated", (status) => {
+    broadcastDeviceList();
+    const normalizedDeviceName = status.topic.split("/").at(-1) ?? status.srcId;
+    const normalizedOnlineState = status.onlineState.trim().toLowerCase();
+    const wasOnline = previousOnlineDeviceSet.has(normalizedDeviceName);
+    const isNowOnline = normalizedOnlineState.includes("online");
+    if (isNowOnline) {
+      previousOnlineDeviceSet.add(normalizedDeviceName);
+    } else {
+      previousOnlineDeviceSet.delete(normalizedDeviceName);
+    }
+    if (!wasOnline && isNowOnline) {
+      setTimeout(() => {
+        sendGetTrhToOnlineDevices([normalizedDeviceName], "offline-to-online");
+      }, 3000);
+    }
+  });
 
-gateway.on("connected", async () => {
-  console.log("MQTT connected.");
-  if (config.statusRequestOnBoot) {
-    setTimeout(async () => {
-      try {
-        await gateway.requestStatus("all");
-        console.log("Startup status request sent.");
-      } catch (statusRequestError) {
-        console.error(`Startup status request failed. reason=${getErrorMessage(statusRequestError)}`);
-      }
-    }, config.statusRequestBootDelayMs);
-  }
-});
+  gw.on("deviceStateUpdated", (deviceState) => {
+    broadcastDeviceList();
+    if (deviceState.onlineState === "online") {
+      previousOnlineDeviceSet.add(deviceState.deviceName);
+      return;
+    }
+    previousOnlineDeviceSet.delete(deviceState.deviceName);
+  });
 
-gateway.on("disconnected", () => {
-  console.warn("MQTT disconnected.");
-});
+  gw.on("connected", async () => {
+    console.log("MQTT connected.");
+    if (config.statusRequestOnBoot) {
+      setTimeout(async () => {
+        try {
+          await gateway.requestStatus("all");
+          console.log("Startup status request sent.");
+        } catch (statusRequestError) {
+          console.error(`Startup status request failed. reason=${getErrorMessage(statusRequestError)}`);
+        }
+      }, config.statusRequestBootDelayMs);
+    }
+  });
+
+  gw.on("disconnected", () => {
+    console.warn("MQTT disconnected.");
+  });
+}
+
+attachGatewayEvents(gateway);
 
 /**
  * @description SecretCore の IPC 受付準備完了を待機する。

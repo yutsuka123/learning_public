@@ -167,6 +167,8 @@ namespace mqtt {
             constexpr const char* kBrokerMode = "brokerMode";
             /** @brief クラウドモード時の MQTT エンドポイント（AWS IoT Core custom endpoint）。 */
             constexpr const char* kCloudEndpoint = "cloudEndpoint";
+            /** @brief ローカルモード broker の fallback IP（NVS 設定値。未設定時はマクロ SENSITIVE_MQTT_FALLBACK_IP を使用）。 */
+            constexpr const char* kMqttFallbackIp = "mqttFallbackIp";
 
         }
 

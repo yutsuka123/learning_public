@@ -205,15 +205,10 @@ export function loadConfig(): appConfig {
   const cloudMqttEnabled = getBooleanEnv("CLOUD_MQTT_ENABLED", false);
   const cloudIotEndpoint = getStringEnv("AWS_IOT_ENDPOINT", "");
   const cloudIotClientId = getStringEnv("AWS_IOT_CLIENT_ID", "");
-  const cloudIotClientCertPath = cloudMqttEnabled
-    ? toAbsolutePath(getStringEnv("AWS_IOT_CLIENT_CERT_PATH", ""))
-    : getStringEnv("AWS_IOT_CLIENT_CERT_PATH", "");
-  const cloudIotPrivateKeyPath = cloudMqttEnabled
-    ? toAbsolutePath(getStringEnv("AWS_IOT_PRIVATE_KEY_PATH", ""))
-    : getStringEnv("AWS_IOT_PRIVATE_KEY_PATH", "");
-  const cloudIotCaCertPath = cloudMqttEnabled
-    ? toAbsolutePath(getStringEnv("AWS_IOT_CA_CERT_PATH", ""))
-    : getStringEnv("AWS_IOT_CA_CERT_PATH", "");
+  // [重要] 証明書パスは cloudMqttEnabled に依存せず常にロードする。動的モード切替時に使用するため。
+  const cloudIotClientCertPath = toAbsolutePath(getStringEnv("AWS_IOT_CLIENT_CERT_PATH", ""));
+  const cloudIotPrivateKeyPath = toAbsolutePath(getStringEnv("AWS_IOT_PRIVATE_KEY_PATH", ""));
+  const cloudIotCaCertPath = toAbsolutePath(getStringEnv("AWS_IOT_CA_CERT_PATH", ""));
 
   const nextConfig: appConfig = {
     mqttHostName,
