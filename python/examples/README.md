@@ -31,12 +31,19 @@
 - **PyTorch**: `Dataset` / `DataLoader` で自前データを読み、`train` / `eval` と `torch.no_grad()` の違いをコードで分けられる。  
 - **Django**: `makemigrations` / `migrate` の因果、管理画面の登録、`urls.py` の include を自分で直せる。  
 - **FastAPI**: 依存注入（`Depends`）で認可や DB セッションを差し替え可能な形にできる。
+  ✅ `fastapi_practice.py` の `getItemStore` + `Depends(getItemStore)` で実演済み
+  （`app.dependency_overrides` によるテスト時の差し替えもコード内コメントで解説）。
 
 ### レベル 3（実務で「任せてよい」ゾーンの入り口）
 
 - **PyTorch**: 過学習対策（正則化・早期停止）、再現性（シード・決定性の限界）、メトリクス設計、チェックポイント保存を**設計として説明**できる。  
-- **Django**: 本番想定の `DEBUG=False`、秘密情報の分離、ミドルウェア、N+1 と `select_related` の話をコードレビューで指摘できる。  
+- **Django**: 本番想定の `DEBUG=False`、秘密情報の分離、ミドルウェア、N+1 と `select_related` の話をコードレビューで指摘できる。
+  ✅ N+1と`select_related`は `django_minimal/books/views.py` の `n1DemoBooks`（悪い例）/
+  `selectRelatedDemoBooks`（良い例）で実演済み（実測: 書籍6件でクエリ数7→1に削減）。
+  `DEBUG=False`/秘密情報分離は未実演（学習用の開発設定のまま。本番運用の文脈は§レベル4）。
 - **FastAPI**: OpenAPI を前提にフロントと契約を切る、例外ハンドラ、ステータスコードの統一方針を決められる。
+  ✅ 例外ハンドラとステータスコード統一は `fastapi_practice.py` の
+  `handleItemNotFoundError`/`handleUnexpectedError`（`@app.exception_handler`）で実演済み。
 
 ### レベル 4（設計・運用まで含めて語れる）
 

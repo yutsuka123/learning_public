@@ -40,3 +40,13 @@ IoT*.zip
 # C/C++ build outputs
 *.obj
 *.exe
+*.dSYM/
+c/structures/struct_pointer_array_deep_dive
+cpp_m/cpp_basics_class_memory_ownership
+
+# Python（学習用サンプル全般。仮想環境・キャッシュ・pytest成果物）
+__pycache__/
+*.pyc
+.venv/
+.venv-*/
+.pytest_cache/

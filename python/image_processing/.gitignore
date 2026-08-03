@@ -1,0 +1,5 @@
+# [重要] 生成物・キャッシュはリポジトリに含めません。
+sample_input.png
+__pycache__/
+*.pyc
+.venv/

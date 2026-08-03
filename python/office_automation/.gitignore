@@ -1,0 +1,7 @@
+# [重要] 生成物（Office文書ファイル）はリポジトリに含めません。
+*.xlsx
+*.docx
+*.pptx
+__pycache__/
+*.pyc
+.venv/

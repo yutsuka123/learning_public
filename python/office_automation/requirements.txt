@@ -1,0 +1,5 @@
+# [重要] 学習用ピン留めは緩め。本番ではセキュリティ更新に追従すること。
+openpyxl>=3.1
+python-docx>=1.1
+python-pptx>=0.6
+pandas>=2.0

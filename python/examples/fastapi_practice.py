@@ -3,6 +3,14 @@ FastAPI 実践入門サンプル（単一ファイル）
 
 概要:
     小さな REST API を 1 ファイルで定義し、リクエスト検証とレスポンスモデルを体験する。
+    [重要] examples/README.md の自己評価ラダーにおける「レベル2: 依存注入（Depends）で
+    認可やDBセッションを差し替え可能な形にできる」「レベル3: 例外ハンドラ、ステータスコードの
+    統一方針を決められる」に対応するため、以下2点を導入している。
+    - ストアを `Depends(getItemStore)` で注入する（グローバル変数を直接参照しない）。
+      理由: テスト時に `app.dependency_overrides` で差し替えられるようにするため。
+      本番でDBセッションに置き換える際も、この依存関数の中身だけを変えればよい。
+    - ドメイン例外 `ItemNotFoundError` を `@app.exception_handler` で一元的に処理する。
+      理由: 各エンドポイントで try/except を繰り返さず、エラーレスポンスの形式を1箇所に統一するため。
 主な仕様:
     - GET /health … 稼働確認
     - POST /items … JSON ボディを Pydantic で検証し、作成結果を返す（インメモリ保存のデモ）
@@ -27,7 +35,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, Request, status
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 
@@ -95,6 +104,22 @@ class ItemResponse(BaseModel):
     createdAt: str
 
 
+class ItemNotFoundError(Exception):
+    """
+    アイテムが見つからない場合のドメイン例外。
+
+    目的:
+        リポジトリ層は HTTP を知らなくてよいようにし、HTTP への変換は
+        `@app.exception_handler(ItemNotFoundError)` 側に一元化する。
+    属性:
+        item_id (str): 見つからなかった id。
+    """
+
+    def __init__(self, item_id: str) -> None:
+        self.item_id = item_id
+        super().__init__(f"item not found: {item_id}")
+
+
 @dataclass
 class InMemoryItemStore:
     """
@@ -131,16 +156,18 @@ class InMemoryItemStore:
 
     def getItem(self, item_id: str) -> ItemResponse:
         """
-        id でアイテムを取得する。無ければ例外。
+        id でアイテムを取得する。無ければ ItemNotFoundError。
 
         引数:
             item_id (str): UUID 文字列を想定。
         戻り値:
             ItemResponse: 該当レコード。
+        例外:
+            ItemNotFoundError: 該当 id が存在しない場合。
         """
 
         if item_id not in self.itemsById:
-            raise KeyError(item_id)
+            raise ItemNotFoundError(item_id)
         return self.itemsById[item_id]
 
     def listItems(self) -> List[ItemResponse]:
@@ -151,12 +178,129 @@ class InMemoryItemStore:
         return list(self.itemsById.values())
 
 
-store = InMemoryItemStore()
+# --- 依存性注入 (Dependency Injection) --------------------------------------
+#
+# [重要] エンドポイント関数はグローバル変数を直接参照せず、`Depends(getItemStore)` で
+# 受け取る。理由:
+#   - テスト時に `app.dependency_overrides[getItemStore] = lambda: FakeStore()` の
+#     ように差し替えられる（本物のストアを一切変更せずモックへ切り替えられる）。
+#   - 本番でDBセッションに置き換える際も、この依存関数の中身だけを変えればよく、
+#     各エンドポイントのシグネチャ（`store: InMemoryItemStore = Depends(...)`）は
+#     変えずに済む。
+_store = InMemoryItemStore()
+
+
+def getItemStore() -> InMemoryItemStore:
+    """
+    アイテムストアを提供する依存関数（FastAPIの `Depends` から呼ばれる）。
+
+    戻り値:
+        InMemoryItemStore: プロセス内で共有するシングルトン
+        （本番では `yield` を使ってリクエストスコープのDBセッションを提供する形が定番）。
+    """
+
+    return _store
+
+
 app = FastAPI(
     title="fastapi_practice",
     version="0.1.0",
     description="学習用の最小 FastAPI 例。examples/README.md のラダーと併読を推奨。",
 )
+
+
+# =============================================================================
+# [重要] このファイルに繰り返し出てくる `@app.xxx(...)` は「デコレータ」という
+# Python の言語機能。以下、仕組みと FastAPI での使われ方をまとめて解説する
+# （個々の `@app.get(...)` 等の直前コメントでは、ここで説明した前提のうえで
+#  差分だけを書く）。
+#
+# 1) デコレータそのものの仕組み（FastAPI固有ではなく、Python標準の機能）
+#    `@decorator` を関数定義の直前に書くと、Pythonは次のコードと**同じ意味**に解釈する。
+#
+#        def healthCheck(): ...
+#        healthCheck = app.get("/health")(healthCheck)
+#
+#    つまり `app.get("/health")` が「関数を受け取って関数を返す関数」を作って返し、
+#    それを元の `healthCheck` に適用している。デコレータは「関数を、別の（多くの場合は
+#    元の関数を内部で呼び出しつつ何かを追加する）関数に置き換える」ための糖衣構文。
+#
+# 2) FastAPIでの意味: 「このURLパス+HTTPメソッドが呼ばれたら、この関数を実行する」という
+#    ルーティング表（実体は `app.routes` というリスト）へ登録する副作用を持つ。
+#    - `@app.get("/health")`  → GET /health を healthCheck に割り当てる
+#    - `@app.post("/items")`  → POST /items を createItemEndpoint に割り当てる
+#    - `@app.exception_handler(ItemNotFoundError)` → その型の例外が飛んだら
+#      この関数（下記1))で呼び出す、という例外ハンドラ表へ登録する
+#    いずれも「元の関数の中身を変えない」点が特徴（関数自体はそのまま呼べる状態を保ちつつ、
+#    フレームワーク側の管理台帳に登録するだけ）。
+#
+# 3) `@app.get`/`@app.post` に渡せる主な引数（このファイルで使っているもの）:
+#    - `response_model=ItemResponse` : 戻り値をこのPydanticモデルの形へ変換・検証し、
+#      OpenAPI（自動生成されるAPI仕様書 /docs）にもレスポンス形式として載せる。
+#    - `status_code=status.HTTP_201_CREATED` : 正常時に返すHTTPステータスコードを固定する
+#      （指定しなければ既定は200）。
+#    - `summary="アイテム作成"` : /docs 画面に表示される短い説明文（挙動には影響しない）。
+#
+# 4) デコレータされた関数の「引数」は、Python構文としてはただの通常の関数引数だが、
+#    FastAPIはその型ヒントを見て自動的に埋める（本ファイルの `Depends(getItemStore)` は
+#    その代表例。パスパラメータ・クエリパラメータ・リクエストボディも同じ仕組みで注入される）。
+# =============================================================================
+
+
+# --- 例外ハンドラ (統一エラーレスポンス) -------------------------------------
+#
+# [重要] 各エンドポイントで try/except を繰り返す代わりに、例外の型ごとに
+# 1箇所でHTTPレスポンスへ変換する。エラーレスポンスの形式（{"error": ..., "path": ...}）が
+# エンドポイント間でぶれないという利点がある。
+# `@app.exception_handler(型)` の意味は上の解説ブロック2)のとおり:
+# 「この型の例外が飛んだら、この関数を呼んでレスポンスへ変換する」という登録。
+
+
+@app.exception_handler(ItemNotFoundError)
+async def handleItemNotFoundError(request: Request, exc: ItemNotFoundError) -> JSONResponse:
+    """
+    ItemNotFoundError を 404 レスポンスへ変換する。
+
+    引数:
+        request (Request): 発生元のリクエスト（パスをログ/レスポンスに含めるため）。
+        exc (ItemNotFoundError): 捕捉した例外。
+    戻り値:
+        JSONResponse: 404 とエラーメッセージ。
+    """
+
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"error": str(exc), "path": request.url.path},
+    )
+
+
+@app.exception_handler(Exception)
+async def handleUnexpectedError(request: Request, exc: Exception) -> JSONResponse:
+    """
+    想定外の例外を 500 レスポンスへ変換する「最後の砦」のハンドラ。
+
+    [注意] FastAPI/Starlette は例外の型を厳密一致優先で解決するため、`RequestValidationError`や
+    `HTTPException`など個別に登録済みのハンドラがある例外は、そちらが優先して処理される
+    （このハンドラに横取りされない）。
+
+    引数:
+        request (Request): 発生元のリクエスト。
+        exc (Exception): 捕捉した例外。
+    戻り値:
+        JSONResponse: 500 とエラーメッセージ。
+    """
+
+    return JSONResponse(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        content={"error": f"internal error: {exc}", "path": request.url.path},
+    )
+
+
+# --- エンドポイント (ルーティング) -------------------------------------------
+#
+# 以下の `@app.get(パス, ...)` / `@app.post(パス, ...)` の意味は上の解説ブロック2), 3)のとおり:
+# 「このHTTPメソッド+パスが呼ばれたら、この関数を実行する」という登録。
+# `response_model`/`status_code`/`summary` 引数の意味も同ブロック3)を参照。
 
 
 @app.get("/health", summary="ヘルスチェック")
@@ -172,53 +316,52 @@ def healthCheck() -> dict:
 
 
 @app.post("/items", response_model=ItemResponse, status_code=status.HTTP_201_CREATED, summary="アイテム作成")
-def createItemEndpoint(payload: ItemCreateRequest) -> ItemResponse:
+def createItemEndpoint(
+    payload: ItemCreateRequest,
+    store: InMemoryItemStore = Depends(getItemStore),
+) -> ItemResponse:
     """
     アイテムを作成する。
 
     引数:
         payload (ItemCreateRequest): リクエストボディ。FastAPI が検証する。
+        store (InMemoryItemStore): `Depends(getItemStore)` で注入されるリポジトリ。
     戻り値:
         ItemResponse: 201 Created の本文。
     """
 
-    try:
-        return store.createItem(payload)
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"createItemEndpoint: 作成処理に失敗しました。payload={payload.model_dump()}, 原因={exc}",
-        ) from exc
+    # [注意] ここで想定外の例外が起きても、末尾の handleUnexpectedError が
+    # 一元的に500へ変換するため、try/exceptを個々のエンドポイントで書く必要はない。
+    return store.createItem(payload)
 
 
 @app.get("/items/{item_id}", response_model=ItemResponse, summary="アイテム取得")
-def getItemEndpoint(item_id: str) -> ItemResponse:
+def getItemEndpoint(
+    item_id: str,
+    store: InMemoryItemStore = Depends(getItemStore),
+) -> ItemResponse:
     """
     id 指定でアイテムを取得する。
 
     引数:
         item_id (str): パスパラメータ。
+        store (InMemoryItemStore): `Depends(getItemStore)` で注入されるリポジトリ。
+    戻り値:
+        ItemResponse: 該当レコード。
     """
 
-    try:
-        return store.getItem(item_id)
-    except KeyError:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"getItemEndpoint: 該当 id がありません。item_id={item_id}",
-        ) from None
-    except Exception as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"getItemEndpoint: 取得処理に失敗しました。item_id={item_id}, 原因={exc}",
-        ) from exc
+    # store.getItem が ItemNotFoundError を投げた場合、handleItemNotFoundError が
+    # 404レスポンスへ変換する（このエンドポイントでは404を意識する必要がない）。
+    return store.getItem(item_id)
 
 
 @app.get("/items", response_model=List[ItemResponse], summary="アイテム一覧")
-def listItemsEndpoint() -> List[ItemResponse]:
+def listItemsEndpoint(store: InMemoryItemStore = Depends(getItemStore)) -> List[ItemResponse]:
     """
     インメモリの全件を返す。
 
+    引数:
+        store (InMemoryItemStore): `Depends(getItemStore)` で注入されるリポジトリ。
     戻り値:
         List[ItemResponse]: 件数が多いと危険なのでデモ専用とする。
     """

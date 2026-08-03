@@ -1,0 +1,10 @@
+# [重要] ビルド生成物はリポジトリに含めません。理由: プラットフォーム依存（macOS arm64等）で
+# 他環境では再利用できず、READMEの手順で再ビルドできるため。
+*.dylib
+*.so
+ctypes_call_c/libmathops.dylib
+pybind11_call_cpp/*.so
+embed_python_in_c/embed_example
+embed_python_in_c/embed_example_cpp
+__pycache__/
+*.pyc
